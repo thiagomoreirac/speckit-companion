@@ -13,6 +13,13 @@ export const standardProductChange = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const markdown = /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*){0,7}\.md$/;
 const digest = text => `sha256:${createHash('sha256').update(text.replace(/\r\n?/g, '\n')).digest('hex')}`;
 const invalid = message => Object.assign(new Error(message), { status: 400 });
+const productHeader = text => /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(text)?.[0];
+
+export function productChangeStatus(text) {
+    const header = productHeader(text);
+    if (!header || [...header.matchAll(/^status[ \t]*:/gm)].length !== 1) return null;
+    return /^status:[ \t]*([a-z-]+)[ \t]*$/m.exec(header)?.[1] ?? null;
+}
 
 function stampProductInputs(root, read, workspaceEntry) {
     const stamp = createHash('sha256');
@@ -71,11 +78,11 @@ export async function planProductApply(root, name, read, workspaceEntry) {
         if (action?.kind === 'set-status' && action.from === changeFile && index === plan.actions.length - 1) {
             path = changeFile;
             before = baseline;
-            if (read(changeFile) !== before || !/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(before)) {
+            if (read(changeFile) !== before || !productHeader(before)) {
                 throw invalid('The hosted Product Change changed or has unrecognized frontmatter.');
             }
-            const header = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(before)[0];
-            if ([...header.matchAll(/^status:[ \t]*approved[ \t]*$/gm)].length !== 1) {
+            const header = productHeader(before);
+            if (productChangeStatus(before) !== 'approved') {
                 throw invalid('The hosted Product Change must contain the literal frontmatter status: approved.');
             }
             after = header.replace(/^status:[ \t]*approved[ \t]*$/m, 'status: applied') + before.slice(header.length);

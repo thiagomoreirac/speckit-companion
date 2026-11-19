@@ -506,9 +506,9 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     button('Review initial wireframe sign-off…', () => wireframeSignoffForm(node)) : null,
                 node.adrRecords?.length && node.healthStatus !== 'blocked' ?
                     button('Review ADR acceptance…', () => adrAcceptanceForm(node)) : null,
-                node.productChanges?.length && node.healthStatus !== 'blocked' ?
+                node.approvedProductChanges?.length && node.healthStatus !== 'blocked' ?
                     button('Review approved Product Change…', () => productChangeForm(node, false)) : null,
-                node.productChanges?.length && node.healthStatus !== 'blocked' ?
+                node.appliedProductChanges?.length && node.healthStatus !== 'blocked' ?
                     button('Review Product Change archival…', () => productChangeForm(node, true)) : null,
                 node.templateOverride === node.source ? button('Remove project template override…', () => direct('template-remove', node.id)) : null,
                 hasHooks && installed ? button('Disable all lifecycle hooks…', () => direct('hook-mute-all', node.id)) : null,
@@ -614,10 +614,11 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
     }
 
     function productChangeForm(node, archive) {
+        const changes = archive ? node.appliedProductChanges : node.approvedProductChanges;
         form(archive ? 'Archive an applied Product Change' : 'Apply an approved Product Change', [
             paragraph(archive ? 'Only an applied change can be archived. Review the destination and the files that will move.' :
                 'The Product Change must already record human approval. Preview shows the exact files and which citations need review.'),
-            scalarField('Product Change', select('change', [['', 'Choose a change'], ...node.productChanges.map(name => [name, name])])),
+            scalarField('Product Change', select('change', [['', 'Choose a change'], ...changes.map(name => [name, name])])),
         ], values => ({ operation: archive ? 'product-archive' : 'product-apply', id: node.id, ...values }));
     }
 

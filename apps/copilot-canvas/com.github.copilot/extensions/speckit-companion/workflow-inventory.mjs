@@ -12,7 +12,7 @@ import { sourceFile, validPinnedUrl } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, ROADMAP_STATUSES, parseRoadmap } from './workflow-roadmap.mjs';
 import { WIREFRAME_CONFIG, standardWireframeFeature } from './workflow-wireframe.mjs';
 import { ADR_DIR, standardAdr } from './workflow-adr.mjs';
-import { PRODUCT_ARCHIVE, PRODUCT_CHANGES, PRODUCT_CONFIG, PRODUCT_MODEL, standardProductChange } from './workflow-product.mjs';
+import { PRODUCT_ARCHIVE, PRODUCT_CHANGES, PRODUCT_CONFIG, PRODUCT_MODEL, productChangeStatus, standardProductChange } from './workflow-product.mjs';
 
 export const POLICY_PATH = '.speckit-companion/workflow-policy.json';
 export const HOOK_PATH = '.specify/extensions.yml';
@@ -931,6 +931,16 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             config['product-root'] === 'docs/product' && !Object.hasOwn(config, 'product') &&
             workspaceEntry(root, PRODUCT_MODEL)?.stat.isDirectory()) {
             product.productChanges = changes;
+            product.approvedProductChanges = [];
+            product.appliedProductChanges = [];
+            for (const name of changes) {
+                const path = `${PRODUCT_CHANGES}/${name}/change.md`;
+                const entry = workspaceEntry(root, path);
+                const text = overrides.get(path) ?? (entry?.stat.isFile() && entry.stat.size <= MAX_FILE ? document(root, path) : null);
+                const status = typeof text === 'string' ? productChangeStatus(text) : null;
+                if (status === 'approved') product.approvedProductChanges.push(name);
+                if (status === 'applied') product.appliedProductChanges.push(name);
+            }
         }
         if (!product.productChanges?.length) {
             product.productNote = 'Apply and archive require enabled PDaC and PDaC Product 0.1.0, ProductShape CLI 0.26.1, and a hosted change in the standard v1alpha1 workspace.';

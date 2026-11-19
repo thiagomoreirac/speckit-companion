@@ -703,6 +703,10 @@ describe('workflow previews and confirmed changes', () => {
         const preview = await api('/workflow/preview', request);
         assert.deepEqual(preview.productChange.documents.map(item => item.path), [target, change]);
         assert.equal(preview.productChange.documents[0].after, rule);
+        const transition = preview.diff.nodes.changed.find(item => item.after.id === request.id);
+        assert.deepEqual(transition.before.approvedProductChanges, ['initial']);
+        assert.deepEqual(transition.after.approvedProductChanges, []);
+        assert.deepEqual(transition.after.appliedProductChanges, ['initial']);
         assert.equal(existsSync(join(f.root, target)), false);
         f.put(proposed, rule.replace('Exports must use JSON.', 'Exports must use XML.'));
         await api('/workflow/apply', { id: preview.id }, 409);
@@ -713,6 +717,57 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(readFileSync(join(f.root, target), 'utf8'), rule);
         assert.equal(readFileSync(join(f.root, change), 'utf8'), original.replace('status: approved', 'status: applied'));
         assert.equal(readFileSync(join(f.root, proposed), 'utf8'), rule);
+    });
+
+    it('offers Product Change apply and archival only at their matching stages in the canvas', {
+        skip: process.env.SPECKIT_CANVAS_TEST_GOVERNANCE !== '1', timeout: 180_000,
+    }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const { f, change, target, original, rule } = hostedProductChange(t);
+        f.put(change, original);
+        f.put('.specify/productshape/changes/draft/change.md', original.replace('status: approved', 'status: draft'));
+        const { url } = await serve(t, f.root, { send: () => assert.fail('Governance actions must not dispatch') });
+        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        page.setDefaultTimeout(60_000);
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Text view' }).click();
+        await page.locator('table [data-workflow-item="extension:pdac-product"]').click();
+        const inspector = page.getByRole('complementary', { name: 'Workflow inspector' });
+        const apply = inspector.getByRole('button', { name: 'Review approved Product Change…' });
+        const archive = inspector.getByRole('button', { name: 'Review Product Change archival…' });
+        const dialog = page.getByRole('dialog');
+        const confirm = dialog.getByRole('button', { name: 'Confirm change' });
+        await apply.waitFor();
+        assert.equal(await archive.count(), 0);
+        await apply.click();
+        await dialog.getByLabel('Product Change').selectOption('initial');
+        assert.equal(await dialog.getByRole('option', { name: 'draft', exact: true }).count(), 0);
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await confirm.waitFor();
+        assert.equal(existsSync(join(f.root, target)), false);
+        await confirm.click();
+        await archive.waitFor();
+        assert.equal(await apply.count(), 0);
+        assert.equal(readFileSync(join(f.root, target), 'utf8'), rule);
+        await archive.click();
+        await dialog.getByLabel('Product Change').selectOption('initial');
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByRole('heading', { name: 'Archive move' }).waitFor();
+        assert.equal(existsSync(join(f.root, change)), true);
+        await confirm.click();
+        const archived = '.specify/productshape/archive/initial/change.md';
+        await inspector.getByRole('button', { name: archived, exact: true }).waitFor();
+        assert.equal(existsSync(join(f.root, change)), false);
+        assert.equal(await archive.count(), 0);
+        assert.equal(readFileSync(join(f.root, target), 'utf8'), rule);
     });
 
     it('archives only the confirmed applied change using released ProductShape', { skip: process.env.SPECKIT_CANVAS_TEST_GOVERNANCE !== '1' }, async t => {

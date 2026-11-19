@@ -860,6 +860,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 paths = documents.map(doc => doc.path);
                 readPaths = [PRODUCT_CONFIG, ...sources.map(item => item.path)];
                 sourceStamp = [configuration, inputStamp, sources, productChange];
+                overrides.set(documents.at(-1).path, documents.at(-1).after);
                 title = `Review Product Change: ${request.change}`;
                 notes = ['ProductShape validates the human-approved change and reports affected citations. Confirmation applies only the displayed files; it does not archive, commit, or merge the change.'];
                 execute = () => writeProductDocuments(root, documents);
