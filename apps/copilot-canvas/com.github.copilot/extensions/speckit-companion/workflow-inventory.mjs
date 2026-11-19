@@ -334,7 +334,10 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     const init = read('.specify/init-options.json', 'json');
     const integration = read('.specify/integration.json', 'json');
     const version = init?.speckit_version ?? integration?.version ?? null;
-    const integrationKey = integration?.integration ?? init?.integration ?? null;
+    const installedIntegrations = unique(Array.isArray(integration?.installed_integrations)
+        ? strings(integration.installed_integrations).map(key => key.trim()).filter(Boolean) : []);
+    const integrationKey = strings([integration?.default_integration, integration?.integration])
+        .map(key => key.trim()).find(Boolean) ?? installedIntegrations[0] ?? init?.integration ?? null;
     const registryPath = '.specify/extensions/.registry';
     const extensionRegistry = read(registryPath, 'json');
     const hookDocument = read(HOOK_PATH);
@@ -362,10 +365,11 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     const nativeSettings = nativeDocument?.integrations;
     const hasNativeOverride = safeId(integrationKey) && object(nativeSettings) && Object.hasOwn(nativeSettings, integrationKey);
     const overrideEvents = hasNativeOverride ? nativeSettings[integrationKey]?.events : null;
-    const validOverride = object(overrideEvents) && entries(overrideEvents).every(([event, value]) => {
+    const validEvents = events => object(events) && entries(events).every(([event, value]) => {
         const handlers = list(value);
         return NATIVE_EVENTS.has(event) && handlers.length && handlers.every(validNativeHandler);
     });
+    const validOverride = validEvents(overrideEvents);
     if ((hasNativeOverride && !validOverride) || (nativeDocument && Object.hasOwn(nativeDocument, 'integrations') && !object(nativeSettings))) {
         findings.push({ code: 'malformed-native-override', severity: 'blocked',
             message: `${NATIVE_HOOK_PATH} does not provide a valid event override for the selected integration. Spec Kit may keep its inherited handlers.`,
@@ -502,7 +506,38 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         }
     }
 
-    const nativeEventOverrideSupported = NATIVE_GENERATED_FILES.has(integrationKey) && /^1\.4\.1(?:\.dev0)?$/.test(version ?? '');
+    const supportedNativeVersion = /^1\.4\.1(?:\.dev0)?$/.test(version ?? '');
+    const nativeEventOverrideSupported = NATIVE_GENERATED_FILES.has(integrationKey) && supportedNativeVersion;
+    const checkGeneratedEvents = (key, nodeId, events) => {
+        const path = NATIVE_GENERATED_FILES.get(key);
+        const inspected = inspectNativeMarkers(root, path, inputs);
+        if (!events || Object.keys(events).length) return;
+        if (inspected === 'marked') {
+            findings.push({ code: 'native-event-suppression-pending', severity: 'advisory', path,
+                message: `Spec Kit hook entries remain in ${path} despite the empty ${key} override. Command dispatch from Workflow is blocked until Spec Kit regenerates those settings.`,
+                nodeIds: [nodeId], edgeIds: [] });
+        } else if (inspected === 'unverified') {
+            findings.push({ code: 'native-event-settings-unverified', severity: 'advisory', path,
+                message: `The canvas could not verify Spec Kit hook entries in ${path}. Command dispatch from Workflow is blocked until these settings can be checked.`,
+                nodeIds: [nodeId], edgeIds: [] });
+        }
+    };
+    for (const key of installedIntegrations) {
+        if (!supportedNativeVersion || key === integrationKey || !NATIVE_GENERATED_FILES.has(key) ||
+            !object(nativeSettings) || !Object.hasOwn(nativeSettings, key)) continue;
+        const id = `native-events:${key}`;
+        const events = nativeSettings[key]?.events;
+        const valid = validEvents(events);
+        nodes.push(defaultNode(id, `${key} native event override`, 'Hooks', NATIVE_HOOK_PATH, {
+            installed: true, active: valid, state: valid ? 'installed' : 'blocked',
+            effect: 'unknown', approval: 'inspect', artifacts: [NATIVE_HOOK_PATH], hooks: [],
+            note: 'This installed integration is not the project default. Its native override is read-only here.',
+        }));
+        if (valid) checkGeneratedEvents(key, id, events);
+        else findings.push({ code: 'malformed-native-override', severity: 'blocked', path: NATIVE_HOOK_PATH,
+            message: `${NATIVE_HOOK_PATH} does not provide a valid event override for ${key}. Spec Kit may keep its inherited handlers.`,
+            nodeIds: [id], edgeIds: [] });
+    }
     const canMuteNativeEvents = nativeEventOverrideSupported && !findings.some(item => item.path === NATIVE_HOOK_PATH) &&
         (!validOverride || Object.keys(overrideEvents).length > 0);
     if (validOverride || canMuteNativeEvents) {
@@ -515,21 +550,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 : 'No override is configured for this integration. Spec Kit can inherit built-in and extension handlers.',
         });
         nodes.push(owner);
-        if (nativeEventOverrideSupported) {
-            const path = NATIVE_GENERATED_FILES.get(integrationKey);
-            const inspected = inspectNativeMarkers(root, path, inputs);
-            if (validOverride && Object.keys(overrideEvents).length === 0) {
-                if (inspected === 'marked') {
-                    findings.push({ code: 'native-event-suppression-pending', severity: 'advisory', path,
-                        message: `Spec Kit hook entries remain in ${path} despite the empty override. Command dispatch from Workflow is blocked until Spec Kit regenerates those settings.`,
-                        nodeIds: [owner.id], edgeIds: [] });
-                } else if (inspected === 'unverified') {
-                    findings.push({ code: 'native-event-settings-unverified', severity: 'advisory', path,
-                        message: `The canvas could not verify Spec Kit hook entries in ${path}. Command dispatch from Workflow is blocked until these settings can be checked.`,
-                        nodeIds: [owner.id], edgeIds: [] });
-                }
-            }
-        }
+        if (nativeEventOverrideSupported) checkGeneratedEvents(integrationKey, owner.id, validOverride ? overrideEvents : null);
         for (const [event, value] of validOverride ? entries(overrideEvents) : []) {
             const life = `stage:${NATIVE_EVENTS.get(event)}`;
             const after = ['post_tool_use', 'stop', 'session_end'].includes(event);

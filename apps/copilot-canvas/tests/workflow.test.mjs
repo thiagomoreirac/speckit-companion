@@ -632,6 +632,45 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(dispatched.length, 1);
     });
 
+    it('checks secondary installed integrations before preview and again at confirmation', async t => {
+        const f = fixture(t);
+        const generated = '.github/hooks/speckit.json';
+        const stale = { version: 1, hooks: { sessionStart: [{ command: 'private-test-command', __speckit_event__: true }] } };
+        const state = {
+            version: '1.4.1', integration: 'copilot', default_integration: 'claude',
+            installed_integrations: ['claude', 'copilot'],
+        };
+        f.put('.specify/integration.json', state);
+        f.put(NATIVE_HOOK_PATH, { integrations: { copilot: { events: {} } } });
+        f.put(generated, stale);
+        const graph = f.graph();
+        assert.equal(graph.runtime.integration, 'claude');
+        const secondary = graph.nodes.find(item => item.id === 'native-events:copilot');
+        assert.ok(secondary.installed);
+        assert.ok(!secondary.canRestoreNativeInheritance);
+        assert.doesNotMatch(JSON.stringify(graph), /private-test-command/);
+        const dispatched = [];
+        const { api } = await serve(t, f.root, { send: async prompt => { dispatched.push(prompt); return true; } });
+        const run = { operation: 'run', id: 'stage:specify', command: 'specify', intent: 'Give readers an export button' };
+
+        assert.match((await api('/workflow/preview', run, 409)).error, /empty copilot override/);
+        f.put('.specify/integration.json', { version: '1.4.1', installed_integrations: ['claude', ' copilot '] });
+        assert.equal(f.graph().runtime.integration, 'claude');
+        assert.match((await api('/workflow/preview', run, 409)).error, /empty copilot override/);
+        f.put(generated, '{"hooks":');
+        assert.match((await api('/workflow/preview', run, 409)).error, /could not verify/);
+        f.put(generated, { version: 1 });
+        const ready = await api('/workflow/preview', run);
+        f.put(generated, stale);
+        await api('/workflow/apply', { id: ready.id }, 409);
+        assert.equal(dispatched.length, 0);
+
+        f.put('.specify/integration.json', { ...state, installed_integrations: ['claude'] });
+        const withoutCopilot = await api('/workflow/preview', run);
+        await api('/workflow/apply', { id: withoutCopilot.id });
+        assert.equal(dispatched.length, 1);
+    });
+
     it('reviews restoring inheritance without restoring an unsafe handler or touching generated settings', async t => {
         const f = fixture(t);
         const readOnly = { command: 'speckit.reporter.run' };
