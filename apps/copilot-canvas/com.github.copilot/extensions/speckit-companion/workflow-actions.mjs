@@ -876,17 +876,24 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             if (node?.kind !== 'Bundles' || !node.canRemoveRecord || before.findings.some(item => item.code === 'malformed-bundle')) {
                 throw invalid('Only a valid bundle record with no contributed components can be removed from this canvas. Cascading package removal is not supported.');
             }
-            const current = JSON.parse(file(root, BUNDLE_RECORDS));
-            const next = { ...current, bundles: current.bundles.filter(record => record.bundle_id !== node.key) };
-            const args = ['bundle', 'remove', node.key];
-            if (probe) await cli(root, ['bundle', 'remove', '--help'], true);
+            const base = file(root, BUNDLE_RECORDS);
+            const current = JSON.parse(base);
+            const targets = Array.isArray(current?.bundles) ? current.bundles.filter(record => record?.bundle_id === node.key) : [];
+            if (targets.length !== 1 || !Array.isArray(targets[0].contributed_components) || targets[0].contributed_components.length ||
+                rows(targets[0].bundle_references).length) {
+                throw invalid('The bundle record changed. Review it again before removing it.', 409);
+            }
+            const next = { ...current, updated_at: new Date(reviewedAt).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                bundles: current.bundles.filter(record => record.bundle_id !== node.key) };
+            const text = json(next);
+            sourceStamp = createHash('sha256').update(base).digest('hex');
             overrides.set(BUNDLE_RECORDS, next);
             paths = [BUNDLE_RECORDS];
             affected = [node];
             title = `Remove ${node.name} bundle record`;
-            invocation = ['specify', ...args].join(' ');
-            notes = ['This bundle has no contributed components. Removing the record does not uninstall any packages.'];
-            execute = async () => ({ output: (await cli(root, args)).slice(0, 6000) });
+            documentChange = { path: BUNDLE_RECORDS, before: base, after: text };
+            notes = ['This bundle has no contributed components. The canvas only removes the reviewed record; it does not invoke package removal.'];
+            execute = () => writeConfig(root, BUNDLE_RECORDS, text, base);
         } else if (['product-apply', 'product-archive'].includes(operation)) {
             if (node?.id !== 'extension:pdac-product' || node.healthStatus === 'blocked' || !node.productChanges?.includes(request.change)) {
                 throw invalid('Select an inventoried change from compatible, enabled PDaC and PDaC Product integrations.');

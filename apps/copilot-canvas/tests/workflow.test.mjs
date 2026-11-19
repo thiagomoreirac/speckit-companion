@@ -1483,6 +1483,31 @@ describe('workflow previews and confirmed changes', () => {
         assert.ok(f.graph().nodes.some(node => node.id === 'bundle:workflow-tools'));
     });
 
+    it('removes only the reviewed bundle record without invoking Spec Kit', async t => {
+        const f = fixture(t);
+        f.install('git');
+        const path = '.specify/bundle-records.json';
+        const component = { id: 'git', kind: 'extensions', version: '1.0.0' };
+        const record = bundle_id => ({ bundle_id, version: '1.0.0', contributed_components: [], required_components: [component] });
+        const original = { schema_version: '1.0', bundles: [record('selected'), record('retained')] };
+        f.put(path, original);
+        const { api } = await serve(t, f.root, { workflowCli: () => assert.fail('Unexpected bundle CLI invocation') });
+        const request = { operation: 'bundle-remove-record', id: 'bundle:selected' };
+        const preview = await api('/workflow/preview', request);
+        assert.equal(preview.documentChange.before, JSON.stringify(original));
+        assert.deepEqual(JSON.parse(preview.documentChange.after).bundles, [record('retained')]);
+        const edited = { ...original, bundles: [{ ...record('selected'), contributed_components: [component] }, record('retained')] };
+        f.put(path, edited);
+        await api('/workflow/apply', { id: preview.id }, 400);
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(edited));
+        f.put(path, original);
+        const reviewed = await api('/workflow/preview', request);
+        const applied = await api('/workflow/apply', { id: reviewed.id });
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), reviewed.documentChange.after);
+        assert.ok(applied.graph.nodes.some(node => node.id === 'bundle:retained'));
+        assert.ok(applied.graph.nodes.some(node => node.id === 'extension:git' && node.active));
+    });
+
     it('refuses to stage a bundle that would install or overwrite a package', async t => {
         const f = fixture(t);
         const source = 'bundles/workflow-tools/bundle.yml';
