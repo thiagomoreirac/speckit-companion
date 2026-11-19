@@ -692,13 +692,41 @@ describe('parent chat following owned sessions', () => {
         }
     });
 
+    it('restores a retained panel when open arrives before the session join resolves', async () => {
+        const base = temp('canvas-reload-');
+        const chat = join(base, 'chat');
+        const saved = join(base, 'saved');
+        repo(chat);
+        spec(saved, '001-retained', 'Retained spec');
+        rootSelection(base).write(saved);
+        globalThis.__copilotWorkspacePath = base;
+        const instance = { instanceId: 'retained-panel', input: null, session: { workingDirectory: chat } };
+        let opened, canvas;
+        globalThis.__copilotBeforeJoinReturns = config => {
+            [canvas] = config.canvases;
+            opened = canvas.open(instance);
+            opened.catch(() => {});
+        };
+        try {
+            await import('../com.github.copilot/extensions/speckit-companion/extension.mjs?retained-panel');
+            assert.match((await opened).url, /^http:\/\/127\.0\.0\.1:/);
+            const list = canvas.actions.find(action => action.name === 'list_specs').handler;
+            assert.deepEqual(list(instance).specs.map(item => item.title), ['Retained spec']);
+        } finally {
+            await canvas?.onClose(instance);
+            globalThis.__copilotBeforeJoinReturns = undefined;
+            globalThis.__copilotWorkspacePath = undefined;
+            rmSync(base, { recursive: true });
+        }
+    });
+
     it('settles on a symlinked working directory without re-applying the root', async () => {
         const base = temp('canvas-symlink-');
         const real = join(base, 'real');
         const link = join(base, 'link');
         repo(real);
         spec(real, '001-a', 'A');
-        symlinkSync(real, link);
+        symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
         const logs = [];
         const server = await createSpecServer({ root: validateRoot(real), workingDirectory: link, log: message => logs.push(message) });
         try {

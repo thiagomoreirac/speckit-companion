@@ -60,7 +60,7 @@ async function discoverChildren() {
     }
 }
 
-const session = await joinSession({
+const sessionReady = Promise.resolve().then(() => joinSession({
     systemMessage: { mode: 'append', content: SYSTEM_RULE },
     canvases: [
         createCanvas({
@@ -245,6 +245,8 @@ const session = await joinSession({
                 },
             ],
             open: async (ctx) => {
+                // The runtime can reopen a retained panel before joinSession returns its workspace.
+                const session = await sessionReady;
                 const selection = rootSelection(session.workspacePath);
                 let savedRoot = null;
                 try {
@@ -298,7 +300,9 @@ const session = await joinSession({
             },
         }),
     ],
-});
+}));
+
+const session = await sessionReady;
 
 // The runtime reports this session's own working directory changes (for example into a new worktree); a preliminary event precedes the settled one.
 session.on?.('session.context_changed', (event) => {

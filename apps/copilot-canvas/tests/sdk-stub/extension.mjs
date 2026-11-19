@@ -12,6 +12,7 @@ export const createCanvas = (options) => ({ ...options, __canvas: true });
 export async function joinSession(config) {
     (globalThis.__copilotJoined ??= []).push(config);
     const handlers = (globalThis.__copilotHandlers ??= {});
+    await globalThis.__copilotBeforeJoinReturns?.(config);
     return {
         sessionId: 'parent-session',
         get workspacePath() { return globalThis.__copilotWorkspacePath; },
