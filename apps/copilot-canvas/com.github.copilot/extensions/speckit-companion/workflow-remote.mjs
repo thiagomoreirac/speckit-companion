@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
-import { inspectBundleArchive } from './workflow-bundle-archive.mjs';
+import { inspectCatalogArchive } from './workflow-archive.mjs';
 
 const limit = 32 * 1024;
 const catalogLimit = 256 * 1024;
@@ -8,13 +8,14 @@ const archiveLimit = 4 * 1024 * 1024;
 const invalid = (message, status = 400) => Object.assign(new Error(message), { status });
 const pinnedSource = /^https:\/\/raw\.githubusercontent\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/[a-f0-9]{40}\/(?:[a-z0-9_.-]+\/)*[a-z0-9_.-]+\.ya?ml$/i;
 const catalogSource = /^https:\/\/raw\.githubusercontent\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/(?:[a-z0-9_.-]+\/)*[a-z0-9_.-]+\.json$/i;
-const bundleArchiveSource = /^https:\/\/(?:raw\.githubusercontent\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/[a-f0-9]{40}\/(?:[a-z0-9_.-]+\/)*|github\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/releases\/download\/[a-z0-9_.-]+\/)[a-z0-9_.-]+\.zip$/i;
+const archiveSource = /^https:\/\/(?:raw\.githubusercontent\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/[a-f0-9]{40}\/(?:[a-z0-9_.-]+\/)*|github\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/releases\/download\/[a-z0-9_.-]+\/)[a-z0-9_.-]+\.zip$/i;
 const canonical = (url, pattern) => typeof url === 'string' && url.length <= 500 && pattern.test(url) && new URL(url).href === url;
 const mapping = value => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 export const reviewedWorkflowSources = '.speckit-companion/workflow-sources';
 export const sourceFile = (key, digest) => `${reviewedWorkflowSources}/${key}-${digest}.yml`;
 export const bundleReceiptFile = (key, digest) => `${reviewedWorkflowSources}/bundle-${key}-${digest}.json`;
 export const validPinnedUrl = url => canonical(url, pinnedSource);
+export const validPinnedArchiveUrl = url => canonical(url, archiveSource);
 export const validPinnedCatalogUrl = url => canonical(url, catalogSource);
 export const validPinnedWorkflowId = key => typeof key === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(key) &&
     !['overlays', 'runs', 'steps', 'functions'].includes(key);
@@ -43,7 +44,7 @@ function releaseAssetLocation(location) {
     const destination = typeof location === 'string' && URL.canParse(location) ? new URL(location) : null;
     if (!destination || destination.protocol !== 'https:' || destination.port || destination.username || destination.password ||
         destination.hash || !['release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(destination.hostname)) {
-        throw invalid('GitHub redirected the bundle ZIP to an unsupported host.', 502);
+        throw invalid('GitHub redirected the catalog ZIP to an unsupported host.', 502);
     }
     return destination.href;
 }
@@ -108,13 +109,14 @@ function verifyPinnedHash(bytes, digest) {
     return hash;
 }
 
-export async function fetchCatalogBundle(url, digest, fetchSource = fetch) {
-    if (!canonical(url, bundleArchiveSource)) return fetchPinnedYaml(url, digest, fetchSource, 'bundle');
-    if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/i.test(digest)) throw invalid('A bundle ZIP requires its SHA-256.');
-    const bytes = await fetchGitHubFile(url, fetchSource, archiveLimit, 'The pinned bundle ZIP', new URL(url).hostname === 'github.com');
+export async function fetchCatalogDefinition(url, digest, kind, fetchSource = fetch) {
+    if (!validPinnedArchiveUrl(url)) return fetchPinnedYaml(url, digest, fetchSource, kind);
+    if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/i.test(digest)) throw invalid('A catalog ZIP requires its SHA-256.');
+    const bytes = await fetchGitHubFile(url, fetchSource, archiveLimit, `The pinned ${kind} ZIP`, new URL(url).hostname === 'github.com');
     const hash = verifyPinnedHash(bytes, digest);
-    const manifest = await inspectBundleArchive(bytes, limit);
-    return { url, hash, text: decodeFile(manifest, 'bundle.yml'), archiveEntry: 'bundle.yml', manifestSha256: createHash('sha256').update(manifest).digest('hex') };
+    const archiveEntry = kind === 'bundle' ? 'bundle.yml' : 'workflow.yml';
+    const manifest = await inspectCatalogArchive(bytes, limit, archiveEntry);
+    return { url, hash, text: decodeFile(manifest, archiveEntry), archiveEntry, manifestSha256: createHash('sha256').update(manifest).digest('hex') };
 }
 
 export async function fetchPinnedCatalog(url, kind, fetchSource = fetch) {
@@ -150,8 +152,7 @@ export async function fetchPinnedCatalog(url, kind, fetchSource = fetch) {
             history.some(([version]) => version === entry.version)) throw invalid(`${label} has an invalid release list for ${key}.`);
         for (const [version, record] of [[entry.version, entry], ...history]) {
             const releaseUrl = bundle ? record?.download_url : record?.url;
-            const supported = bundle ? canonical(releaseUrl, bundleArchiveSource) || (validPinnedUrl(releaseUrl) && releaseUrl.endsWith('/bundle.yml')) :
-                validPinnedUrl(releaseUrl);
+            const supported = validPinnedArchiveUrl(releaseUrl) || (validPinnedUrl(releaseUrl) && (!bundle || releaseUrl.endsWith('/bundle.yml')));
             if (!mapping(record) || typeof version !== 'string' || !/^[a-z0-9][a-z0-9.+!-]{0,63}$/i.test(version) ||
                 !supported || (bundle ? record.version != null && record.version !== version : !empty(record.requires) || !empty(record.bundled))) continue;
             const sha256 = typeof record.sha256 === 'string' && /^(?:sha256:)?([a-f0-9]{64})$/i.exec(record.sha256)?.[1]?.toLowerCase();

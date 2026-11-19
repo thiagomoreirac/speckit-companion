@@ -12,7 +12,7 @@ import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
 import { canGuide, createGuidedRuns } from './workflow-guided-run.mjs';
 import { planEmbeddedHookEdit } from './workflow-embedded-hooks.mjs';
-import { bundleReceiptFile, fetchCatalogBundle, fetchPinnedYaml, fetchPinnedCatalog, parsePinnedYaml, reviewedWorkflowSources, sourceFile, validPinnedWorkflowId } from './workflow-remote.mjs';
+import { bundleReceiptFile, fetchCatalogDefinition, fetchPinnedYaml, fetchPinnedCatalog, parsePinnedYaml, reviewedWorkflowSources, sourceFile, validPinnedWorkflowId } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, changeRoadmapStatus } from './workflow-roadmap.mjs';
 import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeName } from './workflow-wireframe.mjs';
 import { stageAdrAcceptance } from './workflow-adr.mjs';
@@ -880,7 +880,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             const catalogReview = Object.hasOwn(request, 'catalogId') ?
                 await reviewCatalogRelease(root, current, request, 'bundle', request.key, fetchSource) : null;
             const candidate = catalogReview?.candidate;
-            const remote = candidate ? await fetchCatalogBundle(candidate.url, candidate.sha256, fetchSource) :
+            const remote = candidate ? await fetchCatalogDefinition(candidate.url, candidate.sha256, 'bundle', fetchSource) :
                 request.remoteUrl === undefined ? null : await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource, 'bundle');
             if (candidate) {
                 const { id, version } = parsePinnedYaml(remote.text)?.bundle ?? {};
@@ -1183,9 +1183,9 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                     if (fromCatalog) {
                         catalogReview = await reviewCatalogRelease(root, current, request, 'workflow', key, fetchSource);
                         const { candidate } = catalogReview;
-                        remote = await fetchPinnedYaml(candidate.url, candidate.sha256, fetchSource);
+                        remote = await fetchCatalogDefinition(candidate.url, candidate.sha256, 'workflow', fetchSource);
                     } else remote = await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource);
-                    sourcePath = sourceFile(key, remote.hash);
+                    sourcePath = sourceFile(key, remote.manifestSha256 ?? remote.hash);
                 } else {
                     sourcePath = str(request.source, 'a reviewed repository-relative source directory', 300);
                     if (sourcePath.startsWith('-') || sourcePath === base || sourcePath.startsWith(`${base}/`) ||
@@ -1198,6 +1198,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 if (retained != null && retained !== raw) throw invalid('A different file already occupies the retained source path.', 409);
                 packageDefinition = { path: manifestPath, before: file(root, manifestPath), after: raw,
                     ...(remote ? { url: remote.url, sha256: digest } : {}),
+                    ...(remote?.archiveEntry ? { archiveEntry: remote.archiveEntry, manifestSha256: remote.manifestSha256 } : {}),
                     ...(catalogReview ? { catalog: catalogReview.catalog.origin, version: catalogReview.candidate.version } : {}) };
                 sourceStamp = [digest, createHash('sha256').update(JSON.stringify(packageDefinition)).digest('hex')];
                 readPaths = [...(catalogReview ? [catalogReview.catalog.source, catalogReview.catalog.origin] : []),
@@ -1264,7 +1265,8 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             overrides.set(registryPath, registry);
             paths = [registryPath, manifestPath, ...packagePaths, ...(group === 'preset' ? (node?.artifacts ?? []).filter(path => path.startsWith(`${base}/${key}/`)) : [])];
             const receiptPath = remote ? `${sourcePath}.json` : null;
-            const receipt = remote ? json({ url: remote.url, sha256: remote.hash }) : null;
+            const receipt = remote ? json({ url: remote.url, sha256: remote.manifestSha256 ?? remote.hash,
+                ...(remote.archiveEntry ? { archiveEntry: remote.archiveEntry, archiveSha256: remote.hash } : {}) }) : null;
             const catalogReceiptPath = catalogReview ? `${reviewedWorkflowSources}/catalog-${catalogReview.candidate.selection}.json` : null;
             const catalogReceipt = catalogReview ? json({
                 catalog: catalogReview.catalog.origin, id: key, version: catalogReview.candidate.version, url: remote.url, sha256: remote.hash,
@@ -1302,6 +1304,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             affected = node ? [node] : [];
             notes = ['Spec Kit applies this change and regenerates its owned files. Review the refreshed graph for the actual result.',
                 ...(catalogReview ? ['Only the selected project catalog is consulted. Confirmation rechecks its policy and advertised release and retains a catalog receipt. Catalog trust does not approve any workflow action.'] : []),
+                ...(remote?.archiveEntry ? ['Only the single root workflow.yml is accepted. No companion files or ZIP contents are installed.'] : []),
                 ...(remote ? ['Spec Kit validates the YAML in a temporary project. Confirmation rechecks the digest and registers a separate temporary copy, not the retained workspace file. The source and its receipt remain for inspection if registration fails. No workflow steps run.'] :
                     sourcePath ? [`Reviewed local source: ${sourcePath}. The preview predicts registration from the exact source digest; it does not execute package code.`] : []),
                 ...(group === 'preset' && operation === 'update' ? ['The CLI validated the replacement in a temporary project. Its update removes the previous version before installing the replacement; restore the previous source if the update fails.'] : []),

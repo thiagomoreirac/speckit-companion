@@ -8,7 +8,7 @@ import { hookFixtures } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, isReviewArtifactPath, reviewGates, reviewOverlayPath } from './workflow-review-run.mjs';
 import { issueLabelStep } from './workflow-github.mjs';
 import { guidedReview } from './workflow-guided-run.mjs';
-import { sourceFile, validPinnedUrl, validPinnedCatalogUrl } from './workflow-remote.mjs';
+import { sourceFile, validPinnedUrl, validPinnedArchiveUrl, validPinnedCatalogUrl } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, ROADMAP_STATUSES, parseRoadmap } from './workflow-roadmap.mjs';
 import { WIREFRAME_CONFIG, standardWireframeFeature } from './workflow-wireframe.mjs';
 import { ADR_DIR, standardAdr } from './workflow-adr.mjs';
@@ -628,7 +628,9 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 if (path && segments.at(-2)?.startsWith('canvas-pinned-workflow-') && segments.at(-1) === path.split('/').at(-1)) {
                     const receiptPath = `${path}.json`;
                     const receipt = read(receiptPath, 'json');
-                    if (receipt?.sha256 === digest && validPinnedUrl(receipt.url) &&
+                    const sourceMatches = validPinnedUrl(receipt?.url) || (validPinnedArchiveUrl(receipt?.url) &&
+                        receipt.archiveEntry === 'workflow.yml' && /^[a-f0-9]{64}$/.test(receipt.archiveSha256));
+                    if (receipt?.sha256 === digest && sourceMatches &&
                         exists(path) && createHash('sha256').update(document(root, path)).digest('hex') === digest) {
                         node.origin = receipt.url;
                         node.artifacts.push(path, receiptPath);

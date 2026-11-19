@@ -653,7 +653,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     result.installAllowed ? null : paragraph('This source is discovery-only. To register a release, first review and allow installations in its inspector.'),
                     releases.length ? el('ul', {}, releases.map(release => el('li', { text: label(release) }))) :
                         paragraph(bundle ? 'No pinned bundle.yml or GitHub ZIP releases with a SHA-256 are available. You can also register a reviewed local bundle.yml.' :
-                            'No standalone YAML releases pinned to a Git commit and SHA-256 are available. For other workflows, use a reviewed local directory.'),
+                            'No pinned standalone YAML or GitHub ZIP releases with a SHA-256 are available. For other workflows, use a reviewed local directory.'),
                     actions(button('Close', () => dialog.close())));
                 return;
             }
