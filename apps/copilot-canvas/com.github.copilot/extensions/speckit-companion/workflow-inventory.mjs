@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 import { AUTOMATIC_HOOKS, PHASES, INTEGRATIONS, INTEGRATION_LINKS, MANAGEMENT, lifecycleNodes, hookStage, scopeProblem, validScope, validateGraph } from './workflow-model.mjs';
 import { resolveCommand } from './prompts.mjs';
@@ -53,12 +54,56 @@ const WORKFLOW_OVERLAYS = '.specify/workflows/overlays';
 const OVERLAY_OPERATIONS = ['insert_after', 'insert_before', 'replace', 'remove'];
 const validOverlayId = value => safeId(value) && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value) && value !== 'overlays';
 const RUN_STATES = new Set(['created', 'running', 'paused', 'completed', 'failed', 'aborted']);
+const BUNDLE_COMPONENT_TYPES = new Map([['presets', 'preset'], ['extensions', 'extension'], ['workflows', 'workflow'], ['steps', 'step-package']]);
 const BUILTIN_STEP_TYPES = new Set(['command', 'prompt', 'gate', 'shell', 'github', 'workflow', 'init', 'if', 'switch', 'while', 'do-while', 'fan-out', 'fan-in', 'slot']);
 const nestedSteps = step => [
     ...['then', 'else', 'steps', 'default'].flatMap(key => Array.isArray(step[key]) ? [[key, step[key]]] : []),
     ...entries(step.cases).filter(([, values]) => Array.isArray(values)).map(([key, values]) => [`case ${key}`, values]),
     ...(object(step.step) ? [['fan-out template', [step.step]]] : []),
 ];
+
+export function bundleRecordRemoval(registry, id) {
+    const records = registry?.bundles;
+    if (!Array.isArray(records) || !/^1(?:\.\d+)?$/.test(registry.schema_version)) return null;
+    const ids = records.map(record => record?.bundle_id);
+    if (!ids.every(safeId) || new Set(ids).size !== ids.length) return null;
+    const target = records.find(record => record.bundle_id === id);
+    if (!Array.isArray(target?.contributed_components) ||
+        (target.bundle_references != null && (!Array.isArray(target.bundle_references) || target.bundle_references.length))) return null;
+    const remaining = records.filter(record => record !== target);
+    if (remaining.some(record => list(record.bundle_references).some(ref => ref?.id === id))) return null;
+    if (!target.contributed_components.length) return { remaining, transfers: [] };
+    if (registry.schema_version !== '1.0' || remaining.some(record => record.bundle_references != null &&
+        (!Array.isArray(record.bundle_references) || record.bundle_references.length))) return null;
+
+    const componentKey = component => BUNDLE_COMPONENT_TYPES.has(component?.kind) && safeId(component.id) ? `${component.kind}:${component.id}` : null;
+    const firstConsumer = new Map(), owners = new Set(), transfers = [];
+    for (const record of records) {
+        const { required_components: required, contributed_components: contributed } = record;
+        if (!Array.isArray(required) || !Array.isArray(contributed)) return null;
+        const byKey = new Map(required.map(component => [componentKey(component), component]));
+        if (byKey.has(null) || byKey.size !== required.length) return null;
+        for (const component of contributed) {
+            const key = componentKey(component);
+            if (!key || owners.has(key) || !isDeepStrictEqual(component, byKey.get(key))) return null;
+            owners.add(key);
+        }
+        if (record !== target) for (const [key, component] of byKey) {
+            if (!firstConsumer.has(key)) firstConsumer.set(key, { record, component });
+        }
+    }
+    const reassigned = new Map();
+    for (const component of target.contributed_components) {
+        const owner = firstConsumer.get(componentKey(component));
+        if (!owner || !isDeepStrictEqual(component, owner.component)) return null;
+        const to = owner.record.bundle_id;
+        if (!reassigned.has(to)) reassigned.set(to, [...owner.record.contributed_components]);
+        reassigned.get(to).push(owner.component);
+        transfers.push({ component: componentKey(component), to });
+    }
+    return { remaining: remaining.map(record => reassigned.has(record.bundle_id)
+        ? { ...record, contributed_components: reassigned.get(record.bundle_id) } : record), transfers };
+}
 
 function overlayEdits(config, workflow) {
     if (!validOverlayId(config?.id) || config.extends !== workflow ||
@@ -262,7 +307,9 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     const policy = read(POLICY_PATH, 'json');
     const stage = key => nodes.find(item => item.id === key);
     const addEdge = (kind, source, target, label, extras = {}) => {
-        edges.push({ id: `${kind}:${source}:${target}:${label}`, kind, source, target, label, hook: null, effect: 'read-only', approval: 'none', active: true, ...extras });
+        const edge = { id: `${kind}:${source}:${target}:${label}`, kind, source, target, label, hook: null, effect: 'read-only', approval: 'none', active: true, ...extras };
+        edges.push(edge);
+        return edge;
     };
     const warning = (code, severity, message, nodeIds = [], edgeIds = []) => findings.push({ code, severity, message, nodeIds, edgeIds });
     const overlaysByWorkflow = new Map();
@@ -538,7 +585,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     }
 
     const bundleRecords = read(BUNDLE_RECORDS, 'json');
-    const componentTypes = new Map([['presets', 'preset'], ['extensions', 'extension'], ['workflows', 'workflow'], ['steps', 'step-package']]);
+    const bundlePins = [];
     if (bundleRecords && (!Array.isArray(bundleRecords.bundles) || !/^1(?:\.\d+)?$/.test(bundleRecords.schema_version))) {
         warning('malformed-bundle', 'blocked', `${BUNDLE_RECORDS} must declare a supported schema version and bundles list.`);
     }
@@ -552,21 +599,30 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             warning('malformed-bundle', 'blocked', `Duplicate bundle record: ${record.bundle_id}.`, [id]);
             continue;
         }
+        const removal = bundleRecordRemoval(bundleRecords, record.bundle_id);
+        const canRefreshRecord = Array.isArray(record.contributed_components) && record.contributed_components.length === 0 &&
+            (record.bundle_references == null || Array.isArray(record.bundle_references) && !record.bundle_references.length);
         const node = defaultNode(id, record.bundle_id, 'Bundles', BUNDLE_RECORDS, {
             key: record.bundle_id, installed: true, version: record.version, origin: record.source, artifacts: [BUNDLE_RECORDS], approval: 'confirm',
-            canRemoveRecord: Array.isArray(record.contributed_components) && record.contributed_components.length === 0,
-            canRefreshRecord: Array.isArray(record.contributed_components) && record.contributed_components.length === 0 && !list(record.bundle_references).length,
+            canRemoveRecord: Boolean(removal), canRefreshRecord,
+            note: !removal && !canRefreshRecord ?
+                'This record cannot be changed here without potentially affecting packages or other bundles. Use the package inspectors to review individual components.' :
+                removal?.transfers.length ? 'Removing this record requires reviewing the transfer of shared component ownership. No packages will be uninstalled.' : null,
         });
         nodes.push(node);
         for (const component of list(record.required_components ?? record.contributed_components)) {
-            const type = componentTypes.get(component?.kind);
+            const type = BUNDLE_COMPONENT_TYPES.get(component?.kind);
             if (!type || !safeId(component?.id)) {
                 warning('malformed-bundle', 'blocked', `Invalid component in the ${record.bundle_id} bundle.`, [id]);
                 continue;
             }
             const target = `${type}:${component.id}`;
             (node.requires ??= []).push(target);
-            addEdge('dependency', target, id, 'Bundle component');
+            const pin = typeof component.version === 'string' && component.version.trim() ? component.version : null;
+            const recorded = record.installed_versions?.[`${component.kind}:${component.id}`];
+            const edge = addEdge('dependency', target, id, pin ? `Bundle component · ${pin}` : 'Bundle component',
+                { id: `dependency:${target}:${id}:Bundle component` });
+            if (pin) bundlePins.push({ edge, pin, recorded });
         }
     }
     const registrySpecs = [
@@ -1090,6 +1146,25 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         if (secondary?.active && (decision.strategy === 'primary' || secondary.mode === 'primary' || enabledHooks.length)) {
             warning('ownership-decision-drift', 'blocked', `${secondary.name} no longer follows the recorded ${decision.strategy} boundary. Disable the competing integration or hooks before continuing.`,
                 [primary?.id, secondary.id].filter(Boolean), enabledHooks.map(edge => edge.id));
+        }
+    }
+    for (const { edge, pin, recorded } of bundlePins) {
+        const component = stage(edge.source);
+        if (!component?.installed) continue;
+        const bundle = stage(edge.target);
+        const matches = version => component.version === version || compatibility(component.version, `==${version}`) === null;
+        if (matches(pin)) continue;
+        const accepted = typeof recorded === 'string' && recorded.trim() && matches(recorded);
+        if (accepted) {
+            warning('bundle-pin-substitution', 'advisory',
+                `${bundle.name} requested ${component.name} ${pin}, but Spec Kit recorded ${recorded} as installed.`,
+                [bundle.id], [edge.id]);
+        } else {
+            const verifiable = compatibility(component.version, `==${pin}`)?.code === 'incompatible-version';
+            const actual = component.version ?? 'an unknown version';
+            warning('bundle-pin-drift', verifiable ? 'blocked' : 'advisory',
+                `${bundle.name} requires ${component.name} ${pin}; the repository has ${actual}. Review the installed component or bundle pin.`,
+                [bundle.id], [edge.id]);
         }
     }
     const validation = validateGraph(nodes, edges, findings, decisions);

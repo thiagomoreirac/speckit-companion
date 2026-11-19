@@ -209,6 +209,34 @@ describe('graph from a Spec Kit repository', () => {
         }
     });
 
+    it('marks bundle pins on dependency edges and distinguishes recorded substitutions from drift', t => {
+        const f = fixture(t);
+        f.install('git', { manifest: { extension: { version: '1.0.2' } } });
+        f.registry.git.version = '1.0.2';
+        f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+        const path = '.specify/bundle-records.json';
+        const component = { kind: 'extensions', id: 'git', version: '1.0.0' };
+        const record = {
+            bundle_id: 'pinned', version: '1.0.0', contributed_components: [], required_components: [component],
+        };
+        const source = 'extension:git', target = 'bundle:pinned';
+        const writeRecord = values => f.put(path, { schema_version: '1.0', bundles: [{ ...record, ...values }] });
+        const inspect = ({ code, severity, status }) => {
+            const graph = f.graph();
+            const edge = graph.edges.find(item => item.source === source && item.target === target);
+            assert.match(edge.label, /1\.0\.0/);
+            assert.equal(edge.status, status);
+            assert.ok(graph.findings.some(item =>
+                item.code === code && item.severity === severity && item.edgeIds.includes(edge.id) && item.nodeIds.includes(target)));
+        };
+        writeRecord({});
+        inspect({ code: 'bundle-pin-drift', severity: 'blocked', status: 'blocked' });
+        writeRecord({ installed_versions: { 'extensions:git': '1.0.2' } });
+        inspect({ code: 'bundle-pin-substitution', severity: 'advisory', status: 'advisory' });
+        f.install('git');
+        assert.ok(!f.graph().findings.some(item => item.code.startsWith('bundle-pin-')));
+    });
+
     it('distinguishes integration event overrides from inherited native declarations', t => {
         const f = fixture(t);
         const handler = { command: 'speckit.reporter.run', matcher: 'Shell', timeout: 15 };
@@ -478,13 +506,16 @@ describe('workflow previews and confirmed changes', () => {
         const { api } = await serve(t, f.root, { workflowCli: cli, workflowFetch: fetchSource });
         const browse = await api('/workflow/catalog', { id });
         assert.equal(browse.installAllowed, false);
-        assert.deepEqual(browse.releases.map(release => release.version), ['1.0.0', '0.9.0']);
-        const request = { operation: 'install', kind: 'Workflows', key: 'release-review', catalogId: id, selection: browse.releases[0].selection };
+        assert.deepEqual(browse.releases.map(({ key, version }) => [key, version]), [
+            ['archive', '1.0.0'], ['release-review', '1.0.0'], ['release-review', '0.9.0'],
+        ]);
+        const request = { operation: 'install', kind: 'Workflows', key: 'release-review', catalogId: id,
+            selection: browse.releases.find(release => release.key === 'release-review' && release.version === '1.0.0').selection };
         await api('/workflow/preview', request, 409);
         assert.deepEqual(calls, [index]);
         configure(true);
         await api('/workflow/preview', { ...request, remoteUrl: url }, 400);
-        await api('/workflow/preview', { ...request, selection: browse.releases[1].selection }, 400);
+        await api('/workflow/preview', { ...request, selection: browse.releases.find(release => release.version === '0.9.0').selection }, 400);
         const preview = await api('/workflow/preview', request);
         assert.deepEqual(preview.packageDefinition, { path: installed, before: null, after: body, url, sha256: digest,
             catalog: index, version: '1.0.0' });
@@ -512,7 +543,8 @@ describe('workflow previews and confirmed changes', () => {
         version = '1.0.1';
         workflowBytes = body.replace('1.0.0', version);
         advertisedDigest = createHash('sha256').update(workflowBytes).digest('hex');
-        const { releases: [replacement] } = await api('/workflow/catalog', { id });
+        const { releases } = await api('/workflow/catalog', { id });
+        const replacement = releases.find(release => release.key === 'release-review' && release.version === version);
         assert.deepEqual(replacement.installed, { id: 'workflow:release-review', version: '1.0.0' });
         const update = await api('/workflow/preview', { ...request, operation: 'update',
             id: replacement.installed.id, selection: replacement.selection });
@@ -1529,7 +1561,7 @@ describe('workflow previews and confirmed changes', () => {
         assert.deepEqual(JSON.parse(preview.documentChange.after).bundles, [record('retained')]);
         const edited = { ...original, bundles: [{ ...record('selected'), contributed_components: [component] }, record('retained')] };
         f.put(path, edited);
-        await api('/workflow/apply', { id: preview.id }, 400);
+        await api('/workflow/apply', { id: preview.id }, 409);
         assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(edited));
         f.put(path, original);
         const reviewed = await api('/workflow/preview', request);
@@ -1537,6 +1569,44 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(readFileSync(join(f.root, path), 'utf8'), reviewed.documentChange.after);
         assert.ok(applied.graph.nodes.some(node => node.id === 'bundle:retained'));
         assert.ok(applied.graph.nodes.some(node => node.id === 'extension:git' && node.active));
+    });
+
+    it('transfers shared bundle ownership without removing packages and blocks nonmatching or nested references', async t => {
+        const f = fixture(t);
+        f.install('git');
+        const path = '.specify/bundle-records.json';
+        const component = { id: 'git', kind: 'extensions', version: '1.0.0' };
+        const record = (bundle_id, contributed_components = []) => ({
+            bundle_id, version: '1.0.0', installed_at: '2026-01-01T00:00:00Z',
+            contributed_components, required_components: [component],
+        });
+        const source = record('source', [component]), first = record('first'), second = record('second');
+        const registry = bundles => ({ schema_version: '1.0', bundles });
+        const request = { operation: 'bundle-remove-record', id: 'bundle:source' };
+        const { api } = await serve(t, f.root, { workflowCli: () => assert.fail('Unexpected live package operation') });
+        f.put(path, registry([source, { ...first, required_components: [{ ...component, version: '2.0.0' }] }, second]));
+        assert.equal(f.graph().nodes.find(node => node.id === request.id).canRemoveRecord, false);
+        await api('/workflow/preview', request, 400);
+        f.put(path, registry([source, { ...first, bundle_references: [{ id: 'source' }] }, second]));
+        await api('/workflow/preview', request, 400);
+        f.put(path, registry([source, first, second]));
+        const preview = await api('/workflow/preview', request);
+        assert.match(preview.notes.join(' '), /ownership transfers to first/);
+        const expected = [{ ...first, contributed_components: [component] }, second];
+        assert.deepEqual(JSON.parse(preview.documentChange.after).bundles, expected);
+        if (process.env.SPECKIT_CANVAS_TEST_CLI === '1') {
+            const staged = fixture(t);
+            staged.put(path, registry([source, first, second]));
+            await callSpecKit(staged.root, ['bundle', 'remove', 'source']);
+            assert.deepEqual(JSON.parse(readFileSync(join(staged.root, path), 'utf8')).bundles, expected);
+        }
+        f.put(path, registry([source, second, first]));
+        await api('/workflow/apply', { id: preview.id }, 409);
+        f.put(path, registry([source, first, second]));
+        const approved = await api('/workflow/preview', request);
+        const { graph } = await api('/workflow/apply', { id: approved.id });
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), approved.documentChange.after);
+        assert.ok(graph.nodes.some(node => node.id === 'extension:git' && node.active));
     });
 
     it('refuses to stage a bundle that would install or overwrite a package', async t => {

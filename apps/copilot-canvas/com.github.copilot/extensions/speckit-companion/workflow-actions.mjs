@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { dump, load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 import { AUTOMATIC_HOOKS, graphDiff, scopeProblem } from './workflow-model.mjs';
-import { BUNDLE_RECORDS, CATALOG_TYPES, CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, TEMPLATE_OVERRIDES, catalogKey, catalogPath, hookPriority, object, readWorkflow, safeId, workflowOverlayPaths, workspaceEntry } from './workflow-inventory.mjs';
+import { BUNDLE_RECORDS, CATALOG_TYPES, CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, TEMPLATE_OVERRIDES, bundleRecordRemoval, catalogKey, catalogPath, hookPriority, object, readWorkflow, safeId, workflowOverlayPaths, workspaceEntry } from './workflow-inventory.mjs';
 import { createGitHubChanges } from './workflow-github.mjs';
 import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
@@ -924,17 +924,16 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             };
         } else if (operation === 'bundle-remove-record') {
             if (node?.kind !== 'Bundles' || !node.canRemoveRecord || before.findings.some(item => item.code === 'malformed-bundle')) {
-                throw invalid('Only a valid bundle record with no contributed components can be removed from this canvas. Cascading package removal is not supported.');
+                throw invalid('Only a flat bundle record whose removal leaves all packages in place can be removed from this canvas.');
             }
             const base = file(root, BUNDLE_RECORDS);
             const current = JSON.parse(base);
-            const targets = Array.isArray(current?.bundles) ? current.bundles.filter(record => record?.bundle_id === node.key) : [];
-            if (targets.length !== 1 || !Array.isArray(targets[0].contributed_components) || targets[0].contributed_components.length ||
-                rows(targets[0].bundle_references).length) {
+            const removal = bundleRecordRemoval(current, node.key);
+            if (!removal) {
                 throw invalid('The bundle record changed. Review it again before removing it.', 409);
             }
             const next = { ...current, updated_at: new Date(reviewedAt).toISOString().replace(/\.\d{3}Z$/, 'Z'),
-                bundles: current.bundles.filter(record => record.bundle_id !== node.key) };
+                bundles: removal.remaining };
             const text = json(next);
             sourceStamp = createHash('sha256').update(base).digest('hex');
             overrides.set(BUNDLE_RECORDS, next);
@@ -942,7 +941,8 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             affected = [node];
             title = `Remove ${node.name} bundle record`;
             documentChange = { path: BUNDLE_RECORDS, before: base, after: text };
-            notes = ['This bundle has no contributed components. The canvas only removes the reviewed record; it does not invoke package removal.'];
+            notes = ['Only bundle records change. The canvas does not invoke package removal.',
+                ...removal.transfers.map(({ component, to }) => `${component}: bundle ownership transfers to ${to}.`)];
             execute = () => writeConfig(root, BUNDLE_RECORDS, text, base);
         } else if (['product-apply', 'product-archive'].includes(operation)) {
             if (node?.id !== 'extension:pdac-product' || node.healthStatus === 'blocked' || !node.productChanges?.includes(request.change)) {
