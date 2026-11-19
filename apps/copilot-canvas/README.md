@@ -19,7 +19,7 @@ cp -R speckit-companion/apps/copilot-canvas/com.github.copilot/extensions/specki
 
 Open your project in the Copilot app, start a **new** session, and ask: **Open the SpecKit Companion canvas**. It's also in the session's **+** menu, under **Canvas** → **SpecKit Companion**.
 
-Open a spec to read its documents, and press the button on the card under the pipeline to run the next step. The button sends one command into the chat, and the board updates as the agent writes.
+In an initialized Spec Kit project, the canvas opens on **Workflow**. Select a stage to inspect its inputs and preview a command before sending it to the agent. Use **Specs & runs** to read an existing spec and watch its progress. See the [workflow guide](https://speckit-companion.dev/docs/copilot-app/#explore-and-manage-the-workflow) for the management controls.
 
 ![The SpecKit Companion board open on a project with five specs. The list on the left gives each spec a status and a four-step bar, and Demo, Tasked is open on the right with its pipeline and a Run implement button.](https://raw.githubusercontent.com/alfredoperez/speckit-companion/main/docs/screenshots/live-copilot-board.png)
 
@@ -41,10 +41,12 @@ A session that was open when you accepted never gets the board. After any change
 
 ## What the board writes
 
-The board never writes a spec document. It writes two things:
+The board never writes a spec document directly. Dispatch from the board can write:
 
 - Its own run instructions under `.speckit-companion/prompts/`, with a `.gitignore` beside them so they stay out of your commits.
 - In a stock project, the start and finish of each step it sent, in the spec's `.spec-context.json`. Where Companion is installed the board does not write that file. The commands it sends do.
+
+Workflow management waits for you to confirm a preview before changing repository configuration or asking Spec Kit to regenerate files it owns.
 
 ## Known limits
 

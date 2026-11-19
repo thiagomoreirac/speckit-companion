@@ -39,7 +39,7 @@ export const OPEN_NOTE = 'The board is open: wait for the user\'s next instructi
 export const SYSTEM_RULE = 'If the user only asks to open the SpecKit Companion canvas, open it and stop: do not read, test or implement any spec until they ask. A message that starts with a /speckit command is a request to run that command, or the skill of that name, so run it.';
 
 /** What the catalog shows the model for the canvas, in the same words as the rule. */
-export const CANVAS_DESCRIPTION = 'A live board of every spec: its specify → plan → tasks → implement pipeline, task progress and run history, with a button that runs the next step. When the user only asks to open it, show it and stop: do not read, test or implement any spec until they ask.';
+export const CANVAS_DESCRIPTION = 'The Spec Kit workflow map, integration and hook management, and live spec history. When the user only asks to open it, show it and stop: do not read, test or implement any spec until they ask.';
 
 export function openStatus(active, total) {
     return `${active} active · ${total} specs. ${OPEN_NOTE}`;

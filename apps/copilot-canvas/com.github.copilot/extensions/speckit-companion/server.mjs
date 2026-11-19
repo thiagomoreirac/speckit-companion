@@ -13,12 +13,16 @@ import { BUSY, recordStep } from './run-record.mjs';
 import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { validateRepositoryRoot, validateRoot } from './workspace.mjs';
 import { pickFolder } from './folder-picker.mjs';
+import { createWorkflowActions } from './workflow-actions.mjs';
+import { inspectWorkflowArtifact, workspaceEntry } from './workflow-inventory.mjs';
 
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = {
     '/': ['index.html', 'text/html; charset=utf-8'],
     '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
+    '/workflow.js': ['workflow.js', 'text/javascript; charset=utf-8'],
+    '/workflow.css': ['workflow.css', 'text/css; charset=utf-8'],
     '/viewer.css': ['../vendor/viewer.css', 'text/css; charset=utf-8'],
     '/states-select.mjs': ['../vendor/states-select.mjs', 'text/javascript; charset=utf-8'],
 };
@@ -35,12 +39,12 @@ function sendJson(res, status, data) {
     res.end(JSON.stringify(data));
 }
 
-async function readJson(req) {
+async function readJson(req, limit = BODY_LIMIT) {
     let size = 0;
     const chunks = [];
     for await (const chunk of req) {
         size += chunk.length;
-        if (size > BODY_LIMIT) throw new Error('Request body is too large.');
+        if (size > limit) throw new Error('Request body is too large.');
         chunks.push(chunk);
     }
     if (!chunks.length) return {};
@@ -59,7 +63,7 @@ function tokenMatches(given, expected) {
  * `send(prompt)` puts a prompt into the agent chat; it resolves to false when there is no session (dev mode).
  * `checkoutWriter` (null for none) is the context writer outside the workspace; `quietMs`, `ceilingMs` and the clock `now` bound a sent step with no word from the session.
  */
-export async function createSpecServer({ root, workingDirectory = root, manual = false, bound = null, coordinatedSessions = [], saveCoordinatedSessions, discoverChildren, childPollMs = 0, specDirs, saveRoot, clearRoot, browseFolder = pickFolder, send = async () => false, log = () => {}, checkoutWriter, quietMs = QUIET_MS, ceilingMs = CEILING_MS, now = Date.now }) {
+export async function createSpecServer({ root, workingDirectory = root, manual = false, bound = null, coordinatedSessions = [], saveCoordinatedSessions, discoverChildren, childPollMs = 0, specDirs, saveRoot, clearRoot, browseFolder = pickFolder, send = async () => false, log = () => {}, checkoutWriter, quietMs = QUIET_MS, ceilingMs = CEILING_MS, now = Date.now, workflowCli, workflowGitHub, workflowRunStorage, workflowFetch }) {
     const canonical = directory => {
         try {
             return realpathSync(directory);
@@ -96,6 +100,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         host: null,
         origin: null,
         rootRevision: 0,
+        workflowRevision: 0,
         browsing: false,
     };
 
@@ -121,7 +126,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     }
 
     function snapshot() {
-        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, children: state.children, childNote: state.childNote, specs: state.snapshot.specs.map(present), selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root) };
+        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, children: state.children, childNote: state.childNote, specs: state.snapshot.specs.map(present), selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root), workflowRevision: state.workflowRevision, workflowAvailable: ['init-options.json', 'integration.json', 'extensions.yml'].some(file => workspaceEntry(state.root, `.specify/${file}`)?.stat.isFile()) };
     }
 
     /** The step's document as it is on disk right now, so a later look can tell whether the run touched it. */
@@ -178,7 +183,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         return state.snapshot;
     }
 
-    const idle = () => !state.runs.size && !state.pendingSpecify && !state.retries.size;
+    const idle = () => !state.runs.size && !state.pendingSpecify && !state.retries.size && !workflow.changing;
 
     function selectRoot(root) {
         const nextRoot = validateRepositoryRoot(root);
@@ -443,29 +448,34 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     }
 
     /**
-     * Watch one spec directory, whether or not it exists yet. The directory itself is watched recursively; each folder above it,
+     * Watch one directory, whether or not it exists yet. The directory itself is watched recursively; each folder above it,
      * up to the project root, is watched flat for the next folder on the way down appearing, disappearing or being replaced,
      * which re-arms everything below. Nothing else under the root is walked.
      */
-    function watchSpecDir(dir) {
+    function watchTree(dir, onChange, projectOnly = false) {
         const inside = relative(state.root, resolve(state.root, dir));
         const names = !inside || inside.startsWith('..') || isAbsolute(inside) ? [] : inside.split(sep);
         const base = names.length ? state.root : resolve(state.root, dir);
+        const revision = state.rootRevision;
         const held = [];
         const arm = (from) => {
-            if (state.closed) return;
+            if (state.closed || revision !== state.rootRevision) return;
             for (let depth = from; depth <= names.length; depth++) {
                 release(held[depth]);
                 held[depth] = null;
             }
             for (let depth = from; depth <= names.length; depth++) {
                 const path = join(base, ...names.slice(0, depth));
+                if (projectOnly && depth && !workspaceEntry(base, names.slice(0, depth).join('/'))?.stat.isDirectory()) return;
                 held[depth] = depth === names.length
-                    ? hold(path, { recursive: true }, scheduleRescan)
+                    ? hold(path, { recursive: true }, (_event, file) => {
+                        if (revision === state.rootRevision) onChange(file);
+                    })
                     : hold(path, {}, (_event, name) => {
                         if (name != null && String(name) !== names[depth]) return;
+                        if (state.closed || revision !== state.rootRevision) return;
                         arm(depth + 1);
-                        scheduleRescan();
+                        onChange();
                     });
                 if (!held[depth]) return;
             }
@@ -474,7 +484,15 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     }
 
     function startWatching() {
-        for (const dir of state.specDirs) watchSpecDir(dir);
+        for (const dir of state.specDirs) watchTree(dir, scheduleRescan);
+        const workflowChanged = () => {
+            state.workflowRevision++;
+            scheduleRescan();
+        };
+        watchTree('.specify', workflowChanged, true);
+        watchTree('.speckit-companion', file => {
+            if (file == null || ['workflow-policy.json', 'workflow-sources'].includes(String(file).split(/[\\/]/)[0])) workflowChanged();
+        }, true);
     }
 
     function requireSpec(query) {
@@ -500,7 +518,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         return { prompt, instructionsFile, sent };
     }
 
-    async function run(query, command) {
+    async function run(query, command, intent = '', artifact = '') {
         const spec = requireSpec(query);
         if (command === 'ask') return deliver(spec.id, command, buildAskPrompt(present(spec)));
         const set = commandSetFor(state.root, spec.workflow);
@@ -509,7 +527,8 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         const startedAt = new Date(now());
         const preamble = buildStepPreamble(command, spec.id, state.root, set, startedAt, writer());
         const file = preamble ? writeRunInstructions(state.root, stepInstructionsName(command, spec.id), runInstructionsDoc(line.split('\n')[0], preamble, spelling?.instructions)) : null;
-        const prompt = buildPrompt(command, spec.id, set, spelling, file);
+        const prompt = buildPrompt(command, spec.id, set, spelling, file) + (artifact ? `\n\nSelected input artifact: ${artifact}` : '') +
+            (intent ? `\n\nAdditional user intent:\n${intent}` : '');
         if (!STEP_COMMANDS.includes(command)) return deliver(spec.id, command, prompt, file);
         // The run is known before the send, so a turn that starts while the send is still in flight finds it.
         const earlier = state.runs.get(spec.id);
@@ -559,6 +578,70 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
 
     const install = () => deliver(null, 'install', buildInstallPrompt());
 
+    const workflow = createWorkflowActions({
+        context: () => ({ root: state.root, specs: state.snapshot.specs.map(present), specDirs: state.specDirs, revision: state.rootRevision,
+            busy: state.busy || state.runs.size > 0 || Boolean(state.pendingSpecify) || state.retries.size > 0 }),
+        now, cli: workflowCli, github: workflowGitHub, runStorage: workflowRunStorage, fetchSource: workflowFetch, changed: () => rescan(),
+        runPreview(node, command, { feature, artifact, intent, workflow }) {
+            const inputNote = artifact ? `\n\nSelected input artifact: ${artifact}` : '';
+            const proposalOnly = command.id === 'constitution' || node.kind === 'Extensions' && node.approval === 'confirm';
+            const draftPrompt = instruction => `Draft a proposal for ${command.name}. Read ${instruction} as reference only; do not invoke its command or follow its write steps.${feature ? `\nFeature: ${feature}` : ''}${intent ? `\nUser intent: ${intent}` : ''}${inputNote}\n\nShow the proposed changes without applying them. Do not write files, accept or archive records, or mutate external systems; any application requires a separate human review.`;
+            const paths = node.outputs.filter(path => path.startsWith('.specify/')).concat(feature ?
+                node.outputs.filter(path => /^[a-z][\w-]*\.md$/i.test(path)).map(path => `${feature}/${path}`) : []);
+            if (node.kind === 'Lifecycle') {
+                if (command.id === 'specify') {
+                    if (workflow && !['speckit', 'companion'].includes(workflow)) throw new Error('Choose a workflow with a review boundary.');
+                    const selected = workflow ?? (commandSet() === 'companion' ? 'companion' : 'speckit');
+                    const condition = selected === 'companion' ? 'extension:companion' : null;
+                    if (condition && !commandReady(condition)) throw new Error('Install or repair the Companion extension before choosing its workflow.');
+                    const built = buildSpecifyPrompt({ description: intent, workflow: selected, root: state.root, specDirs: state.specDirs, writer: writer(), now: new Date(now()) });
+                    return { invocation: `/${built.command} ${intent}`, title: command.name, paths,
+                        companionStep: selected === 'companion' ? command.id : null,
+                        instruction: resolveCommand(state.root, 'specify', selected).instructions, args: ['specify', intent, selected] };
+                }
+                const set = feature ? commandSetFor(state.root, requireSpec(feature).workflow) : 'speckit';
+                if (set === 'companion' && availableCommands(set).includes(command.id) && !commandReady('extension:companion')) {
+                    throw new Error('The selected feature needs a ready Companion extension. Repair it or select a stock Spec Kit feature.');
+                }
+                if (availableCommands(set).includes(command.id)) {
+                    const resolved = resolveCommand(state.root, command.id, set);
+                    return { invocation: `/${resolved.name} ${feature}`, title: command.name, paths, instruction: resolved.instructions,
+                        companionStep: set === 'companion' ? command.id : null,
+                        notes: intent ? [`Additional intent: ${intent}`] : [], args: ['step', feature, command.id, intent, artifact] };
+                }
+                if (!command.available) throw new Error('This command is not registered in the selected workspace.');
+                const invocation = `/${command.invocation}${feature ? ` ${feature}` : ''}${intent ? ` ${intent}` : ''}`;
+                if (proposalOnly && !command.file) throw new Error('No local instructions are available to draft this proposal.');
+                const prompt = proposalOnly ? draftPrompt(command.file) : (command.file ? `${invocation}\n\nUse the Spec Kit instructions at ${command.file}.` : invocation) + inputNote;
+                return { invocation: proposalOnly ? prompt : invocation, title: command.name, paths: proposalOnly ? [] : paths, instruction: command.file, args: ['prompt', feature, command.id, prompt],
+                    notes: proposalOnly ? ['Ask the agent to draft the proposed document without applying it.'] : [] };
+            }
+            const pathsToTry = [
+                ...['.github/skills', '.agents/skills', '.claude/skills'].map(dir => `${dir}/${command.id.replaceAll('.', '-')}/SKILL.md`),
+                `.github/prompts/${command.id}.prompt.md`, `.github/agents/${command.id}.agent.md`, command.file,
+            ];
+            const instruction = pathsToTry.find(path => workspaceEntry(state.root, path)?.stat.isFile());
+            if (!instruction) throw new Error('No registered invocation or local command body was found.');
+            const spelling = instruction.endsWith('/SKILL.md') ? instruction.split('/').at(-2) : command.id;
+            const invocation = `/${spelling}${feature ? ` ${feature}` : ''}${intent ? ` ${intent}` : ''}`;
+            const prompt = proposalOnly ? draftPrompt(instruction) :
+                `${invocation}\n\nUse the Spec Kit instructions at ${instruction}. This dispatch does not authorize external writes. Present any proposed external change for separate review.${inputNote}`;
+            return { invocation: proposalOnly ? prompt : invocation, title: command.name, paths: proposalOnly ? [] : paths, instruction, args: ['prompt', feature, command.id, prompt],
+                companionStep: !proposalOnly && node.key === 'companion' ? command.id.replace(/^speckit[.-]companion[.-]/, '') : null,
+                notes: proposalOnly ? ['Ask the agent to draft a proposal without applying it. Use the owning integration to review and authorize changes separately.'] : [] };
+        },
+        run: ({ args: [kind, ...args] }) => {
+            if (kind === 'specify') return specify(...args);
+            if (kind === 'step') return run(...args);
+            return deliver(...args);
+        },
+    });
+
+    function commandReady(id) {
+        const node = workflow.snapshot().nodes.find(item => item.id === id);
+        return node?.active && node.healthStatus !== 'blocked';
+    }
+
     function authorized(req, url) {
         if (req.headers.host !== state.host) return false;
         const origin = req.headers.origin;
@@ -573,6 +656,10 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         const { pathname } = url;
 
         if (req.method === 'GET' && pathname === '/api/snapshot') return sendJson(res, 200, snapshot());
+        if (req.method === 'GET' && pathname === '/api/workflow') return sendJson(res, 200, workflow.snapshot());
+        if (req.method === 'GET' && pathname === '/api/workflow/artifact') return sendJson(res, 200,
+            inspectWorkflowArtifact(state.root, workflow.snapshot(), url.searchParams.get('id'), url.searchParams.get('path')));
+        if (req.method === 'GET' && pathname === '/api/workflow/config') return sendJson(res, 200, workflow.inspectConfig(url.searchParams.get('id'), url.searchParams.get('path')));
 
         if (req.method === 'GET' && pathname === '/api/spec') {
             const spec = requireSpec(url.searchParams.get('id'));
@@ -594,7 +681,12 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         }
 
         if (req.method === 'POST') {
-            const body = await readJson(req);
+            const body = await readJson(req, pathname === '/api/workflow/preview' ? 64 * 1024 : BODY_LIMIT);
+            if (pathname === '/api/workflow/preview') return sendJson(res, 200, await workflow.preview(body));
+            if (pathname === '/api/workflow/composition') return sendJson(res, 200, await workflow.inspectComposition(body.id));
+            if (pathname === '/api/workflow/github-target') return sendJson(res, 200, await workflow.githubTarget(body));
+            if (pathname === '/api/workflow/apply') return sendJson(res, 200, await workflow.apply(body.id));
+            if (pathname === '/api/workflow/test-hook') return sendJson(res, 200, await workflow.testHook(body.id, body.fixture));
             if (pathname === '/api/root') {
                 const next = selectRoot(body.root);
                 return sendJson(res, 200, { root: next.root, count: next.specs.length });

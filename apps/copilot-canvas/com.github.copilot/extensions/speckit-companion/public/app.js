@@ -1,4 +1,5 @@
 import { selectState, setupStatesSelect } from '/states-select.mjs';
+import { setupWorkflow } from '/workflow.js';
 
 const params = new URLSearchParams(location.search);
 const token = params.get('token') ?? '';
@@ -655,6 +656,9 @@ function renderSpecifyChoices() {
 }
 
 function applySnapshot(snapshot) {
+    const openingSpec = !state.snapshot && snapshot.selected;
+    if (openingSpec) workflowView.show('specs');
+    workflowView.update(snapshot);
     if (state.snapshot && state.snapshot.root !== snapshot.root) {
         state.selected = null;
         state.detail = null;
@@ -669,6 +673,10 @@ function applySnapshot(snapshot) {
     state.snapshot = snapshot;
     if (same) return loadDetail();
     renderSpecifyChoices();
+    if (openingSpec) {
+        select(openingSpec, { pushView: true, fromServer: true });
+        return;
+    }
     if (state.selected && !snapshot.specs.some(s => s.id === state.selected)) state.selected = null;
     if (!state.selected && window.matchMedia('(min-width: 761px)').matches) {
         state.selected = snapshot.selected ?? snapshot.specs.find(s => !s.done)?.id ?? snapshot.specs[0]?.id ?? null;
@@ -690,7 +698,8 @@ function connect() {
     source.addEventListener('snapshot', (event) => applySnapshot(JSON.parse(event.data)));
     source.addEventListener('focus', (event) => {
         const { selected } = JSON.parse(event.data);
-        if (selected && selected !== state.selected) {
+        if (selected) {
+            workflowView.show('specs');
             if (state.filter !== 'all' && !visibleSpecs().some(s => s.id === selected)) setFilter('all');
             select(selected, { pushView: true, fromServer: true });
             els.list.querySelector(`[data-id="${CSS.escape(selected)}"]`)?.scrollIntoView({ block: 'nearest' });
@@ -801,4 +810,9 @@ els.newSpec.addEventListener('submit', async (event) => {
 });
 
 setupStatesSelect();
+const workflowView = setupWorkflow({ el, api, reportSend, openFeature(id) {
+    workflowView.show('specs');
+    setFilter('all');
+    select(id, { pushView: true });
+} });
 connect();

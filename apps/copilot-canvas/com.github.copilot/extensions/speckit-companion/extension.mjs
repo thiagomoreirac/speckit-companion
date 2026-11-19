@@ -2,6 +2,7 @@
 // Wiring only: the board logic lives in server.mjs and specs-core.mjs, which run without the SDK.
 
 import { joinSession, createCanvas, CanvasError } from '@github/copilot-sdk/extension';
+import { join } from 'node:path';
 import { createSpecServer } from './server.mjs';
 import { CANVAS_DESCRIPTION, SPEC_COMMANDS, SYSTEM_RULE, openStatus } from './prompts.mjs';
 import { rootSelection, validateRepositoryRoot, validateRoot } from './workspace.mjs';
@@ -268,6 +269,7 @@ const session = await joinSession({
                         saveCoordinatedSessions: (sessions, root, source) => selection.writeSessions(sessions, root, source),
                         saveRoot: (root, source) => selection.write(root, source),
                         clearRoot: () => selection.clear(),
+                        workflowRunStorage: session.workspacePath && join(session.workspacePath, 'files', 'speckit-companion', 'review-runs'),
                         discoverChildren,
                         childPollMs: 15000,
                         send: async (prompt) => {

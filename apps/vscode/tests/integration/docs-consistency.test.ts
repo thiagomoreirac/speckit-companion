@@ -18,7 +18,7 @@ import * as path from 'path';
 import { markHighlights } from '../../../website/src/components/changelog/parseChangelog';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
-const read = (rel: string) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+const read = (rel: string) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const exists = (rel: string) => fs.existsSync(path.join(REPO_ROOT, rel));
 
 describe('docs consistency', () => {

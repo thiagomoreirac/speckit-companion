@@ -4,6 +4,10 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 
 ## [Unreleased]
 
+### Added
+
+- **Explore the Spec Kit workflow.** Inspect integrations, validate hooks, and preview changes or agent commands from the graph or its text view.
+
 ### Fixed
 
 - **Choose coordinated sessions from a list.** The coordinating agent maintains the session options and updates the selected worktree. <!-- area: copilot-app -->

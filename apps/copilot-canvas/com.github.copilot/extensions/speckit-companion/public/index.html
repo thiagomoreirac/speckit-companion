@@ -6,6 +6,7 @@
     <title>SpecKit Companion</title>
     <link rel="stylesheet" href="/viewer.css">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/workflow.css">
     <script type="module" src="/app.js"></script>
 </head>
 <body class="sk-viewer">
@@ -22,6 +23,13 @@
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71M13.25 2.25v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
     </header>
+
+    <nav class="workflow-nav" aria-label="Companion views">
+        <button type="button" class="btn btn-quiet" id="workflow-tab" aria-controls="workflow-view" aria-pressed="false">Workflow</button>
+        <button type="button" class="btn btn-quiet" id="management-tab" aria-controls="workflow-view" aria-pressed="false">Spec Kit Management</button>
+        <button type="button" class="btn btn-quiet" id="specs-tab" aria-controls="layout" aria-pressed="true">Specs &amp; runs</button>
+        <button type="button" class="btn btn-quiet" id="workflow-repository" aria-controls="repository-form" aria-expanded="false" hidden>Repository</button>
+    </nav>
 
     <form class="new-spec" id="repository-form">
         <label for="coordinated-session">Coordinated session</label>
@@ -51,6 +59,55 @@
             <button class="btn btn-primary" type="submit">Specify</button>
         </div>
     </form>
+
+    <!-- A lifecycle map and one shared inspector; proposals stay visually distinct from runtime evidence. -->
+    <main class="workflow" id="workflow-view" hidden>
+        <div class="workflow-heading">
+            <div><h2 id="workflow-title">Spec Kit lifecycle</h2><p id="workflow-runtime"></p></div>
+            <div class="workflow-heading-actions">
+                <button type="button" class="btn" id="workflow-refresh">Validate workflow</button>
+                <button type="button" class="btn btn-primary" id="workflow-new-spec" disabled>New spec…</button>
+            </div>
+        </div>
+        <p id="workflow-validation" class="workflow-notice"></p>
+        <p id="workflow-notice" class="workflow-notice" role="status"></p>
+        <div class="workflow-body">
+            <section class="workflow-map" aria-label="Workflow and inventory">
+                <div class="workflow-tools">
+                    <label class="sr-only" for="workflow-search">Filter participants</label>
+                    <input id="workflow-search" class="search" type="search" placeholder="Filter participants">
+                    <label class="sr-only" for="workflow-filter">Filter by category</label>
+                    <select id="workflow-filter" class="search"></select>
+                    <label class="workflow-focus"><input id="workflow-path" type="checkbox"> Focus dependency path</label>
+                    <button class="btn" id="workflow-text-toggle" type="button" aria-pressed="false">Text view</button>
+                </div>
+                <div class="workflow-toolbar" id="workflow-graph-tools">
+                    <div class="workflow-legend" aria-label="Validation legend">
+                        <span data-health="valid">Valid</span><span data-health="advisory">Advisory</span><span data-health="confirm">Needs confirmation</span><span data-health="blocked">Blocked</span>
+                    </div>
+                    <div class="workflow-zoom">
+                        <button class="btn" type="button" id="workflow-zoom-out" aria-label="Zoom out">−</button>
+                        <button class="btn" type="button" id="workflow-zoom-in" aria-label="Zoom in">+</button>
+                        <button class="btn" type="button" id="workflow-fit">Fit view</button>
+                    </div>
+                </div>
+                <div class="workflow-viewport" id="workflow-viewport" tabindex="0" aria-label="Workflow graph. Drag to pan, or use arrow keys. Use Text view for a list.">
+                    <svg xmlns="http://www.w3.org/2000/svg" id="workflow-svg" aria-labelledby="workflow-svg-title">
+                        <title id="workflow-svg-title">Spec Kit lifecycle and integration map</title>
+                    </svg>
+                </div>
+                <div class="workflow-inventory" id="workflow-inventory" hidden></div>
+            </section>
+            <aside class="workflow-inspector" id="workflow-inspector" aria-label="Workflow inspector" tabindex="-1"></aside>
+        </div>
+        <dialog class="workflow-dialog" id="workflow-dialog" aria-labelledby="workflow-dialog-title">
+            <div class="workflow-dialog-inner">
+                <h2 id="workflow-dialog-title"></h2>
+                <p id="workflow-dialog-error" role="alert"></p>
+                <div id="workflow-dialog-body"></div>
+            </div>
+        </dialog>
+    </main>
 
     <div class="layout" id="layout" data-view="board">
         <aside class="board" aria-label="Specs">
