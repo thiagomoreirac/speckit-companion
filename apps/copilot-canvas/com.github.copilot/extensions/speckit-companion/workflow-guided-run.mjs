@@ -11,16 +11,22 @@ const invalid = (message, status = 400) => Object.assign(new Error(message), { s
 const inProgress = new Set(['review', 'write']);
 const statuses = new Set([...inProgress, 'aborted', 'completed', 'uncertain']);
 const hex = /^[a-f0-9]{64}$/;
-const maxPairs = 6;
+const maxGates = 6;
 
 export function guidedReview(definition, key) {
     const steps = definition?.steps;
-    if (!Array.isArray(steps) || !steps.length || steps.length % 2 || steps.length > 2 * maxPairs) return null;
-    const gates = reviewGates({ ...definition, steps: steps.filter((_, index) => index % 2 === 0) }, key);
-    if (!gates || gates.some(gate => gate.rejection !== 'abort')) return null;
-    const ids = new Set(gates.map(gate => gate.id)), targets = new Set(), pairs = [];
-    for (const [index, gate] of gates.entries()) {
-        const write = steps[index * 2 + 1];
+    if (!Array.isArray(steps) || !steps.length || steps.length > 2 * maxGates || steps[0]?.type !== 'gate') return null;
+    const gates = reviewGates({ ...definition, steps: steps.filter(step => step?.type === 'gate') }, key);
+    if (!gates || gates.length > maxGates || gates.some(gate => gate.rejection !== 'abort')) return null;
+    const ids = new Set(gates.map(gate => gate.id)), targets = new Set(), checkpoints = [];
+    for (let index = 0, gateIndex = 0; index < steps.length; index++) {
+        if (steps[index]?.type !== 'gate') return null;
+        const gate = gates[gateIndex++];
+        if (index + 1 === steps.length || steps[index + 1]?.type === 'gate') {
+            checkpoints.push({ gate });
+            continue;
+        }
+        const write = steps[++index];
         if (!write || typeof write.id !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(write.id) ||
             write.continue_on_error !== undefined || ids.has(write.id)) return null;
         const change = issueLabelStep(write);
@@ -29,15 +35,15 @@ export function guidedReview(definition, key) {
         if (targets.has(target)) return null;
         targets.add(target);
         ids.add(write.id);
-        pairs.push({ gate, write: write.id, change });
+        checkpoints.push({ gate, write: write.id, change });
     }
-    return pairs;
+    return targets.size ? checkpoints : null;
 }
 
 export function canGuide(graph, node) {
     if (!node?.active || !node.guidedReview || node.health || node.hasProjectOverlay ||
         ['paused', 'running'].includes(node.lastRunStatus)) return false;
-    const guarded = new Set(node.guidedReview.map(pair => `${node.id}:${pair.write}`));
+    const guarded = new Set(node.guidedReview.filter(checkpoint => checkpoint.write).map(checkpoint => `${node.id}:${checkpoint.write}`));
     const findings = graph.findings.filter(item => item.code !== 'blocked-prerequisite' &&
         !(item.code === 'unapproved-external-step' && item.nodeIds[0] === node.id && guarded.has(item.nodeIds[1])));
     return !validateGraph(graph.nodes, graph.edges, findings, graph.decisions).some(item => item.severity === 'blocked' &&
@@ -64,7 +70,7 @@ export function createGuidedRuns(storage, now) {
         if (typeof record?.id !== 'string' || !/^[a-f0-9-]{36}$/.test(record.id) || !statuses.has(record.status) ||
             typeof record.definition !== 'string' || !hex.test(record.definition) || !Number.isFinite(Date.parse(record.updated)) ||
             !(record.evidence === null || typeof record.evidence === 'string' && hex.test(record.evidence)) ||
-            (record.cursor !== undefined && (!Number.isSafeInteger(record.cursor) || record.cursor < 0 || record.cursor >= maxPairs))) {
+            (record.cursor !== undefined && (!Number.isSafeInteger(record.cursor) || record.cursor < 0 || record.cursor >= maxGates))) {
             throw invalid('The guided run checkpoint has an invalid record shape.');
         }
         return { raw, record };
@@ -96,7 +102,7 @@ export function createGuidedRuns(storage, now) {
             if (start ? record && (inProgress.has(record.status) || record.status === 'uncertain') :
                 !record || request.runId !== record.id ||
                 (stop ? !inProgress.has(record.status) : !pair || record.definition !== node.guidedDefinitionStamp ||
-                    record.status !== (gate ? 'review' : 'write'))) {
+                    record.status !== (gate ? 'review' : 'write') || (!gate && !pair.write))) {
                 throw invalid('The guided checkpoint is not eligible for this action. Reload the inspector.', 409);
             }
             return {
@@ -135,10 +141,10 @@ export function createGuidedRuns(storage, now) {
                             await save('uncertain');
                             verify?.();
                             if (!(await write())?.externalApplied) throw invalid('GitHub did not confirm the change. Inspect the issue; this run will not retry.', 502);
-                            if (status === 'review') {
-                                next.cursor = cursor + 1;
-                                next.evidence = null;
-                            }
+                        }
+                        if (!start && status === 'review') {
+                            next.cursor = cursor + 1;
+                            next.evidence = null;
                         }
                         await save(status);
                         return { guidedOutcome: status, ...(write ? { externalApplied: true } : {}) };

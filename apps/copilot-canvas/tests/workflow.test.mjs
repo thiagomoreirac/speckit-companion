@@ -1180,15 +1180,19 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
     });
 
-    it('requires a new verdict and confirmation for the next pair of a guided run', async t => {
+    it('keeps standalone and write-linked guided gates separately confirmed across a resumed run', async t => {
         const f = fixture(t);
         f.install('ghp');
         const definition = guidedDefinition();
+        definition.inputs.intent_verdict = { type: 'string' };
         definition.inputs.final_verdict = { type: 'string' };
+        definition.inputs.evidence_verdict = { type: 'string' };
         definition.steps.push(
             { ...definition.steps[0], id: 'final-review', verdict_input: 'final_verdict', message: 'Inspect the final release.' },
             { ...definition.steps[1], id: 'attach-final-label', number: 13, label: 'released' },
+            { ...definition.steps[0], id: 'verify-evidence', verdict_input: 'evidence_verdict', message: 'Verify the release evidence.' },
         );
+        definition.steps.unshift({ ...definition.steps[0], id: 'review-intent', verdict_input: 'intent_verdict', message: 'Review the release intent.' });
         f.put('.specify/workflows/guided/workflow.yml', definition);
         f.put('.specify/workflows/workflow-registry.json', { workflows: { guided: { enabled: true } } });
         const writes = [];
@@ -1210,9 +1214,14 @@ describe('workflow previews and confirmed changes', () => {
         const preview = (operation, data, status) => api('/workflow/preview', { operation, id, ...data }, status);
         const confirm = proposal => api('/workflow/apply', { id: proposal.id });
         const runId = node((await confirm(await preview('guided-start'))).graph).guidedRun.id;
+        const intent = await confirm(await preview('guided-verdict', { runId, verdict: 'approve' }));
+        assert.equal(intent.guidedOutcome, 'review');
+        assert.equal(node(intent.graph).guidedRun.step, 'review');
+        assert.deepEqual(writes, []);
+        await preview('guided-label', { runId, writer }, 409);
         await confirm(await preview('guided-verdict', { runId, verdict: 'approve' }));
         const first = await preview('guided-label', { runId, writer });
-        assert.deepEqual(first.guidedChange.steps, ['review', 'attach-label', 'final-review', 'attach-final-label']);
+        assert.deepEqual(first.guidedChange.steps, ['review-intent', 'review', 'attach-label', 'final-review', 'attach-final-label', 'verify-evidence']);
         const advanced = await confirm(first);
         assert.equal(advanced.guidedOutcome, 'review');
         assert.equal(node(advanced.graph).guidedRun.step, 'final-review');
@@ -1224,8 +1233,13 @@ describe('workflow previews and confirmed changes', () => {
         assert.deepEqual(writes, [{ issue: 'issue-12', label: 'shipped' }]);
         const second = await preview('guided-label', { runId, writer });
         assert.equal(second.externalChange.after, 'released');
-        const completed = await confirm(second);
-        assert.equal(completed.guidedOutcome, 'completed');
+        const finalReview = await confirm(second);
+        assert.equal(finalReview.guidedOutcome, 'review');
+        assert.equal(node(finalReview.graph).guidedRun.step, 'verify-evidence');
+        await preview('guided-label', { runId, writer }, 409);
+        const final = await preview('guided-verdict', { runId, verdict: 'approve' });
+        assert.equal(final.reviewChange.message, 'Verify the release evidence.');
+        assert.equal((await confirm(final)).guidedOutcome, 'completed');
         assert.deepEqual(writes, [{ issue: 'issue-12', label: 'shipped' }, { issue: 'issue-13', label: 'released' }]);
     });
 

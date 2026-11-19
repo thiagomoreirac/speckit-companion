@@ -529,7 +529,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         if (node.kind === 'Workflows' && node.active) {
             if (node.hasProjectOverlay && !node.reviewOverlay) inspector.append(paragraph('An enabled project overlay changes this workflow. Only the supported literal review override can be included in an isolated run.'));
             else if (node.canRunGuided) {
-                inspector.append(paragraph('Each gate verdict is followed by a separate confirmation for that issue label. The canvas does not start a Spec Kit CLI run.'));
+                inspector.append(paragraph('Decide each gate in order. When a label follows, confirm that GitHub change separately. The canvas does not start a Spec Kit CLI run.'));
                 if (node.guidedRun?.matched && node.guidedRun.status === 'write' && !githubWriters.length) {
                     inspector.append(paragraph('Enable one eligible GitHub integration to preview the issue label.'));
                 }

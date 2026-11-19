@@ -508,7 +508,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             const verdict = operation === 'guided-verdict';
             const label = operation === 'guided-label';
             if (node?.kind !== 'Workflows' || (!stop && !canGuide(before, node))) {
-                throw invalid('Select an enabled workflow with literal gate and issue-label pairs, without overlays or other blockers.');
+                throw invalid('Select an enabled workflow with literal gates and an issue label immediately after a gate, without overlays or other blockers.');
             }
             if (verdict && !['approve', 'reject'].includes(request.verdict)) throw invalid('Choose approve or reject.');
             const prepared = guidedRuns.prepare(root, node, request);
@@ -518,7 +518,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 throw invalid('The installed definition changed. Open a new preview.', 409);
             }
             const status = stop || (verdict && request.verdict === 'reject') ? 'aborted' :
-                start || label && prepared.hasNext ? 'review' : verdict ? 'write' : 'completed';
+                verdict && change ? 'write' : start || prepared.hasNext ? 'review' : 'completed';
             affected = [node];
             readPaths = [node.source];
             const evidence = !stop && gate.artifact ? readGateArtifact(root, before, gate.artifact) : null;
@@ -533,7 +533,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 externalChange = external.change;
             }
             sourceStamp = [prepared.stamp, evidence?.digest, external?.stamp];
-            guidedChange = { status, steps: node.guidedReview?.flatMap(pair => [pair.gate.id, pair.write]) ?? [], runId: request.runId };
+            guidedChange = { status, steps: node.guidedReview?.flatMap(pair => pair.write ? [pair.gate.id, pair.write] : [pair.gate.id]) ?? [], runId: request.runId };
             if (verdict) reviewChange = { gate: gate.id, message: gate.message, verdict: request.verdict, rejection: 'abort',
                 runId: request.runId, artifact: evidence };
             title = start ? `Start guided run: ${node.name}` : stop ? `End guided run: ${node.name}` :
