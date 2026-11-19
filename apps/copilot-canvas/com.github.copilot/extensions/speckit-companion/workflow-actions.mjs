@@ -345,10 +345,14 @@ function projectHooks(hooks, extension, action, declared = []) {
     for (const row of declared) (hooks.hooks[row.event] ??= []).push({ extension, command: row.command, enabled: true, optional: row.optional, priority: row.priority });
 }
 
+function commandDispatchHold(graph) {
+    return graph.findings.find(finding =>
+        ['native-event-suppression-pending', 'native-event-settings-unverified'].includes(finding.code))?.message ?? null;
+}
+
 function stageRun({ node, request, specs, before, runPreview }) {
-    const pendingNative = before.findings.find(finding =>
-        ['native-event-suppression-pending', 'native-event-settings-unverified'].includes(finding.code));
-    if (pendingNative) throw invalid(pendingNative.message, 409);
+    const hold = commandDispatchHold(before);
+    if (hold) throw invalid(hold, 409);
     const cmd = node?.commands.find(item => item.id === request.command);
     if (!node?.active || !cmd || node.healthStatus === 'blocked') throw invalid('Select a ready command in the inspector.');
     if (node.effect === 'external-write') throw invalid('Do not dispatch an external writer to the agent. Use “Review GitHub change” for supported GitHub operations.');
@@ -394,6 +398,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
     const snapshot = () => {
         const { root, specs, specDirs } = context();
         const { graph } = readWorkflow(root, specs, specDirs);
+        graph.commandDispatchHold = commandDispatchHold(graph);
         for (const node of graph.nodes.filter(item => item.kind === 'Workflows')) {
             node.canRunReview = Boolean(runStorage && node.active && node.reviewGates && (!node.hasProjectOverlay || node.reviewOverlay) && node.healthStatus !== 'blocked');
             node.isolatedRun = reviewRuns.observe(root, node);

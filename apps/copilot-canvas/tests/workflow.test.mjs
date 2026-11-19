@@ -2488,6 +2488,12 @@ describe('workflow in the browser', () => {
         await page.getByRole('button', { name: 'Graph view' }).click();
         assert.ok(await graph.isVisible());
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        f.put(NATIVE_HOOK_PATH, { integrations: { copilot: { events: {} } } });
+        f.put('.github/hooks/speckit.json', { version: 1, hooks: { sessionStart: [{ __speckit_event__: true }] } });
+        await page.getByRole('button', { name: 'Validate workflow' }).click();
+        await page.getByRole('status').filter({ hasText: 'Command dispatch from Workflow is blocked' }).waitFor();
+        assert.ok(await page.getByRole('button', { name: 'New spec…' }).isDisabled());
+        assert.ok(await inspector.getByRole('button', { name: 'Preview Create plan…' }).isDisabled());
         assert.deepEqual(errors, []);
     });
 });

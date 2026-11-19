@@ -170,9 +170,12 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         const runtime = graph.runtime.version ? `Spec Kit ${graph.runtime.version} recorded in this repository` : 'Spec Kit version not recorded';
         const issues = graph.findings.filter(item => item.severity === 'blocked').length;
         $('workflow-runtime').textContent = `${runtime}${graph.runtime.integration ? ` · ${graph.runtime.integration} integration` : ''}.`;
-        $('workflow-validation').textContent = `${issues ? `${issues} blocking ${issues === 1 ? 'finding' : 'findings'}` : 'No structural blockers found'}. Validity does not approve an agent proposal.`;
+        const validation = $('workflow-validation');
+        const message = `${issues ? `${issues} blocking ${issues === 1 ? 'finding' : 'findings'}` : 'No structural blockers found'}. ` +
+            (graph.commandDispatchHold ?? 'Validity does not approve an agent proposal.');
+        if (validation.textContent !== message) validation.textContent = message;
         $('workflow-new-spec').hidden = view !== 'workflow';
-        $('workflow-new-spec').disabled = !nodeById('stage:specify')?.commands.length;
+        $('workflow-new-spec').disabled = Boolean(graph.commandDispatchHold) || !nodeById('stage:specify')?.commands.length;
         const textual = view === 'management' || state.text;
         $('workflow-text-toggle').hidden = view === 'management';
         $('workflow-text-toggle').setAttribute('aria-pressed', String(state.text));
@@ -417,7 +420,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 (item.nodeIds.includes(workflowOwner.id) || item.nodeIds.includes(node.id)));
         const commands = node.commands.map(command => el('li', {},
             ['Lifecycle', 'Extensions'].includes(node.kind) ? button(`Preview ${command.name}…`, () => runForm(node, command),
-                { disabled: !node.active || node.healthStatus === 'blocked' || ['unknown', 'external-write'].includes(node.effect) }) : command.name,
+                { disabled: Boolean(state.graph.commandDispatchHold) || !node.active || node.healthStatus === 'blocked' || ['unknown', 'external-write'].includes(node.effect) }) : command.name,
             el('div', {}, el('code', { text: command.invocation ?? command.id })), command.aliases?.length ? `Aliases: ${command.aliases.join(', ')}` : null));
         const selectedPhase = state.graph.phases.find(([key]) => key === node.phase)?.[1];
         const decisions = state.graph.decisions.filter(decision => [decision.primary, decision.secondary].includes(node.key));
@@ -434,6 +437,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 ['Catalog trust', node.installAllowed == null ? null : node.installAllowed ? 'Installation permitted by Spec Kit' : 'Discovery only']]),
             ...(node.note ? [paragraph(node.note)] : []),
             ...(!node.active && node.state === 'proposed' ? [paragraph('Proposed role only. Install a reviewed compatible package to discover its real commands and hooks.')] : []),
+            ...(node.kind === 'Workflows' && node.active && !node.canRunReview && !node.canRunGuided && node.healthStatus !== 'blocked' ?
+                [paragraph('This workflow cannot run from this canvas. Inspect the composed steps, or use individual canvas actions to review and run supported changes.')] : []),
             ...(node.effect === 'external-write' ? [paragraph('Automatic external writes are blocked. Supported GitHub changes require a separate confirmation for the exact target and field.')] : []),
             ...(findings.length ? [findingGroup(findings)] : []),
             ...(node.artifacts.length ? [heading('Artifacts & provenance'),
