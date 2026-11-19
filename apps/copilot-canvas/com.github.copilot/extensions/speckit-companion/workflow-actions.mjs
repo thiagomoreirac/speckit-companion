@@ -12,7 +12,7 @@ import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
 import { canGuide, createGuidedRuns } from './workflow-guided-run.mjs';
 import { planEmbeddedHookEdit } from './workflow-embedded-hooks.mjs';
-import { fetchPinnedWorkflow, parsePinnedWorkflow, reviewedWorkflowSources, sourceFile } from './workflow-remote.mjs';
+import { bundleReceiptFile, fetchPinnedYaml, parsePinnedYaml, reviewedWorkflowSources, sourceFile } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, changeRoadmapStatus } from './workflow-roadmap.mjs';
 import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeName } from './workflow-wireframe.mjs';
 import { stageAdrAcceptance } from './workflow-adr.mjs';
@@ -235,12 +235,12 @@ export async function callSpecKit(root, args, probe = false, { workflowOutcome =
     }
 }
 
-async function stageBundleRecord(root, graph, request, base, cli) {
-    const sourcePath = str(request.source, 'the repository-relative path to bundle.yml', 300);
+async function stageBundleRecord(root, graph, request, base, cli, reviewedAt, remote) {
+    const sourcePath = remote ? 'bundle.yml' : str(request.source, 'the repository-relative path to bundle.yml', 300);
     if (sourcePath.split('/').at(-1) !== 'bundle.yml') throw invalid('Choose a local bundle.yml file.');
-    const raw = file(root, sourcePath);
+    const raw = remote?.text ?? file(root, sourcePath);
     if (raw == null) throw invalid('Choose an accessible bundle.yml from this repository.');
-    const manifest = load(raw, { schema: JSON_SCHEMA });
+    const manifest = remote ? parsePinnedYaml(raw) : load(raw, { schema: JSON_SCHEMA });
     const { id, version } = manifest?.bundle ?? {};
     if (!safeId(id) || typeof version !== 'string' || (request.id && request.id !== `bundle:${id}`)) throw invalid('The manifest must declare the selected bundle’s ID and version.');
     const original = base == null ? { schema_version: '1.0', bundles: [] } : JSON.parse(base);
@@ -256,13 +256,15 @@ async function stageBundleRecord(root, graph, request, base, cli) {
         const contents = file(root, path);
         if (contents != null) inputs.set(path, contents);
     }
-    const components = [];
+    const components = [], pins = new Map();
     for (const [kind, type] of Object.entries(BUNDLE_TYPES)) {
         const entries = manifest.provides[kind] ?? [];
         if (!Array.isArray(entries)) throw invalid(`Bundle ${kind} must be a list.`);
         const [, dir, registry, , filename] = Object.values(PACKAGES).find(entry => entry[3] === kind);
         for (const ref of entries) {
-            if (!safeId(ref?.id) || typeof ref.version !== 'string' || ref.source) throw invalid('Pin every component to its installed version without a catalog source.');
+            const pin = `${kind}:${ref?.id}`;
+            if (!safeId(ref?.id) || typeof ref.version !== 'string' || ref.source || pins.has(pin)) throw invalid('Pin every component once to its installed version without a catalog source.');
+            pins.set(pin, ref.version);
             const node = graph.nodes.find(item => item.id === `${type}:${ref.id}`);
             if (!node?.active || node.healthStatus === 'blocked' || node.version !== ref.version || original.bundles.some(record =>
                 rows(record.contributed_components).some(component => component.kind === kind && component.id === ref.id))) {
@@ -287,13 +289,16 @@ async function stageBundleRecord(root, graph, request, base, cli) {
         const next = JSON.parse(generated);
         const record = next.bundles?.find(item => item.bundle_id === id);
         if (record?.version !== version || !Array.isArray(record.contributed_components) || record.contributed_components.length ||
-            !Array.isArray(record.required_components) || record.required_components.length !== components.length ||
+            rows(record?.bundle_references).length || !Array.isArray(record.required_components) || record.required_components.length !== pins.size ||
+            !isDeepStrictEqual(new Map(record.required_components.map(item => [`${item.kind}:${item.id}`, item.version])), pins) ||
             !isDeepStrictEqual(next.bundles.filter(item => item.bundle_id !== id), original.bundles.filter(item => item.bundle_id !== id))) {
             throw invalid('The runtime planned package or unrelated record changes. Register each component separately before registering this bundle.');
         }
-        const { installed_at, ...recordStamp } = record;
-        return { sourcePath, raw, next, generated, id, version, components, args, output, recordStamp };
-    } finally { rmSync(staged, { recursive: true, force: true }); }
+        const reviewedTime = new Date(reviewedAt).toISOString().replace(/\.\d{3}Z$/, 'Z');
+        next.updated_at = reviewedTime;
+        record.installed_at = current?.installed_at ?? reviewedTime;
+        return { sourcePath, raw, next, generated: json(next), id, version, components, args, output };
+    } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
 }
 
 function projectHooks(hooks, extension, action, declared = []) {
@@ -808,18 +813,32 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 throw invalid('Select an initialized project with valid bundle records.');
             }
             const base = file(root, BUNDLE_RECORDS);
-            const staged = await stageBundleRecord(root, before, request, base, cli);
-            sourcePath = staged.sourcePath;
-            sourceStamp = [staged.raw, staged.recordStamp];
-            paths = [BUNDLE_RECORDS];
+            if (request.remoteUrl !== undefined && (request.source !== undefined || typeof request.remoteUrl !== 'string' ||
+                !request.remoteUrl.endsWith('/bundle.yml'))) {
+                throw invalid('Select one source: a local bundle.yml or a pinned raw GitHub bundle.yml URL.');
+            }
+            const remote = request.remoteUrl === undefined ? null : await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource, 'bundle');
+            const staged = await stageBundleRecord(root, before, request, base, cli, reviewedAt, remote);
+            sourcePath = remote?.url ?? staged.sourcePath;
+            const receiptPath = remote ? bundleReceiptFile(staged.id, remote.hash) : null;
+            const receipt = remote ? json({ id: staged.id, version: staged.version, url: remote.url, sha256: remote.hash, manifest: remote.text }) : null;
+            if (receiptPath && file(root, receiptPath) !== null && file(root, receiptPath) !== receipt) {
+                throw invalid('The existing pinned bundle receipt does not match the reviewed manifest.', 409);
+            }
+            sourceStamp = [staged.raw, staged.generated, remote?.hash];
+            paths = [BUNDLE_RECORDS, ...(receiptPath ? [receiptPath] : [])];
             readPaths = [sourcePath, ...staged.components.map(item => item.source)];
+            documentChange = { path: BUNDLE_RECORDS, before: base, after: staged.generated };
+            if (remote) packageDefinition = { path: receiptPath, before: null, after: remote.text, url: remote.url, sha256: remote.hash };
             overrides.set(BUNDLE_RECORDS, staged.next);
             title = `${operation === 'bundle-update-record' ? 'Refresh' : 'Register'} ${staged.id} ${staged.version}`;
             invocation = ['specify', ...staged.args].map(word => word.includes(' ') ? JSON.stringify(word) : word).join(' ');
-            notes = ['Spec Kit prepared the bundle record offline in a temporary project. Only the record changes on confirmation; reviewed, preinstalled packages are not replaced.'];
+            notes = ['Spec Kit prepared the bundle record offline in a temporary project. No packages will be installed, replaced, or removed.',
+                ...(remote ? ['Confirmation retains the reviewed manifest and provenance in a separate receipt before saving the bundle record. This does not trust or change any catalog.'] : [])];
             execute = () => {
-                if (file(root, sourcePath) !== staged.raw) throw invalid('The bundle manifest changed. Review a new preview.', 409);
-                writeConfig(root, BUNDLE_RECORDS, staged.generated, base);
+                if (!remote && file(root, sourcePath) !== staged.raw) throw invalid('The bundle manifest changed. Review a new preview.', 409);
+                if (receiptPath) retainWorkflowSource(root, receiptPath, receipt);
+                writeConfig(root, BUNDLE_RECORDS, staged.generated, base, { exclusiveCreate: true });
                 return { output: staged.output.slice(0, 6000) };
             };
         } else if (operation === 'bundle-remove-record') {
@@ -1072,7 +1091,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 const replacement = operation === 'update' && group === 'preset' ? new Map() : null;
                 if (remoteSource) {
                     if (!workspaceEntry(root, '.specify')?.stat.isDirectory()) throw invalid('Initialize Spec Kit before registering a pinned workflow.');
-                    remote = await fetchPinnedWorkflow(request.remoteUrl, request.sha256, fetchSource);
+                    remote = await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource);
                     sourcePath = sourceFile(key, remote.hash);
                 } else {
                     sourcePath = str(request.source, 'a reviewed repository-relative source directory', 300);
@@ -1088,7 +1107,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                     ...(remote ? { url: remote.url, sha256: digest } : {}) };
                 sourceStamp = [digest, createHash('sha256').update(JSON.stringify(packageDefinition)).digest('hex')];
                 readPaths = [remote?.url ?? `${sourcePath}/${filename}`];
-                const manifest = remote ? parsePinnedWorkflow(raw) : load(raw, { schema: JSON_SCHEMA });
+                const manifest = remote ? parsePinnedYaml(raw) : load(raw, { schema: JSON_SCHEMA });
                 const meta = manifest?.[group];
                 if ((group === 'step' ? meta?.type_key : meta?.id) !== key || typeof meta?.version !== 'string') {
                     throw invalid(`The source must declare ${group} ${key} and its version.`);

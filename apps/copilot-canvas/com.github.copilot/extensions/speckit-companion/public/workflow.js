@@ -222,7 +222,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                ? actions(button('Register local package…', () => packageForm(null, 'install', state.management)),
                    state.management === 'Workflows' ? button('Register pinned GitHub workflow…', () => remoteWorkflowForm()) : null) : null,
             management && state.management === 'Catalogs' ? actions(button('Register discovery catalog…', () => catalogForm())) : null,
-            management && state.management === 'Bundles' ? actions(button('Register local bundle…', () => bundleForm())) : null,
+            management && state.management === 'Bundles' ? actions(button('Register local bundle…', () => bundleForm()),
+                button('Register pinned GitHub bundle…', () => bundleForm(null, true))) : null,
             management && state.management === 'Hooks' && !state.graph.runtime.nativeEventOverrideSupported
                 ? paragraph('Suppressing all native events from the canvas requires a recorded Spec Kit 1.4.1 Copilot or Claude integration. Lifecycle hook controls are separate.') : null,
             management && state.management === 'Versions and sources' ? actions(button('Record ownership decision…', () => ownershipForm())) : null,
@@ -495,6 +496,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 }) : null,
                 node.kind === 'Bundles' && node.canRemoveRecord ? button('Remove bundle record…', () => direct('bundle-remove-record', node.id)) : null,
                 node.kind === 'Bundles' && node.canRefreshRecord ? button('Refresh from local bundle…', () => bundleForm(node)) : null,
+                node.kind === 'Bundles' && node.canRefreshRecord ? button('Refresh from pinned GitHub bundle…', () => bundleForm(node, true)) : null,
                 ...(node.configs ?? []).map(config => button(`Configure ${config.name}…`, () => configure(node, config))),
                 node.templateOverride ? button('Edit project template override…', () => templateForm(node)) : null,
                 node.editableConstitution ? button('Edit constitution…', () => constitutionForm(node)) : null,
@@ -682,10 +684,13 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
             values => ({ operation: 'workflow-review-configure', id: node.id, gate: gate.id, ...values }));
     }
 
-    function bundleForm(node) {
-        form(node ? `Refresh ${node.name}` : 'Register a local bundle', [
-            paragraph('Use a flat local bundle.yml pinned to components already installed independently. The canvas validates it offline and changes only the bundle record.'),
-            scalarField('Path to bundle.yml', input('source', { required: true, maxlength: 300, placeholder: 'packages/my-bundle/bundle.yml' })),
+    function bundleForm(node, remote = false) {
+        form(node ? `Refresh ${node.name}` : remote ? 'Register a pinned GitHub bundle' : 'Register a local bundle', [
+            paragraph('Use a flat bundle.yml pinned to components already installed independently. No packages are installed or replaced.'),
+            ...(remote ? [
+                scalarField('Pinned raw GitHub URL', input('remoteUrl', { type: 'url', required: true, maxlength: 500 })),
+                scalarField('Expected SHA-256', input('sha256', { required: true, minlength: 64, maxlength: 64, pattern: '[a-fA-F0-9]{64}' })),
+            ] : [scalarField('Path to bundle.yml', input('source', { required: true, maxlength: 300, placeholder: 'packages/my-bundle/bundle.yml' }))]),
         ], values => ({ operation: node ? 'bundle-update-record' : 'bundle-install-record', id: node?.id, ...values }));
     }
 

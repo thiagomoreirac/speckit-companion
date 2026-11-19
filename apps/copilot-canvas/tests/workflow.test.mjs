@@ -1332,6 +1332,55 @@ describe('workflow previews and confirmed changes', () => {
         await api('/workflow/preview', request, 400);
     });
 
+    it('reviews a pinned GitHub bundle before writing the exact record and retaining provenance', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 240_000,
+    }, async t => {
+        const f = fixture(t);
+        f.install('reporter');
+        const raw = JSON.stringify({
+            schema_version: '1.0',
+            bundle: { id: 'release-tools', name: 'Release tools', version: '1.0.0', role: 'test', description: 'Fixture', author: 'Tests', license: 'MIT' },
+            requires: { speckit_version: '>=1.0.0' },
+            provides: { extensions: [{ id: 'reporter', version: '1.0.0' }] },
+        });
+        const remoteUrl = `https://raw.githubusercontent.com/acme/fixtures/${'c'.repeat(40)}/bundle.yml`;
+        const sha256 = createHash('sha256').update(raw).digest('hex');
+        let body = raw, downloads = 0;
+        const { api } = await serve(t, f.root, {
+            now: () => Date.parse('2026-04-05T06:07:08Z'),
+            workflowFetch: async (url, options) => {
+                assert.equal(url, remoteUrl);
+                assert.equal(options.redirect, 'error');
+                assert.equal(options.credentials, 'omit');
+                downloads++;
+                return new Response(body);
+            },
+        });
+        const request = { operation: 'bundle-install-record', remoteUrl, sha256 };
+        await api('/workflow/preview', { ...request, remoteUrl: remoteUrl.replace('bundle.yml', 'workflow.yml') }, 400);
+        assert.equal(downloads, 0);
+        const record = '.specify/bundle-records.json';
+        const preview = await api('/workflow/preview', request);
+        assert.ok(preview.id, JSON.stringify(preview.findings));
+        assert.equal(preview.documentChange.before, null);
+        assert.equal(preview.packageDefinition.after, raw);
+        assert.equal(existsSync(join(f.root, record)), false);
+        const receipt = join(f.root, preview.packageDefinition.path);
+        assert.equal(existsSync(receipt), false);
+        body = `${raw}\n`;
+        await api('/workflow/apply', { id: preview.id }, 409);
+        assert.equal(existsSync(join(f.root, record)), false);
+        assert.equal(existsSync(receipt), false);
+        body = raw;
+        const reviewed = await api('/workflow/preview', request);
+        const applied = await api('/workflow/apply', { id: reviewed.id });
+        assert.ok(applied.graph.edges.some(edge => edge.source === 'extension:reporter' && edge.target === 'bundle:release-tools'));
+        assert.equal(readFileSync(join(f.root, record), 'utf8'), reviewed.documentChange.after);
+        assert.equal(JSON.parse(reviewed.documentChange.after).bundles[0].installed_at, '2026-04-05T06:07:08Z');
+        assert.deepEqual(JSON.parse(readFileSync(receipt, 'utf8')), { id: 'release-tools', version: '1.0.0', url: remoteUrl, sha256, manifest: raw });
+        assert.equal(downloads, 4);
+    });
+
     it('runs real local registration against Spec Kit when explicitly enabled', { skip: !process.env.SPECKIT_CANVAS_TEST_CLI }, async t => {
         const f = fixture(t);
         f.packageFiles('sources/preview', 'preview', { command: { description: 'Fixture command' }, manifest: { requires: { speckit_version: '>=1.0.0' }, extension: {
@@ -1909,8 +1958,7 @@ describe('workflow in the browser', () => {
         assert.notEqual(await graph.getAttribute('viewBox'), fit);
         await page.getByRole('button', { name: 'Fit view' }).click();
         assert.equal(await graph.getAttribute('viewBox'), fit);
-        await graph.locator('[data-workflow-item="extension:git"]').focus();
-        await page.keyboard.press('Enter');
+        await graph.locator('[data-workflow-item="extension:git"]').press('Enter');
         const inspector = page.getByRole('complementary', { name: 'Workflow inspector' });
         await inspector.getByRole('heading', { name: 'git', exact: true }).waitFor();
         await page.getByRole('button', { name: 'Text view' }).click();
@@ -1955,6 +2003,11 @@ describe('workflow in the browser', () => {
         await page.getByText('GitHub confirmed the change.', { exact: true }).waitFor();
 
         await page.getByRole('button', { name: 'Spec Kit Management' }).click();
+        await page.getByLabel('Filter by category').selectOption('Bundles');
+        await page.getByRole('button', { name: 'Register pinned GitHub bundle…' }).click();
+        await dialog.getByLabel('Pinned raw GitHub URL').waitFor();
+        await dialog.getByLabel('Expected SHA-256').waitFor();
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
         await page.getByLabel('Filter by category').selectOption('Hooks');
         assert.equal(await page.getByRole('table', { name: 'Connections and hooks' }).getByRole('row').count(), 2);
         await page.getByLabel('Filter by category').selectOption('Workflows');

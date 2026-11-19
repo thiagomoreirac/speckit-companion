@@ -6,9 +6,10 @@ const invalid = (message, status = 400) => Object.assign(new Error(message), { s
 const pinnedSource = /^https:\/\/raw\.githubusercontent\.com\/[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+\/[a-f0-9]{40}\/(?:[a-z0-9_.-]+\/)*[a-z0-9_.-]+\.ya?ml$/i;
 export const reviewedWorkflowSources = '.speckit-companion/workflow-sources';
 export const sourceFile = (key, digest) => `${reviewedWorkflowSources}/${key}-${digest}.yml`;
+export const bundleReceiptFile = (key, digest) => `${reviewedWorkflowSources}/bundle-${key}-${digest}.json`;
 export const validPinnedUrl = url => typeof url === 'string' && url.length <= 500 && pinnedSource.test(url) && new URL(url).href === url;
 
-export function parsePinnedWorkflow(text) {
+export function parsePinnedYaml(text) {
     let manifest;
     try { manifest = load(text, { schema: JSON_SCHEMA }); }
     catch (error) {
@@ -28,7 +29,7 @@ export function parsePinnedWorkflow(text) {
     return manifest;
 }
 
-export async function fetchPinnedWorkflow(url, digest, fetchSource = fetch) {
+export async function fetchPinnedYaml(url, digest, fetchSource = fetch, kind = 'workflow') {
     if (!validPinnedUrl(url) ||
         typeof digest !== 'string' || !/^[a-f0-9]{64}$/i.test(digest)) {
         throw invalid('Use a public raw.githubusercontent.com YAML URL pinned to a full commit and supply the file’s SHA-256.');
@@ -41,14 +42,14 @@ export async function fetchPinnedWorkflow(url, digest, fetchSource = fetch) {
     }
     if (response.redirected || !response.ok || !response.body || Number(response.headers.get('content-length')) > limit) {
         await response.body?.cancel();
-        throw invalid(`The pinned workflow must be an accessible YAML file no larger than ${limit / 1024} KiB.`);
+        throw invalid(`The pinned ${kind} must be an accessible YAML file no larger than ${limit / 1024} KiB.`);
     }
     let size = 0;
     const chunks = [];
     try {
         for await (const chunk of response.body) {
             size += chunk.byteLength;
-            if (size > limit) throw invalid(`The pinned workflow exceeds ${limit / 1024} KiB.`);
+            if (size > limit) throw invalid(`The pinned ${kind} exceeds ${limit / 1024} KiB.`);
             chunks.push(chunk);
         }
     } catch (error) {
@@ -62,8 +63,8 @@ export async function fetchPinnedWorkflow(url, digest, fetchSource = fetch) {
     try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
     catch (error) {
         if (!(error instanceof TypeError)) throw error;
-        throw invalid('The pinned workflow must be valid UTF-8 YAML.');
+        throw invalid(`The pinned ${kind} must be valid UTF-8 YAML.`);
     }
-    if (!text.trim() || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw invalid('The pinned workflow must contain readable YAML.');
+    if (!text.trim() || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw invalid(`The pinned ${kind} must contain readable YAML.`);
     return { url, hash, text };
 }
