@@ -1609,6 +1609,93 @@ describe('workflow previews and confirmed changes', () => {
         assert.ok(graph.nodes.some(node => node.id === 'extension:git' && node.active));
     });
 
+    it('removes one disabled bundle-owned workflow only after reviewing the exact files', async t => {
+        const f = fixture(t);
+        const registryPath = '.specify/workflows/workflow-registry.json';
+        const bundlePath = '.specify/bundle-records.json';
+        const workflowPath = '.specify/workflows/lone-review/workflow.yml';
+        const raw = JSON.stringify({ workflow: { id: 'lone-review', version: '1.0.0' },
+            steps: [{ id: 'review', type: 'gate', message: 'Inspect the release.' }] });
+        const component = { kind: 'workflows', id: 'lone-review', version: '1.0.0' };
+        const record = { bundle_id: 'workflow-tools', version: '1.0.0', installed_at: '2026-01-01T00:00:00Z',
+            contributed_components: [component], required_components: [component] };
+        const other = { version: '1.0.0', enabled: false, source: 'local' };
+        const registry = enabled => ({ schema_version: '1.0', workflows: { 'lone-review': { ...other, enabled }, unrelated: other } });
+        f.put(workflowPath, raw);
+        f.put(bundlePath, { schema_version: '1.0', bundles: [record] });
+        f.put(registryPath, registry(true));
+        const staged = [];
+        const { api, url } = await serve(t, f.root, { workflowCli: async (root, args) => {
+            assert.notEqual(root, f.root);
+            assert.deepEqual(args, ['bundle', 'remove', 'workflow-tools']);
+            assert.equal(readFileSync(join(root, workflowPath), 'utf8'), readFileSync(join(f.root, workflowPath), 'utf8'));
+            staged.push(root);
+            if (process.env.SPECKIT_CANVAS_TEST_CLI === '1') return callSpecKit(root, args);
+            rmSync(join(root, dirname(workflowPath)), { recursive: true });
+            writeFileSync(join(root, registryPath), JSON.stringify({ schema_version: '1.0', workflows: { unrelated: other } }));
+            writeFileSync(join(root, bundlePath), JSON.stringify({ schema_version: '1.0', bundles: [] }));
+            return 'Removed';
+        } });
+        const request = { operation: 'bundle-remove-workflow', id: 'bundle:workflow-tools' };
+        await api('/workflow/preview', request, 400);
+        f.put(registryPath, registry(false));
+        assert.ok(f.graph().nodes.find(item => item.id === request.id).canRemoveBundleWorkflow);
+        const overlayPath = '.specify/workflows/overlays/lone-review/project.yml';
+        f.put(overlayPath, { id: 'project', extends: 'lone-review', edits: [] });
+        await api('/workflow/preview', request, 400);
+        rmSync(join(f.root, overlayPath));
+        const savedRun = '.specify/workflows/runs/run-1/state.json';
+        f.put(savedRun, { workflow_id: 'lone-review', status: 'paused' });
+        await api('/workflow/preview', request, 400);
+        rmSync(join(f.root, '.specify/workflows/runs/run-1'), { recursive: true });
+        const preview = await api('/workflow/preview', request);
+        assert.deepEqual(preview.documentChanges.map(doc => doc.path), [bundlePath, registryPath, workflowPath]);
+        assert.equal(preview.documentChanges.at(-1).after, null);
+        assert.equal(readFileSync(join(f.root, workflowPath), 'utf8'), raw);
+        const companion = '.specify/workflows/lone-review/evidence.md';
+        f.put(companion, 'Do not delete');
+        await api('/workflow/apply', { id: preview.id }, 400);
+        assert.equal(readFileSync(join(f.root, companion), 'utf8'), 'Do not delete');
+        rmSync(join(f.root, companion));
+        const stale = await api('/workflow/preview', request);
+        f.put(workflowPath, `${raw}\n`);
+        await api('/workflow/apply', { id: stale.id }, 409);
+        assert.equal(readFileSync(join(f.root, workflowPath), 'utf8'), `${raw}\n`);
+        f.put(workflowPath, raw);
+        const approved = await api('/workflow/preview', request);
+        const { graph } = await api('/workflow/apply', { id: approved.id });
+        assert.equal(existsSync(join(f.root, workflowPath)), false);
+        assert.ok(existsSync(join(f.root, dirname(workflowPath))));
+        for (const doc of approved.documentChanges.slice(0, 2)) assert.equal(readFileSync(join(f.root, doc.path), 'utf8'), doc.after);
+        assert.ok(!graph.nodes.some(item => item.id === request.id || item.id === 'workflow:lone-review'));
+        assert.equal(staged.length, 5);
+        await t.test('shows all three reviewed changes in the management dialog', async browserTest => {
+            let browser;
+            try {
+                const { chromium } = await import('playwright-core');
+                browser = await chromium.launch({ channel: 'chrome', headless: true });
+            } catch {
+                browserTest.skip('No system Chrome to drive');
+                return;
+            }
+            browserTest.after(() => browser.close());
+            f.put(workflowPath, raw);
+            f.put(registryPath, registry(false));
+            f.put(bundlePath, { schema_version: '1.0', bundles: [record] });
+            const page = await browser.newPage({ viewport: { width: 480, height: 900 } });
+            await page.goto(url);
+            await page.getByRole('button', { name: 'Spec Kit Management' }).click();
+            await page.getByLabel('Filter by category').selectOption('Bundles');
+            await page.getByRole('table', { name: 'Participants' }).getByRole('button', { name: 'Inspect workflow-tools', exact: true }).click();
+            await page.getByRole('button', { name: 'Remove bundle and workflow…' }).click();
+            const dialog = page.getByRole('dialog');
+            for (const path of [bundlePath, registryPath, workflowPath]) await dialog.getByRole('heading', { name: path, exact: true }).waitFor();
+            await dialog.getByText('Remove this file.', { exact: true }).waitFor();
+            await dialog.getByRole('button', { name: 'Cancel' }).click();
+            assert.equal(readFileSync(join(f.root, workflowPath), 'utf8'), raw);
+        });
+    });
+
     it('refuses to stage a bundle that would install or overwrite a package', async t => {
         const f = fixture(t);
         const source = 'bundles/workflow-tools/bundle.yml';

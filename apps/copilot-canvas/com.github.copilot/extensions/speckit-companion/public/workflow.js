@@ -503,6 +503,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     void preview({ operation: 'catalog-allow-install', id: node.id, url: node.origin });
                 }) : null,
                 node.kind === 'Bundles' && node.canRemoveRecord ? button('Remove bundle record…', () => direct('bundle-remove-record', node.id)) : null,
+                node.kind === 'Bundles' && node.canRemoveBundleWorkflow ? button('Remove bundle and workflow…', () => direct('bundle-remove-workflow', node.id)) : null,
                 node.kind === 'Bundles' && node.canRefreshRecord ? button('Refresh from local bundle…', () => bundleForm(node)) : null,
                 node.kind === 'Bundles' && node.canRefreshRecord ? button('Refresh from pinned GitHub bundle…', () => bundleForm(node, true)) : null,
                 ...(node.configs ?? []).map(config => button(`Configure ${config.name}…`, () => configure(node, config))),
@@ -548,7 +549,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         if (['review', 'write'].includes(node.guidedRun?.status) && !node.guidedRun.matched) {
             inspector.append(paragraph('The installed definition changed. End this guided run before starting a new one.'));
         }
-        if (!packageKind && !node.templateOverride && !node.editableCharterSource && !node.canRemoveRecord && ['Bundles', 'Workflow steps', 'Templates and schemas', 'Constitution and Charter', 'Commands and skills'].includes(node.kind)) {
+        if (!packageKind && !node.templateOverride && !node.editableCharterSource && !node.canRemoveRecord && !node.canRemoveBundleWorkflow && ['Bundles', 'Workflow steps', 'Templates and schemas', 'Constitution and Charter', 'Commands and skills'].includes(node.kind)) {
             inspector.append(paragraph('Inspect this source here. This item has no verified mutation adapter in the canvas.'));
         }
         if (node.state === 'blocked' || node.state === 'missing' || node.state === 'incompatible') {
@@ -951,6 +952,12 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     heading('Proposed content'), result.documentChange.after == null ? paragraph('Remove this file.') :
                         el('pre', { text: result.documentChange.after, tabindex: 0 }),
                 ] : []),
+                ...(result.documentChanges ?? []).flatMap(doc => [
+                    heading(doc.path), paragraph('Current content'),
+                    doc.before == null ? paragraph('This file does not exist yet.') : el('pre', { text: doc.before, tabindex: 0 }),
+                    paragraph('Proposed content'),
+                    doc.after == null ? paragraph('Remove this file.') : el('pre', { text: doc.after, tabindex: 0 }),
+                ]),
                 ...(result.productChange ? [
                     heading('Affected citations'),
                     result.productChange.citations.length ? el('ul', {}, result.productChange.citations.map(item =>

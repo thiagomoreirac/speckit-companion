@@ -9,7 +9,7 @@ import { hookFixtures } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, isReviewArtifactPath, reviewGates, reviewOverlayPath } from './workflow-review-run.mjs';
 import { issueLabelStep } from './workflow-github.mjs';
 import { guidedReview } from './workflow-guided-run.mjs';
-import { sourceFile, validPinnedUrl, validPinnedArchiveUrl, validPinnedCatalogUrl } from './workflow-remote.mjs';
+import { sourceFile, validPinnedUrl, validPinnedArchiveUrl, validPinnedCatalogUrl, validPinnedWorkflowId } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, ROADMAP_STATUSES, parseRoadmap } from './workflow-roadmap.mjs';
 import { WIREFRAME_CONFIG, standardWireframeFeature } from './workflow-wireframe.mjs';
 import { ADR_DIR, standardAdr } from './workflow-adr.mjs';
@@ -62,7 +62,7 @@ const nestedSteps = step => [
     ...(object(step.step) ? [['fan-out template', [step.step]]] : []),
 ];
 
-export function bundleRecordRemoval(registry, id) {
+export function bundleRecordRemoval(registry, id, { allowWorkflowRemoval = false } = {}) {
     const records = registry?.bundles;
     if (!Array.isArray(records) || !/^1(?:\.\d+)?$/.test(registry.schema_version)) return null;
     const ids = records.map(record => record?.bundle_id);
@@ -93,16 +93,50 @@ export function bundleRecordRemoval(registry, id) {
         }
     }
     const reassigned = new Map();
+    let removedWorkflow = null;
     for (const component of target.contributed_components) {
         const owner = firstConsumer.get(componentKey(component));
-        if (!owner || !isDeepStrictEqual(component, owner.component)) return null;
+        if (!owner) {
+            if (!allowWorkflowRemoval || removedWorkflow || component.kind !== 'workflows' || !validPinnedWorkflowId(component.id)) return null;
+            removedWorkflow = component.id;
+            continue;
+        }
+        if (!isDeepStrictEqual(component, owner.component)) return null;
         const to = owner.record.bundle_id;
         if (!reassigned.has(to)) reassigned.set(to, [...owner.record.contributed_components]);
         reassigned.get(to).push(owner.component);
         transfers.push({ component: componentKey(component), to });
     }
     return { remaining: remaining.map(record => reassigned.has(record.bundle_id)
-        ? { ...record, contributed_components: reassigned.get(record.bundle_id) } : record), transfers };
+        ? { ...record, contributed_components: reassigned.get(record.bundle_id) } : record), transfers, removedWorkflow };
+}
+
+export function standaloneBundleWorkflow(root, graph, key) {
+    if (!validPinnedWorkflowId(key)) return null;
+    const node = graph.nodes.find(item => item.id === `workflow:${key}`);
+    const dir = `.specify/workflows/${key}`;
+    const path = `${dir}/workflow.yml`;
+    const entry = workspaceEntry(root, dir);
+    const registry = '.specify/workflows/workflow-registry.json';
+    const hasEntries = relative => {
+        const parts = relative.split('/');
+        for (let count = 1; count <= parts.length; count++) {
+            const target = lstatSync(join(root, ...parts.slice(0, count)), { throwIfNoEntry: false });
+            if (!target) return false;
+            if (!target.isDirectory() || target.isSymbolicLink()) return true;
+        }
+        return readdirSync(join(root, ...parts)).length > 0;
+    };
+    if (!node?.installed || node.state !== 'disabled' || !entry?.stat.isDirectory() ||
+        !workspaceEntry(root, path)?.stat.isFile() ||
+        !workspaceEntry(root, registry)?.stat.isFile() ||
+        readdirSync(entry.target).some(name => name !== 'workflow.yml') ||
+        hasEntries(`${WORKFLOW_OVERLAYS}/${key}`) || hasEntries(WORKFLOW_RUNS) ||
+        graph.nodes.some(item => item.stepType === 'workflow' && item.workflowOwner !== node.id ||
+            item.kind === 'Workflow overlays' && item.workflowOwner !== node.id) ||
+        graph.findings.some(item => item.code === 'workflow-inspection-limit' || item.code === 'malformed-file' &&
+            item.path?.startsWith('.specify/workflows/'))) return null;
+    return { node, dir, path, registry };
 }
 
 function overlayEdits(config, workflow) {
@@ -599,15 +633,16 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             warning('malformed-bundle', 'blocked', `Duplicate bundle record: ${record.bundle_id}.`, [id]);
             continue;
         }
-        const removal = bundleRecordRemoval(bundleRecords, record.bundle_id);
+        const removal = bundleRecordRemoval(bundleRecords, record.bundle_id, { allowWorkflowRemoval: true });
         const canRefreshRecord = Array.isArray(record.contributed_components) && record.contributed_components.length === 0 &&
             (record.bundle_references == null || Array.isArray(record.bundle_references) && !record.bundle_references.length);
         const node = defaultNode(id, record.bundle_id, 'Bundles', BUNDLE_RECORDS, {
             key: record.bundle_id, installed: true, version: record.version, origin: record.source, artifacts: [BUNDLE_RECORDS], approval: 'confirm',
-            canRemoveRecord: Boolean(removal), canRefreshRecord,
+            canRemoveRecord: Boolean(removal && !removal.removedWorkflow), canRefreshRecord,
+            bundleWorkflowCandidate: removal?.removedWorkflow ?? null,
             note: !removal && !canRefreshRecord ?
                 'This record cannot be changed here without potentially affecting packages or other bundles. Use the package inspectors to review individual components.' :
-                removal?.transfers.length ? 'Removing this record requires reviewing the transfer of shared component ownership. No packages will be uninstalled.' : null,
+                removal?.transfers.length && !removal.removedWorkflow ? 'Removing this record requires reviewing the transfer of shared component ownership. No packages will be uninstalled.' : null,
         });
         nodes.push(node);
         for (const component of list(record.required_components ?? record.contributed_components)) {
@@ -1166,6 +1201,13 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 `${bundle.name} requires ${component.name} ${pin}; the repository has ${actual}. Review the installed component or bundle pin.`,
                 [bundle.id], [edge.id]);
         }
+    }
+    for (const node of nodes.filter(item => item.bundleWorkflowCandidate)) {
+        const key = node.bundleWorkflowCandidate;
+        node.canRemoveBundleWorkflow = /^1\.4\.1(?:\.dev0)?$/.test(version ?? '') && Boolean(standaloneBundleWorkflow(root, { nodes, findings }, key));
+        node.note = node.canRemoveBundleWorkflow ?
+            `This bundle owns ${key}. Review the bundle record, workflow registration, and definition together before removing it.` :
+            `Removal requires Spec Kit 1.4.1 and a disabled standalone ${key} workflow with no project overlays, saved native runs, or subworkflow callers.`;
     }
     const validation = validateGraph(nodes, edges, findings, decisions);
     for (const node of nodes) {

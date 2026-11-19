@@ -6,7 +6,7 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 
 ### Added
 
-- **Explore the Spec Kit workflow.** Inspect integrations and hooks, review pinned catalog releases, and preview changes or agent commands from the graph or text view.
+- **Explore and manage the Spec Kit workflow.** Inspect hooks, review pinned releases, and preview package changes or agent commands from the graph or text view.
 
 ### Fixed
 

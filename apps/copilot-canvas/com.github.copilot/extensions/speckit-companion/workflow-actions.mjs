@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { dump, load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 import { AUTOMATIC_HOOKS, graphDiff, scopeProblem } from './workflow-model.mjs';
-import { BUNDLE_RECORDS, CATALOG_TYPES, CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, TEMPLATE_OVERRIDES, bundleRecordRemoval, catalogKey, catalogPath, hookPriority, object, readWorkflow, safeId, workflowOverlayPaths, workspaceEntry } from './workflow-inventory.mjs';
+import { BUNDLE_RECORDS, CATALOG_TYPES, CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, TEMPLATE_OVERRIDES, bundleRecordRemoval, catalogKey, catalogPath, hookPriority, object, readWorkflow, safeId, standaloneBundleWorkflow, workflowOverlayPaths, workspaceEntry } from './workflow-inventory.mjs';
 import { createGitHubChanges } from './workflow-github.mjs';
 import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
@@ -193,7 +193,7 @@ function writeConfig(root, path, text, base, { exclusiveCreate = false } = {}) {
     finally { rmSync(temp, { force: true }); }
 }
 
-function writeProductDocuments(root, documents) {
+function writeReviewedDocuments(root, documents) {
     for (const { path, before } of documents) {
         if (file(root, path) !== before) throw invalid(`The file ${path} changed. Preview the edit again.`, 409);
     }
@@ -209,7 +209,7 @@ function writeProductDocuments(root, documents) {
             try { writeConfig(root, doc.path, doc.before, doc.after, { exclusiveCreate: true }); }
             catch { unrestored.push(doc.path); }
         }
-        if (unrestored.length) throw invalid(`Product apply failed and could not restore: ${unrestored.join(', ')}. Inspect those paths before retrying.`, 409);
+        if (unrestored.length) throw invalid(`The change failed and could not restore: ${unrestored.join(', ')}. Inspect those paths before retrying.`, 409);
         throw error;
     }
 }
@@ -331,6 +331,33 @@ async function stageBundleRecord(root, graph, request, base, cli, reviewedAt, re
     } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
 }
 
+async function stageBundleWorkflowRemoval(root, bundle, workflow, base, next, cli) {
+    const registryBase = file(root, workflow.registry);
+    const definition = file(root, workflow.path);
+    if (registryBase == null || definition == null) throw invalid('The standalone workflow files are no longer readable.', 409);
+    const expected = JSON.parse(registryBase);
+    if (expected.workflows?.[workflow.node.key]?.enabled !== false) throw invalid('Disable the standalone workflow before removing it.', 409);
+    delete expected.workflows[workflow.node.key];
+    const staged = mkdtempSync(join(tmpdir(), 'canvas-bundle-remove-'));
+    try {
+        writeTemporaryProject(staged, new Map([
+            [BUNDLE_RECORDS, base], [workflow.registry, registryBase], [workflow.path, definition],
+        ]));
+        await cli(staged, ['bundle', 'remove', bundle.key]);
+        const registryAfter = file(staged, workflow.registry);
+        const recordsAfter = file(staged, BUNDLE_RECORDS);
+        if (lstatSync(join(staged, workflow.dir), { throwIfNoEntry: false }) || registryAfter == null || recordsAfter == null ||
+            !isDeepStrictEqual(JSON.parse(registryAfter), expected) ||
+            !isDeepStrictEqual(JSON.parse(recordsAfter).bundles, next.bundles)) {
+            throw invalid('Spec Kit did not produce the expected standalone workflow and bundle removal. No repository files changed.');
+        }
+        return [
+            { path: workflow.registry, before: registryBase, after: registryAfter },
+            { path: workflow.path, before: definition, after: null },
+        ];
+    } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+}
+
 function projectHooks(hooks, extension, action, declared = []) {
     hooks.installed = rows(hooks.installed).filter(id => id !== extension);
     if (action !== 'remove') hooks.installed.push(extension);
@@ -422,7 +449,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
         const overrides = new Map();
         let execute, invocation, title, sourceStamp, sourcePath;
         let paths = [], notes = [], affected = [], triggered = [], readPaths = [];
-        let documentChange, productChange, productArchive, externalChange, reviewChange, guidedChange, packageDefinition, localEvidence, validatePackage;
+        let documentChange, documentChanges, productChange, productArchive, externalChange, reviewChange, guidedChange, packageDefinition, localEvidence, validatePackage;
         const managed = PACKAGES[node?.kind ?? request.kind];
         const hookEdit = (operation === 'hook-add' || operation === 'hook-mute-all' || ['hook-toggle', 'hook-remove', 'hook-up', 'hook-down', 'hook-behavior'].includes(operation));
 
@@ -922,13 +949,16 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 writeConfig(root, BUNDLE_RECORDS, staged.generated, base, { exclusiveCreate: true });
                 return { output: staged.output.slice(0, 6000) };
             };
-        } else if (operation === 'bundle-remove-record') {
-            if (node?.kind !== 'Bundles' || !node.canRemoveRecord || before.findings.some(item => item.code === 'malformed-bundle')) {
-                throw invalid('Only a flat bundle record whose removal leaves all packages in place can be removed from this canvas.');
+        } else if (operation === 'bundle-remove-record' || operation === 'bundle-remove-workflow') {
+            const removeWorkflow = operation === 'bundle-remove-workflow';
+            if (node?.kind !== 'Bundles' || !(removeWorkflow ? node.canRemoveBundleWorkflow : node.canRemoveRecord) ||
+                before.findings.some(item => item.code === 'malformed-bundle')) {
+                throw invalid(removeWorkflow ? 'Select a flat bundle with one disabled standalone workflow and no dependent workflows, overlays, or saved native runs.' :
+                    'Only a flat bundle record whose removal leaves all packages in place can be removed from this canvas.');
             }
             const base = file(root, BUNDLE_RECORDS);
             const current = JSON.parse(base);
-            const removal = bundleRecordRemoval(current, node.key);
+            const removal = bundleRecordRemoval(current, node.key, { allowWorkflowRemoval: removeWorkflow });
             if (!removal) {
                 throw invalid('The bundle record changed. Review it again before removing it.', 409);
             }
@@ -944,6 +974,31 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             notes = ['Only bundle records change. The canvas does not invoke package removal.',
                 ...removal.transfers.map(({ component, to }) => `${component}: bundle ownership transfers to ${to}.`)];
             execute = () => writeConfig(root, BUNDLE_RECORDS, text, base);
+            if (removeWorkflow) {
+                const eligibleWorkflow = graph => {
+                    const workflow = standaloneBundleWorkflow(root, graph, removal.removedWorkflow);
+                    if (!workflow) throw invalid('The standalone workflow changed. Reopen its inspector before removing it.', 409);
+                    const guided = guidedRuns.observe(root, workflow.node), review = reviewRuns.observe(root, workflow.node);
+                    if (guided?.error || review?.error || ['review', 'write', 'uncertain'].includes(guided?.status) || review?.status === 'paused') {
+                        throw invalid('The canvas could not rule out an open review. Keep the workflow or resolve its saved run before removing it.', 409);
+                    }
+                    return workflow;
+                };
+                const workflow = eligibleWorkflow(before);
+                const documents = await stageBundleWorkflowRemoval(root, node, workflow, base, next, cli);
+                documentChanges = [documentChange, ...documents];
+                documentChange = null;
+                for (const change of documents) overrides.set(change.path, change.after === null ? null : JSON.parse(change.after));
+                paths = documentChanges.map(change => change.path);
+                affected.push(workflow.node);
+                title = `Remove ${node.name} and ${workflow.node.name}`;
+                notes[0] = 'Spec Kit checks the removal in a temporary project. Confirmation applies only the listed files and leaves the empty directory in place.';
+                sourceStamp = documentChanges.map(change => [change.path, createHash('sha256').update(JSON.stringify([change.before, change.after])).digest('hex')]);
+                execute = () => {
+                    eligibleWorkflow(read().graph);
+                    writeReviewedDocuments(root, documentChanges);
+                };
+            }
         } else if (['product-apply', 'product-archive'].includes(operation)) {
             if (node?.id !== 'extension:pdac-product' || node.healthStatus === 'blocked' || !node.productChanges?.includes(request.change)) {
                 throw invalid('Select an inventoried change from compatible, enabled PDaC and PDaC Product integrations.');
@@ -970,7 +1025,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 overrides.set(documents.at(-1).path, documents.at(-1).after);
                 title = `Review Product Change: ${request.change}`;
                 notes = ['ProductShape validates the human-approved change and reports affected citations. Confirmation applies only the displayed files; it does not archive, commit, or merge the change.'];
-                execute = () => writeProductDocuments(root, documents);
+                execute = () => writeReviewedDocuments(root, documents);
             }
         } else if (operation === 'adr-accept') {
             const entry = node?.adrRecords?.find(item => item.path === request.record);
@@ -1358,12 +1413,12 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             revision, root, stamps, execute, allowed: newBlockers.length === 0,
             preview: { title, invocation, diff, notes, paths: [...new Set(paths.filter(Boolean))], readPaths,
                 artifacts: [...new Set([...changedNodes.flatMap(item => item.outputs), ...changedEdges.flatMap(item => item.writes ?? []),
-                    ...(documentChange ? [documentChange.path] : []), ...(productChange?.documents ?? []).map(item => item.path)])],
+                    ...(documentChange ? [documentChange.path] : []), ...(documentChanges ?? productChange?.documents ?? []).map(item => item.path)])],
                 commands: [...new Set([...changedNodes.flatMap(item => item.commands.map(cmd => cmd.id)), ...changedEdges.map(item => item.command).filter(Boolean)])],
                 hooks: [...new Set(changedEdges.map(item => item.hook).filter(Boolean))],
                 external: [...new Set([...changedNodes.filter(item => item.effect === 'external-write').flatMap(item => item.outputs), ...changedEdges.flatMap(item => item.external ?? [])])],
                 findings: newBlockers, advisories, ready: newBlockers.length === 0,
-                config: operation === 'configure' ? request.values : null, documentChange, productChange, productArchive, externalChange, reviewChange, guidedChange, packageDefinition, localEvidence,
+                config: operation === 'configure' ? request.values : null, documentChange, documentChanges, productChange, productArchive, externalChange, reviewChange, guidedChange, packageDefinition, localEvidence,
             },
         };
     }
