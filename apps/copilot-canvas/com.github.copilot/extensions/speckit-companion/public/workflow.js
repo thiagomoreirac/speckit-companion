@@ -223,6 +223,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                    state.management === 'Workflows' ? button('Register pinned GitHub workflow…', () => remoteWorkflowForm()) : null) : null,
             management && state.management === 'Catalogs' ? actions(button('Register discovery catalog…', () => catalogForm())) : null,
             management && state.management === 'Bundles' ? actions(button('Register local bundle…', () => bundleForm())) : null,
+            management && state.management === 'Hooks' && !state.graph.runtime.nativeEventOverrideSupported
+                ? paragraph('Suppressing all native events from the canvas requires a recorded Spec Kit 1.4.1 Copilot or Claude integration. Lifecycle hook controls are separate.') : null,
             management && state.management === 'Versions and sources' ? actions(button('Record ownership decision…', () => ownershipForm())) : null,
             main, links, findingGroup(findings),
         ];
@@ -362,6 +364,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     ['Command', edge.command], ['Status', edge.active ? 'Enabled' : 'Inactive or proposed'], ['Effect', human(edge.effect)], ['Approval', human(edge.approval)],
                     ['Order', edge.order == null ? null : `${edge.runOrder == null ? 'Not scheduled' : `Runs #${edge.runOrder}`}${edge.priority == null ? '' : ` · Priority ${edge.priority}`}`],
                     ['Condition', edge.condition], ['Timeout', edge.timeout == null ? null : `${edge.timeout} s`],
+                    ['Native configuration', edge.nativeConfiguration === 'replaced' ? 'Replaced on next integration refresh' :
+                        edge.nativeConfiguration === 'inherited' ? 'Inherited declaration' : null],
                     ['Execution', edge.background ? 'Background' : null], ['Reads', codeList(edge.reads)],
                     ['Writes', codeList(edge.writes)], ['External systems', codeList(edge.external)], ['Configuration', edge.path]]),
                 ...(edge.description ? [paragraph(edge.description)] : []),
@@ -384,7 +388,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 ...(edge.kind === 'native-hook' && edge.nativeLayer === 'extension' && nodeById(edge.owner)?.active ?
                     [actions(button('Disable owning extension…', () => direct('disable', edge.owner)),
                         edge.effect === 'read-only' && nodeById(edge.owner)?.healthStatus !== 'blocked' &&
-                        nodeById(`native-events:${state.graph.runtime.integration}`) &&
+                        nodeById(`native-events:${state.graph.runtime.integration}`)?.installed &&
                         !state.graph.edges.some(item => item.nativeLayer === 'override' && item.hook === edge.hook && item.command === edge.command) ?
                             button('Add to native override…', () => direct('native-override-add', edge.id)) : null)] : []),
                 ...(edge.nativeLayer === 'override' && edge.editable ? [actions(
@@ -442,6 +446,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 `${item.primary} / ${item.secondary} (${human(item.strategy)}): ${item.rationale} · ${item.owner} · ${item.approval.at}`,
                 item.strategy === 'scoped' ? el('div', {}, codeList([item.primaryScope, item.secondaryScope])) : null)))] : []),
             actions(
+                node.canMuteNativeEvents ? button('Suppress all native events…', () => direct('native-override-empty', node.id)) : null,
                 node.kind === 'Workflow inputs' ? button(`Open ${node.category.toLowerCase()}`, () => { state.management = node.category; show('management'); }) : null,
                 node.kind === 'Features and specs' && node.id.startsWith('feature:') ? button('Open spec & run history', () => openFeature(node.key)) : null,
                 node.kind === 'Workflows' && installed ? button('Inspect composed steps…', () => inspectComposition(node)) : null,
@@ -873,6 +878,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     ...diff.changed.map(({ before, after }) => {
                         const stateChange = before.state !== after.state ? `${human(before.state)} → ${human(after.state)}` :
                             before.active !== after.active ? (after.active ? 'Enabled' : 'Disabled') :
+                            before.nativeConfiguration !== after.nativeConfiguration && after.nativeConfiguration === 'replaced' ?
+                                'Replaced on next integration refresh' :
                             before.priority !== after.priority ? `Priority ${before.priority} → ${after.priority}` :
                             before.version !== after.version ? `Version ${before.version ?? 'none'} → ${after.version ?? 'none'}` :
                             before.approval !== after.approval ? `${human(before.approval)} → ${human(after.approval)}` : 'Metadata changed';

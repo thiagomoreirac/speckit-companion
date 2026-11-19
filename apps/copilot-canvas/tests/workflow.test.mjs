@@ -396,6 +396,51 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(calls.length, 2);
     });
 
+    it('previews a new empty native override and rejects it if a concurrent edit creates the file', async t => {
+        const f = fixture(t);
+        const id = 'native-events:copilot';
+        const handler = { command: 'speckit.reporter.run', matcher: 'View' };
+        f.install('reporter', { manifest: { extension: { effect: 'read-only' }, events: { post_tool_use: handler } } });
+        const generated = '.github/hooks/speckit-events.json';
+        f.put(generated, 'Generated settings are not edited.');
+        const { api } = await serve(t, f.root);
+        const initial = await api('/workflow');
+        assert.equal(initial.nodes.find(node => node.id === id).state, 'proposed');
+        await api('/workflow/preview', { operation: 'native-override-add', id: 'native:reporter:post_tool_use:0' }, 400);
+        const request = { operation: 'native-override-empty', id };
+        const preview = await api('/workflow/preview', request);
+        assert.ok(preview.id, JSON.stringify(preview.findings));
+        assert.equal(preview.documentChange.before, null);
+        assert.equal(existsSync(join(f.root, NATIVE_HOOK_PATH)), false);
+        const changedHook = preview.diff.edges.changed.find(item => item.before.id === 'native:reporter:post_tool_use:0');
+        assert.deepEqual([changedHook.before.nativeConfiguration, changedHook.after.nativeConfiguration], ['inherited', 'replaced']);
+        const concurrent = { integrations: { claude: { events: { stop: handler } } } };
+        f.put(NATIVE_HOOK_PATH, concurrent);
+        await api('/workflow/apply', { id: preview.id }, 409);
+        assert.equal(readFileSync(join(f.root, NATIVE_HOOK_PATH), 'utf8'), JSON.stringify(concurrent));
+        const reviewed = await api('/workflow/preview', request);
+        const applied = await api('/workflow/apply', { id: reviewed.id });
+        assert.equal(applied.graph.nodes.find(node => node.id === id).installed, true);
+        assert.equal(readFileSync(join(f.root, NATIVE_HOOK_PATH), 'utf8'), reviewed.documentChange.after);
+        assert.match(reviewed.documentChange.after, /copilot:\r?\n\s+events: \{\}/);
+        assert.match(reviewed.documentChange.after, /claude:\r?\n\s+events:\r?\n\s+stop:\r?\n\s+command: speckit\.reporter\.run/);
+        assert.equal(readFileSync(join(f.root, generated), 'utf8'), 'Generated settings are not edited.');
+        await api('/workflow/preview', request, 400);
+    });
+
+    it('refuses to suppress native events by replacing a malformed override or assuming runtime compatibility', async t => {
+        const f = fixture(t);
+        f.put(NATIVE_HOOK_PATH, 'integrations:\n  copilot:\n    events: invalid\n');
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'native-override-empty', id: 'native-events:copilot' };
+        await api('/workflow/preview', request, 400);
+        f.put(NATIVE_HOOK_PATH, 'integrations: [');
+        await api('/workflow/preview', request, 400);
+        f.put(NATIVE_HOOK_PATH, { integrations: {} });
+        f.put('.specify/init-options.json', { speckit_version: '1.2.0', integration: 'copilot' });
+        await api('/workflow/preview', request, 400);
+    });
+
     it('previews native override edits without rewriting generated settings or restoring inherited handlers', async t => {
         const f = fixture(t);
         const view = { command: 'speckit.reporter.run', matcher: 'View' };
@@ -1828,6 +1873,15 @@ describe('workflow in the browser', () => {
         assert.equal(JSON.parse(readFileSync(join(f.root, HOOK_PATH), 'utf8')).hooks.after_tasks[0].enabled, true);
         await dialog.getByRole('button', { name: 'Confirm change' }).click();
         await inspector.getByText('Inactive or proposed').waitFor();
+        await page.getByRole('button', { name: 'Inspect copilot native event override', exact: true }).click();
+        await inspector.getByRole('button', { name: 'Suppress all native events…' }).click();
+        await dialog.getByText('Suppress all Spec Kit native events for copilot', { exact: true }).waitFor();
+        assert.equal(existsSync(join(f.root, NATIVE_HOOK_PATH)), false);
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        await inspector.getByRole('button', { name: 'Suppress all native events…' }).click();
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        await inspector.getByRole('button', { name: NATIVE_HOOK_PATH, exact: true }).waitFor();
+        assert.match(readFileSync(join(f.root, NATIVE_HOOK_PATH), 'utf8'), /copilot:\r?\n\s+events: \{\}/);
         await page.getByRole('button', { name: 'Inspect GHP', exact: true }).click();
         await inspector.getByRole('button', { name: 'Review GitHub change…' }).click();
         await dialog.getByLabel('Issue URL').fill(issue.url);

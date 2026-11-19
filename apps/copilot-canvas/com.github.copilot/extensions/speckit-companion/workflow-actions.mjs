@@ -539,12 +539,38 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                     }
                 },
             });
+        } else if (operation === 'native-override-empty') {
+            if (!node?.canMuteNativeEvents) {
+                throw invalid('Select the native event override for a supported Spec Kit integration with handlers to suppress.');
+            }
+            const base = file(root, NATIVE_HOOK_PATH);
+            if (base === null && lstatSync(join(root, NATIVE_HOOK_PATH), { throwIfNoEntry: false })) {
+                throw invalid(`Cannot replace ${NATIVE_HOOK_PATH}.`);
+            }
+            const definition = base === null ? {} : load(base, { schema: JSON_SCHEMA });
+            const key = before.runtime.integration;
+            definition.integrations = {
+                ...definition.integrations,
+                [key]: { ...definition.integrations?.[key], events: {} },
+            };
+            const next = yaml(definition);
+            overrides.set(NATIVE_HOOK_PATH, definition);
+            paths = [NATIVE_HOOK_PATH];
+            documentChange = { path: NATIVE_HOOK_PATH, before: base, after: next };
+            title = `Suppress all Spec Kit native events for ${key}`;
+            notes = [
+                'An empty override replaces every inherited or configured handler for this integration, including built-in handlers not listed in the graph.',
+                'This can suppress checks or approval handlers as well as automation. To keep other handlers, remove only the intended entries from an existing override.',
+                'This changes project configuration only. It does not update generated settings, stop handlers in a running agent, or change lifecycle or embedded hooks.',
+                ...(base === null ? [] : ['The existing YAML is reserialized; review the full file diff before applying.']),
+            ];
+            execute = () => writeConfig(root, NATIVE_HOOK_PATH, next, base, { exclusiveCreate: true });
         } else if (operation === 'native-override-add') {
             const provider = before.nodes.find(item => item.id === edge?.owner);
             if (edge?.nativeLayer !== 'extension' || !edge.active || edge.effect !== 'read-only' ||
                 !provider?.active || provider.healthStatus === 'blocked' ||
                 !provider.commands.some(command => command.id === edge.command) ||
-                !before.nodes.some(item => item.id === `native-events:${before.runtime.integration}`)) {
+                !before.nodes.some(item => item.id === `native-events:${before.runtime.integration}` && item.installed)) {
                 throw invalid('Select a declared, read-only handler and configure an existing native override for this integration.');
             }
             const base = file(root, NATIVE_HOOK_PATH);

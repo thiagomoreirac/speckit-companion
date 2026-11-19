@@ -245,7 +245,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         const handlers = list(value).filter(object);
         return NATIVE_EVENTS.has(event) && handlers.length && handlers.every(validNativeHandler);
     });
-    if ((hasNativeOverride && !validOverride) || (nativeSettings != null && !object(nativeSettings))) {
+    if ((hasNativeOverride && !validOverride) || (nativeDocument && Object.hasOwn(nativeDocument, 'integrations') && !object(nativeSettings))) {
         findings.push({ code: 'malformed-native-override', severity: 'blocked',
             message: `${NATIVE_HOOK_PATH} does not provide a valid event override for the selected integration. Spec Kit may keep its inherited handlers.`,
             nodeIds: [], edgeIds: [], path: NATIVE_HOOK_PATH });
@@ -371,6 +371,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                     id: `native:${key}:${event}:${index}`, owner: id, hook: event, command, active: node.active,
                     ...hookBoundary(node, 'runtime'), path,
                     condition: item.matcher, timeout: item.timeout, nativeLayer: 'extension',
+                    nativeConfiguration: validOverride ? 'replaced' : 'inherited',
                     description: validOverride ?
                         `The ${integrationKey} integration declares a replacement in ${NATIVE_HOOK_PATH}. This manifest hook may still apply to other integrations or stale generated agent settings.` :
                         'Native agent event declared by the extension. Disable the extension through Spec Kit to turn it off, then verify the integration refreshed.',
@@ -380,13 +381,20 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         }
     }
 
-    if (validOverride) {
+    const nativeEventOverrideSupported = ['claude', 'copilot'].includes(integrationKey) && /^1\.4\.1(?:\.dev0)?$/.test(version ?? '');
+    const canMuteNativeEvents = nativeEventOverrideSupported && !findings.some(item => item.path === NATIVE_HOOK_PATH) &&
+        (!validOverride || Object.keys(overrideEvents).length > 0);
+    if (validOverride || canMuteNativeEvents) {
         const owner = defaultNode(`native-events:${integrationKey}`, `${integrationKey} native event override`, 'Hooks', NATIVE_HOOK_PATH, {
-            effect: 'unknown', approval: 'inspect', artifacts: [NATIVE_HOOK_PATH], hooks: [],
-            note: 'This replaces inherited native handlers for the selected integration when Spec Kit regenerates its settings. The canvas cannot verify which generated settings an agent currently uses.',
+            installed: validOverride, active: validOverride, state: validOverride ? 'installed' : 'proposed',
+            effect: 'unknown', approval: 'inspect', artifacts: validOverride ? [NATIVE_HOOK_PATH] : [],
+            hooks: [], canMuteNativeEvents,
+            note: validOverride
+                ? 'This replaces inherited native handlers for the selected integration when Spec Kit regenerates its settings. The canvas cannot verify which generated settings an agent currently uses.'
+                : 'No override is configured for this integration. Spec Kit can inherit built-in and extension handlers.',
         });
         nodes.push(owner);
-        for (const [event, value] of entries(overrideEvents)) {
+        for (const [event, value] of validOverride ? entries(overrideEvents) : []) {
             const life = `stage:${NATIVE_EVENTS.get(event)}`;
             const after = ['post_tool_use', 'stop', 'session_end'].includes(event);
             for (const [order, handler] of list(value).filter(object).entries()) {
@@ -1030,7 +1038,8 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         edge.status = blockedNode || related.some(item => item.severity === 'blocked') ? 'blocked' : edge.approval === 'confirm' ? 'confirm' : related.length || !edge.active ? 'advisory' : 'valid';
     }
     return {
-        graph: { phases: PHASES, management: MANAGEMENT, nodes, edges, findings: validation, decisions, runtime: { version, integration: integrationKey } },
+        graph: { phases: PHASES, management: MANAGEMENT, nodes, edges, findings: validation, decisions,
+            runtime: { version, integration: integrationKey, nativeEventOverrideSupported } },
         inputs, hookDocument, policy,
     };
 }
