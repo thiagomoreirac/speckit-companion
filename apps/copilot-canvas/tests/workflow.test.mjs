@@ -220,6 +220,26 @@ describe('graph from a Spec Kit repository', () => {
         assert.ok(malformed.findings.some(finding => finding.path === NATIVE_HOOK_PATH && finding.severity === 'blocked'));
     });
 
+    it('checks nested Claude markers without exposing settings or confusing user hooks for generated ones', t => {
+        const f = fixture(t);
+        f.put('.specify/integration.json', { version: '1.4.1', integration: 'claude' });
+        f.put(NATIVE_HOOK_PATH, { integrations: { claude: { events: {} } } });
+        const path = '.claude/settings.json';
+        const user = { type: 'command', command: 'user-only-command' };
+        const generated = { type: 'command', command: 'generated-command', __speckit_event__: true };
+        f.put(path, { env: { EXAMPLE: 'private-test-value' }, hooks: { Stop: [{ hooks: [user, generated] }] } });
+        const graph = f.graph();
+        const warning = graph.findings.find(item => item.code === 'native-event-suppression-pending');
+        assert.deepEqual([warning.path, warning.severity, warning.nodeIds], [path, 'advisory', ['native-events:claude']]);
+        assert.doesNotMatch(JSON.stringify(graph), /private-test-value|user-only-command|generated-command/);
+        assert.ok(!graph.nodes.some(node => node.artifacts.includes(path)));
+
+        f.put(path, { hooks: { Stop: [{ hooks: [user] }] } });
+        assert.ok(!f.graph().findings.some(item => item.path === path));
+        f.put(path, '{"hooks":');
+        assert.ok(f.graph().findings.some(item => item.code === 'native-event-settings-unverified' && item.path === path));
+    });
+
     it('shows the latest Spec Kit workflow run without exposing its persisted inputs', t => {
         const f = fixture(t);
         f.put('.specify/workflows/workflow-registry.json', { workflows: { release: { name: 'Release' } } });
@@ -401,8 +421,9 @@ describe('workflow previews and confirmed changes', () => {
         const id = 'native-events:copilot';
         const handler = { command: 'speckit.reporter.run', matcher: 'View' };
         f.install('reporter', { manifest: { extension: { effect: 'read-only' }, events: { post_tool_use: handler } } });
-        const generated = '.github/hooks/speckit-events.json';
-        f.put(generated, 'Generated settings are not edited.');
+        const generated = '.github/hooks/speckit.json';
+        const settings = { version: 1, hooks: { postToolUse: [{ type: 'command', __speckit_event__: true }] } };
+        f.put(generated, settings);
         const { api } = await serve(t, f.root);
         const initial = await api('/workflow');
         assert.equal(initial.nodes.find(node => node.id === id).state, 'proposed');
@@ -411,6 +432,7 @@ describe('workflow previews and confirmed changes', () => {
         const preview = await api('/workflow/preview', request);
         assert.ok(preview.id, JSON.stringify(preview.findings));
         assert.equal(preview.documentChange.before, null);
+        assert.ok(preview.advisories.some(item => item.code === 'native-event-suppression-pending'));
         assert.equal(existsSync(join(f.root, NATIVE_HOOK_PATH)), false);
         const changedHook = preview.diff.edges.changed.find(item => item.before.id === 'native:reporter:post_tool_use:0');
         assert.deepEqual([changedHook.before.nativeConfiguration, changedHook.after.nativeConfiguration], ['inherited', 'replaced']);
@@ -424,7 +446,8 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(readFileSync(join(f.root, NATIVE_HOOK_PATH), 'utf8'), reviewed.documentChange.after);
         assert.match(reviewed.documentChange.after, /copilot:\r?\n\s+events: \{\}/);
         assert.match(reviewed.documentChange.after, /claude:\r?\n\s+events:\r?\n\s+stop:\r?\n\s+command: speckit\.reporter\.run/);
-        assert.equal(readFileSync(join(f.root, generated), 'utf8'), 'Generated settings are not edited.');
+        assert.equal(readFileSync(join(f.root, generated), 'utf8'), JSON.stringify(settings));
+        assert.ok(applied.graph.findings.some(item => item.code === 'native-event-suppression-pending'));
         await api('/workflow/preview', request, 400);
     });
 
@@ -448,9 +471,9 @@ describe('workflow previews and confirmed changes', () => {
         f.install('reporter', { manifest: { extension: { effect: 'read-only' }, events: { post_tool_use: view } } });
         f.install('auditor', { manifest: { 'x-companion': { effect: 'local-write' }, events: { post_tool_use: inspect } } });
         const original = { integrations: { copilot: { events: { post_tool_use: [view, inspect], session_start: view } }, claude: { events: { stop: view } } } };
-        const generated = '.github/hooks/speckit-events.json';
+        const generated = '.github/hooks/speckit.json';
         f.put(NATIVE_HOOK_PATH, original);
-        f.put(generated, 'Generated settings are not edited.');
+        f.put(generated, '{"version":1}');
         const { api } = await serve(t, f.root);
         const id = 'native-override:copilot:post_tool_use:0';
         const append = { operation: 'native-override-add', id: 'native:reporter:post_tool_use:0' };
@@ -477,13 +500,13 @@ describe('workflow previews and confirmed changes', () => {
         const saved = readFileSync(join(f.root, NATIVE_HOOK_PATH), 'utf8');
         assert.match(saved, /copilot:\r?\n\s+events: \{\}/);
         assert.match(saved, /claude:\r?\n\s+events:\r?\n\s+stop:\r?\n\s+command: speckit\.reporter\.run/);
-        assert.equal(readFileSync(join(f.root, generated), 'utf8'), 'Generated settings are not edited.');
+        assert.equal(readFileSync(join(f.root, generated), 'utf8'), '{"version":1}');
         assert.ok((await api('/workflow')).nodes.some(node => node.id === 'native-events:copilot'));
         const restore = await api('/workflow/preview', append);
         assert.ok(restore.id, JSON.stringify(restore.findings));
         const restored = await api('/workflow/apply', { id: restore.id });
         assert.deepEqual(restored.graph.edges.filter(edge => edge.nativeLayer === 'override').map(edge => [edge.command, edge.condition]), [[view.command, 'View']]);
-        assert.equal(readFileSync(join(f.root, generated), 'utf8'), 'Generated settings are not edited.');
+        assert.equal(readFileSync(join(f.root, generated), 'utf8'), '{"version":1}');
     });
 
     it('previews the exact configuration file and refuses to overwrite an edit after approval', async t => {
@@ -1817,6 +1840,16 @@ describe('workflow in the browser', () => {
         await inspector.getByRole('button', { name: 'Enable hook…' }).waitFor();
         f.hooks({ after_tasks: [row] });
         await inspector.getByRole('button', { name: 'Disable hook…' }).waitFor();
+
+        f.put(NATIVE_HOOK_PATH, { integrations: { copilot: { events: {} } } });
+        await page.getByRole('button', { name: 'Inspect copilot native event override', exact: true }).click();
+        await inspector.getByRole('button', { name: NATIVE_HOOK_PATH, exact: true }).waitFor();
+        const native = '.github/hooks/speckit.json';
+        f.put(native, { version: 1, hooks: { postToolUse: [{ type: 'command', __speckit_event__: true }] } });
+        const pending = inspector.getByText(/Spec Kit hook entries remain/);
+        await pending.waitFor();
+        f.put(native, { version: 1 });
+        await pending.waitFor({ state: 'hidden' });
     });
 
     it('opens a requested spec first and follows a later focus from the workflow tab', { timeout: 45_000 }, async t => {

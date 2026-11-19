@@ -17,6 +17,10 @@ import { PRODUCT_ARCHIVE, PRODUCT_CHANGES, PRODUCT_CONFIG, PRODUCT_MODEL, produc
 export const POLICY_PATH = '.speckit-companion/workflow-policy.json';
 export const HOOK_PATH = '.specify/extensions.yml';
 export const NATIVE_HOOK_PATH = '.specify/integration-events.yml';
+export const NATIVE_GENERATED_FILES = new Map([
+    ['copilot', '.github/hooks/speckit.json'],
+    ['claude', '.claude/settings.json'],
+]);
 export const TEMPLATE_OVERRIDES = '.specify/templates/overrides';
 export const BUNDLE_RECORDS = '.specify/bundle-records.json';
 export const CONSTITUTION = '.specify/memory/constitution.md';
@@ -131,6 +135,39 @@ function document(root, path) {
     if (!entry?.stat.isFile()) return null;
     if (entry.stat.size > MAX_FILE) throw new Error('File exceeds the inspection size limit.');
     return readFileSync(entry.target, 'utf8');
+}
+
+function inspectNativeMarkers(root, path, inputs) {
+    let text;
+    try {
+        const entry = workspaceEntry(root, path);
+        if (!entry) {
+            inputs.set(path, null);
+            return 'not-inspected';
+        }
+        if (!entry.stat.isFile() || entry.stat.size > MAX_FILE) {
+            inputs.set(path, 'unverified');
+            return 'unverified';
+        }
+        text = readFileSync(entry.target, 'utf8');
+    } catch (error) {
+        if (!error.code) throw error;
+        inputs.set(path, 'unverified');
+        return 'unverified';
+    }
+    inputs.set(path, createHash('sha256').update(text).digest('hex'));
+    let settings;
+    try { settings = JSON.parse(text); }
+    catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        return 'unverified';
+    }
+    if (!object(settings) || (Object.hasOwn(settings, 'hooks') && !object(settings.hooks))) return 'unverified';
+    const groups = Object.values(settings.hooks ?? {});
+    if (groups.some(group => !Array.isArray(group))) return 'unverified';
+    const marked = hook => object(hook) && Object.hasOwn(hook, '__speckit_event__') && hook.__speckit_event__ === true;
+    return groups.some(group => group.some(hook => marked(hook) ||
+        (Array.isArray(hook?.hooks) && hook.hooks.some(marked)))) ? 'marked' : 'not-marked';
 }
 
 function directory(root, path) {
@@ -381,7 +418,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         }
     }
 
-    const nativeEventOverrideSupported = ['claude', 'copilot'].includes(integrationKey) && /^1\.4\.1(?:\.dev0)?$/.test(version ?? '');
+    const nativeEventOverrideSupported = NATIVE_GENERATED_FILES.has(integrationKey) && /^1\.4\.1(?:\.dev0)?$/.test(version ?? '');
     const canMuteNativeEvents = nativeEventOverrideSupported && !findings.some(item => item.path === NATIVE_HOOK_PATH) &&
         (!validOverride || Object.keys(overrideEvents).length > 0);
     if (validOverride || canMuteNativeEvents) {
@@ -394,6 +431,21 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 : 'No override is configured for this integration. Spec Kit can inherit built-in and extension handlers.',
         });
         nodes.push(owner);
+        if (nativeEventOverrideSupported) {
+            const path = NATIVE_GENERATED_FILES.get(integrationKey);
+            const inspected = inspectNativeMarkers(root, path, inputs);
+            if (validOverride && Object.keys(overrideEvents).length === 0) {
+                if (inspected === 'marked') {
+                    findings.push({ code: 'native-event-suppression-pending', severity: 'advisory', path,
+                        message: `Spec Kit hook entries remain in ${path} despite the empty override. Refresh generated settings with Spec Kit before relying on suppression.`,
+                        nodeIds: [owner.id], edgeIds: [] });
+                } else if (inspected === 'unverified') {
+                    findings.push({ code: 'native-event-settings-unverified', severity: 'advisory', path,
+                        message: `The canvas could not verify Spec Kit hook entries in ${path}. Do not assume the empty override has taken effect.`,
+                        nodeIds: [owner.id], edgeIds: [] });
+                }
+            }
+        }
         for (const [event, value] of validOverride ? entries(overrideEvents) : []) {
             const life = `stage:${NATIVE_EVENTS.get(event)}`;
             const after = ['post_tool_use', 'stop', 'session_end'].includes(event);

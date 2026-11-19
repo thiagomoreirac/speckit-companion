@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { realpathSync, statSync, watch } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshot, findSpec, readSpecDetail, recordLive, resolveSpecDirs } from './specs-core.mjs';
 import { STEP_COMMANDS, availableCommands, buildAskPrompt, buildInstallPrompt, buildPrompt, buildSpecifyPrompt, buildStepPreamble, commandPattern, commandSetFor, detectCommandSet, resolveCommand, runInstructionsDoc, specifyChoices, stepInstructionsName, writeRunInstructions, writerPath } from './prompts.mjs';
@@ -14,7 +14,7 @@ import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { validateRepositoryRoot, validateRoot } from './workspace.mjs';
 import { pickFolder } from './folder-picker.mjs';
 import { createWorkflowActions } from './workflow-actions.mjs';
-import { inspectWorkflowArtifact, workspaceEntry } from './workflow-inventory.mjs';
+import { inspectWorkflowArtifact, NATIVE_GENERATED_FILES, workspaceEntry } from './workflow-inventory.mjs';
 
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = {
@@ -448,11 +448,11 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     }
 
     /**
-     * Watch one directory, whether or not it exists yet. The directory itself is watched recursively; each folder above it,
+     * Watch one directory, whether or not it exists yet. The directory itself can be watched recursively; each folder above it,
      * up to the project root, is watched flat for the next folder on the way down appearing, disappearing or being replaced,
      * which re-arms everything below. Nothing else under the root is walked.
      */
-    function watchTree(dir, onChange, projectOnly = false) {
+    function watchTree(dir, onChange, projectOnly = false, recursive = true) {
         const inside = relative(state.root, resolve(state.root, dir));
         const names = !inside || inside.startsWith('..') || isAbsolute(inside) ? [] : inside.split(sep);
         const base = names.length ? state.root : resolve(state.root, dir);
@@ -468,7 +468,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
                 const path = join(base, ...names.slice(0, depth));
                 if (projectOnly && depth && !workspaceEntry(base, names.slice(0, depth).join('/'))?.stat.isDirectory()) return;
                 held[depth] = depth === names.length
-                    ? hold(path, { recursive: true }, (_event, file) => {
+                    ? hold(path, { recursive }, (_event, file) => {
                         if (revision === state.rootRevision) onChange(file);
                     })
                     : hold(path, {}, (_event, name) => {
@@ -493,6 +493,11 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         watchTree('.speckit-companion', file => {
             if (file == null || ['workflow-policy.json', 'workflow-sources'].includes(String(file).split(/[\\/]/)[0])) workflowChanged();
         }, true);
+        for (const path of NATIVE_GENERATED_FILES.values()) {
+            watchTree(dirname(path), file => {
+                if (file == null || String(file) === basename(path)) workflowChanged();
+            }, true, false);
+        }
     }
 
     function requireSpec(query) {
