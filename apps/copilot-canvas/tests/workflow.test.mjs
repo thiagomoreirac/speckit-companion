@@ -1622,7 +1622,7 @@ describe('workflow previews and confirmed changes', () => {
         const { api } = await serve(t, f.root, {
             workflowFetch: target => {
                 if (target === index) return new Response(JSON.stringify({ schema_version: '1.0', bundles: {
-                    [id]: { id, version: '2.0.0', download_url: 'https://github.com/acme/fixtures/releases/download/v2/bundle.zip', sha256, releases },
+                    [id]: { id, version: '2.0.0', download_url: 'https://github.com/acme/fixtures/releases/download/v2/bundle.zip', releases },
                 } }));
                 assert.equal(target, url);
                 return new Response(manifest);
@@ -1669,6 +1669,66 @@ describe('workflow previews and confirmed changes', () => {
         assert.deepEqual(JSON.parse(readFileSync(join(f.root, receipt), 'utf8')), { catalog: index, id, version: '1.0.0', url, sha256 });
         const installed = await api('/workflow/catalog', { id: catalogId });
         assert.deepEqual(installed.releases[0].installed, { id: `bundle:${id}`, version: '1.0.0' });
+    });
+
+    it('reviews only the manifest from an exact, pinned catalog ZIP', { skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 120_000 }, async t => {
+        const f = fixture(t);
+        f.install('reporter');
+        const catalogId = 'catalog:bundle:bundles';
+        const index = 'https://raw.githubusercontent.com/acme/fixtures/main/bundles.json';
+        const url = 'https://github.com/acme/fixtures/releases/download/v1/bundle.zip';
+        const asset = 'https://release-assets.githubusercontent.com/download/asset?signature=fixture';
+        const id = 'release-tools';
+        const raw = JSON.stringify({ schema_version: '1.0', bundle: {
+            id, name: 'Release tools', version: '1.0.0', role: 'test', description: 'Fixture', author: 'Tests', license: 'MIT',
+        }, requires: { speckit_version: '>=1.0.0' }, provides: { extensions: [{ id: 'reporter', version: '1.0.0' }] } });
+        const makeZip = (entry, text) => execFileSync(process.platform === 'win32' ? 'python' : 'python3',
+            ['-I', '-S', '-c', 'import io,sys,zipfile\nout=io.BytesIO()\nwith zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED) as z:\n z.writestr(sys.argv[1],sys.stdin.buffer.read())\n z.writestr("extra.txt","Not installed")\nsys.stdout.buffer.write(out.getvalue())', entry],
+            { input: text });
+        const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+        const zip = makeZip('bundle.yml', raw);
+        const record = '.specify/bundle-records.json';
+        let payload = zip, pinned = digest(zip), location = asset;
+        f.put('.specify/bundle-catalogs.yml', { schema_version: '1.0', catalogs: [
+            { id: 'bundles', install_policy: 'install-allowed', url: index },
+        ] });
+        const { api } = await serve(t, f.root, {
+            workflowFetch: (target, options) => {
+                assert.equal(options.credentials, 'omit');
+                if (target === index) return new Response(JSON.stringify({ bundles: {
+                    [id]: { id, version: '1.0.0', download_url: url, sha256: pinned },
+                } }));
+                if (target === url) {
+                    assert.equal(options.redirect, 'manual');
+                    return new Response(null, { status: 302, headers: { location } });
+                }
+                assert.equal(target, asset);
+                assert.equal(options.redirect, 'error');
+                return new Response(payload);
+            },
+        });
+        const selected = async () => ({ operation: 'bundle-install-record', key: id, catalogId,
+            selection: (await api('/workflow/catalog', { id: catalogId })).releases[0].selection });
+        const request = await selected();
+        location = 'https://downloads.example.invalid/bundle.zip';
+        await api('/workflow/preview', request, 502);
+        location = asset;
+        payload = makeZip('folder/bundle.yml', raw);
+        await api('/workflow/preview', request, 409);
+        pinned = digest(payload);
+        assert.match((await api('/workflow/preview', await selected(), 400)).error, /one regular bundle\.yml at its root/);
+        payload = zip;
+        pinned = digest(zip);
+        const preview = await api('/workflow/preview', request);
+        assert.equal(preview.packageDefinition.after, raw);
+        assert.deepEqual([preview.packageDefinition.archiveEntry, preview.packageDefinition.sha256, preview.packageDefinition.manifestSha256],
+            ['bundle.yml', pinned, digest(raw)]);
+        assert.equal(existsSync(join(f.root, record)), false);
+        await api('/workflow/apply', { id: preview.id });
+        assert.equal(readFileSync(join(f.root, record), 'utf8'), preview.documentChange.after);
+        assert.equal(existsSync(join(f.root, 'extra.txt')), false);
+        const receipt = JSON.parse(readFileSync(join(f.root, preview.packageDefinition.path), 'utf8'));
+        assert.deepEqual([receipt.archiveEntry, receipt.sha256, receipt.manifestSha256], ['bundle.yml', pinned, digest(raw)]);
     });
 
     it('runs real local registration against Spec Kit when explicitly enabled', { skip: !process.env.SPECKIT_CANVAS_TEST_CLI }, async t => {

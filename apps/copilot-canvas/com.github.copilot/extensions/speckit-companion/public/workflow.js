@@ -652,7 +652,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     facts([['Catalog source', result.url]]),
                     result.installAllowed ? null : paragraph('This source is discovery-only. To register a release, first review and allow installations in its inspector.'),
                     releases.length ? el('ul', {}, releases.map(release => el('li', { text: label(release) }))) :
-                        paragraph(bundle ? 'No bundle.yml releases pinned to a Git commit and SHA-256 are available. You can also register a reviewed local bundle.yml.' :
+                        paragraph(bundle ? 'No pinned bundle.yml or GitHub ZIP releases with a SHA-256 are available. You can also register a reviewed local bundle.yml.' :
                             'No standalone YAML releases pinned to a Git commit and SHA-256 are available. For other workflows, use a reviewed local directory.'),
                     actions(button('Close', () => dialog.close())));
                 return;
@@ -974,7 +974,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 ])] : []),
                 ...(result.packageDefinition ? [
                     facts([['Catalog source', result.packageDefinition.catalog], ['Catalog version', result.packageDefinition.version],
-                        ['Remote source', result.packageDefinition.url], ['SHA-256', result.packageDefinition.sha256]]),
+                        ['Remote source', result.packageDefinition.url], ['SHA-256', result.packageDefinition.sha256],
+                        ['ZIP entry', result.packageDefinition.archiveEntry], ['Manifest SHA-256', result.packageDefinition.manifestSha256]]),
                     heading('Installed definition'), result.packageDefinition.before == null ? paragraph('No definition is installed at this path.') :
                         el('pre', { text: result.packageDefinition.before, tabindex: 0 }),
                     heading('Reviewed source definition'), el('pre', { text: result.packageDefinition.after, tabindex: 0 }),

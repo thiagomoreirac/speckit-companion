@@ -12,7 +12,7 @@ import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
 import { canGuide, createGuidedRuns } from './workflow-guided-run.mjs';
 import { planEmbeddedHookEdit } from './workflow-embedded-hooks.mjs';
-import { bundleReceiptFile, fetchPinnedYaml, fetchPinnedCatalog, parsePinnedYaml, reviewedWorkflowSources, sourceFile, validPinnedWorkflowId } from './workflow-remote.mjs';
+import { bundleReceiptFile, fetchCatalogBundle, fetchPinnedYaml, fetchPinnedCatalog, parsePinnedYaml, reviewedWorkflowSources, sourceFile, validPinnedWorkflowId } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, changeRoadmapStatus } from './workflow-roadmap.mjs';
 import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeName } from './workflow-wireframe.mjs';
 import { stageAdrAcceptance } from './workflow-adr.mjs';
@@ -880,7 +880,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             const catalogReview = Object.hasOwn(request, 'catalogId') ?
                 await reviewCatalogRelease(root, current, request, 'bundle', request.key, fetchSource) : null;
             const candidate = catalogReview?.candidate;
-            const remote = candidate ? await fetchPinnedYaml(candidate.url, candidate.sha256, fetchSource, 'bundle') :
+            const remote = candidate ? await fetchCatalogBundle(candidate.url, candidate.sha256, fetchSource) :
                 request.remoteUrl === undefined ? null : await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource, 'bundle');
             if (candidate) {
                 const { id, version } = parsePinnedYaml(remote.text)?.bundle ?? {};
@@ -888,8 +888,9 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             }
             const staged = await stageBundleRecord(root, before, request, base, cli, reviewedAt, remote);
             sourcePath = remote?.url ?? staged.sourcePath;
+            const archive = remote?.archiveEntry ? { archiveEntry: remote.archiveEntry, manifestSha256: remote.manifestSha256 } : {};
             const receiptPath = remote ? bundleReceiptFile(staged.id, remote.hash) : null;
-            const receipt = remote ? json({ id: staged.id, version: staged.version, url: remote.url, sha256: remote.hash, manifest: remote.text }) : null;
+            const receipt = remote ? json({ id: staged.id, version: staged.version, url: remote.url, sha256: remote.hash, ...archive, manifest: remote.text }) : null;
             if (receiptPath && file(root, receiptPath) !== null && file(root, receiptPath) !== receipt) {
                 throw invalid('The existing pinned bundle receipt does not match the reviewed manifest.', 409);
             }
@@ -903,12 +904,13 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             readPaths = [sourcePath, ...(catalogReview ? [catalogReview.catalog.source, catalogReview.catalog.origin] : []),
                 ...staged.components.map(item => item.source)];
             documentChange = { path: BUNDLE_RECORDS, before: base, after: staged.generated };
-            if (remote) packageDefinition = { path: receiptPath, before: null, after: remote.text, url: remote.url, sha256: remote.hash,
+            if (remote) packageDefinition = { path: receiptPath, before: null, after: remote.text, url: remote.url, sha256: remote.hash, ...archive,
                 ...(candidate ? { catalog: catalogReview.catalog.origin, version: candidate.version } : {}) };
             overrides.set(BUNDLE_RECORDS, staged.next);
             title = `${operation === 'bundle-update-record' ? 'Refresh' : 'Register'} ${staged.id} ${staged.version}`;
             invocation = ['specify', ...staged.args].map(word => word.includes(' ') ? JSON.stringify(word) : word).join(' ');
             notes = ['Spec Kit prepared the bundle record offline in a temporary project. No packages will be installed, replaced, or removed.',
+                ...(remote?.archiveEntry ? ['Only the root bundle.yml is read from the ZIP. No archive files are extracted into the repository.'] : []),
                 ...(remote ? ['Confirmation retains the reviewed manifest and provenance in a separate receipt before saving the bundle record. This does not trust or change any catalog.'] : [])];
             execute = () => {
                 if (!remote && file(root, sourcePath) !== staged.raw) throw invalid('The bundle manifest changed. Review a new preview.', 409);
