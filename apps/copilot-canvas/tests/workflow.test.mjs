@@ -2791,6 +2791,21 @@ describe('workflow in the browser', () => {
         await page.getByRole('status').filter({ hasText: 'Command dispatch from Workflow is blocked' }).waitFor();
         assert.ok(await page.getByRole('button', { name: 'New spec…' }).isDisabled());
         assert.ok(await inspector.getByRole('button', { name: 'Preview Create plan…' }).isDisabled());
+
+        f.put('.specify/integration.json', {
+            version: '1.4.1', default_integration: 'claude', installed_integrations: ['claude', 'copilot'],
+        });
+        await page.getByRole('button', { name: 'Validate workflow' }).click();
+        await graph.locator('[data-workflow-item="native-events:copilot"]').press('Enter');
+        const secondaryWarning = inspector.getByText(/hook entries remain.*empty copilot override/);
+        await secondaryWarning.waitFor();
+        assert.equal(await inspector.getByRole('button', { name: 'Restore inherited native events…' }).count(), 0);
+        await page.getByRole('button', { name: 'Text view' }).click();
+        await page.getByRole('table', { name: 'Participants' })
+            .getByRole('button', { name: 'Inspect copilot native event override', exact: true }).click();
+        await secondaryWarning.waitFor();
+        assert.ok(await page.getByRole('button', { name: 'New spec…' }).isDisabled());
+        assert.equal(sent.length, 1);
         assert.deepEqual(errors, []);
     });
 });
