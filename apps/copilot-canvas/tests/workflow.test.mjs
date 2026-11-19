@@ -569,6 +569,31 @@ describe('workflow previews and confirmed changes', () => {
         await api('/workflow/preview', request, 400);
     });
 
+    it('never dispatches a Workflow command while an empty native override disagrees with generated settings', async t => {
+        const f = fixture(t);
+        const generated = '.github/hooks/speckit.json';
+        const stale = { version: 1, hooks: { sessionStart: [{ type: 'command', __speckit_event__: true }] } };
+        f.put(NATIVE_HOOK_PATH, { integrations: { copilot: { events: {} } } });
+        const dispatched = [];
+        const { api } = await serve(t, f.root, { send: async prompt => { dispatched.push(prompt); return true; } });
+        const run = { operation: 'run', id: 'stage:specify', command: 'specify', intent: 'Give readers an export button' };
+
+        f.put(generated, stale);
+        assert.match((await api('/workflow/preview', run, 409)).error, /hook entries remain/);
+        f.put(generated, '{"hooks":');
+        assert.match((await api('/workflow/preview', run, 409)).error, /could not verify/);
+        f.put(generated, { version: 1 });
+        const reviewed = await api('/workflow/preview', run);
+        assert.ok(reviewed.id);
+        f.put(generated, stale);
+        await api('/workflow/apply', { id: reviewed.id }, 409);
+        assert.deepEqual(dispatched, []);
+        f.put(generated, { version: 1, hooks: { sessionStart: [{ type: 'command', __speckit_event__: false }] } });
+        const ready = await api('/workflow/preview', run);
+        await api('/workflow/apply', { id: ready.id });
+        assert.equal(dispatched.length, 1);
+    });
+
     it('reviews restoring inheritance without restoring an unsafe handler or touching generated settings', async t => {
         const f = fixture(t);
         const readOnly = { command: 'speckit.reporter.run' };

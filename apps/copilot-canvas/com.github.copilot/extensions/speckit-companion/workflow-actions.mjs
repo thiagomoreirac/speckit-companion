@@ -325,6 +325,9 @@ function projectHooks(hooks, extension, action, declared = []) {
 }
 
 function stageRun({ node, request, specs, before, runPreview }) {
+    const pendingNative = before.findings.find(finding =>
+        ['native-event-suppression-pending', 'native-event-settings-unverified'].includes(finding.code));
+    if (pendingNative) throw invalid(pendingNative.message, 409);
     const cmd = node?.commands.find(item => item.id === request.command);
     if (!node?.active || !cmd || node.healthStatus === 'blocked') throw invalid('Select a ready command in the inspector.');
     if (node.effect === 'external-write') throw invalid('Do not dispatch an external writer to the agent. Use “Review GitHub change” for supported GitHub operations.');

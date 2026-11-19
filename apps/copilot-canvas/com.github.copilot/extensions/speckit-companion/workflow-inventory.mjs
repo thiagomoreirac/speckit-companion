@@ -112,7 +112,7 @@ function hookBoundary(provider, approval) {
     };
 }
 
-export function workspaceEntry(root, path) {
+export function workspaceEntry(root, path, { rejectSymlinks = false } = {}) {
     if (typeof path !== 'string' || path.length > 420) return null;
     const parts = path.split('/');
     if (parts.some(part => !part || part === '.' || part === '..' || /[\\:\0]/.test(part)
@@ -125,7 +125,10 @@ export function workspaceEntry(root, path) {
             if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
             throw error;
         }
-        if (stat.isSymbolicLink()) return null;
+        if (stat.isSymbolicLink()) {
+            if (rejectSymlinks) throw Object.assign(new Error('The path traverses a symbolic link.'), { code: 'ELOOP' });
+            return null;
+        }
     }
     return { target, stat };
 }
@@ -140,7 +143,7 @@ function document(root, path) {
 function inspectNativeMarkers(root, path, inputs) {
     let text;
     try {
-        const entry = workspaceEntry(root, path);
+        const entry = workspaceEntry(root, path, { rejectSymlinks: true });
         if (!entry) {
             inputs.set(path, null);
             return 'not-inspected';
@@ -437,11 +440,11 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             if (validOverride && Object.keys(overrideEvents).length === 0) {
                 if (inspected === 'marked') {
                     findings.push({ code: 'native-event-suppression-pending', severity: 'advisory', path,
-                        message: `Spec Kit hook entries remain in ${path} despite the empty override. Refresh generated settings with Spec Kit before relying on suppression.`,
+                        message: `Spec Kit hook entries remain in ${path} despite the empty override. Command dispatch from Workflow is blocked until Spec Kit regenerates those settings.`,
                         nodeIds: [owner.id], edgeIds: [] });
                 } else if (inspected === 'unverified') {
                     findings.push({ code: 'native-event-settings-unverified', severity: 'advisory', path,
-                        message: `The canvas could not verify Spec Kit hook entries in ${path}. Do not assume the empty override has taken effect.`,
+                        message: `The canvas could not verify Spec Kit hook entries in ${path}. Command dispatch from Workflow is blocked until these settings can be checked.`,
                         nodeIds: [owner.id], edgeIds: [] });
                 }
             }
