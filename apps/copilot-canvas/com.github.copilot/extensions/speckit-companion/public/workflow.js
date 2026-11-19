@@ -448,6 +448,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 item.strategy === 'scoped' ? el('div', {}, codeList([item.primaryScope, item.secondaryScope])) : null)))] : []),
             actions(
                 node.canMuteNativeEvents ? button('Suppress all native events…', () => direct('native-override-empty', node.id)) : null,
+                node.canRestoreNativeInheritance ? button('Restore inherited native events…', () => direct('native-override-restore', node.id)) : null,
                 node.kind === 'Workflow inputs' ? button(`Open ${node.category.toLowerCase()}`, () => { state.management = node.category; show('management'); }) : null,
                 node.kind === 'Features and specs' && node.id.startsWith('feature:') ? button('Open spec & run history', () => openFeature(node.key)) : null,
                 node.kind === 'Workflows' && installed ? button('Inspect composed steps…', () => inspectComposition(node)) : null,
@@ -489,6 +490,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     scalarField('Priority', input('priority', { type: 'number', min: 1, max: 99999, step: 1, required: true, value: node.priority })),
                 ], values => ({ operation: 'preset-priority', id: node.id, priority: Number(values.priority) }))) : null,
                 node.kind === 'Catalogs' && node.healthStatus !== 'blocked' ? button('Remove catalog…', () => direct('catalog-remove', node.id)) : null,
+                node.canBrowsePinnedWorkflows && node.healthStatus !== 'blocked' ?
+                    button('Browse pinned workflows…', () => browsePinnedWorkflows(node)) : null,
                 node.kind === 'Catalogs' && node.installAllowed ? button('Restrict to discovery…', () => direct('catalog-discovery', node.id)) : null,
                 node.kind === 'Catalogs' && node.installAllowed === false && node.healthStatus !== 'blocked' ? button('Allow installations…', () => {
                     openDialog('Preparing catalog trust preview');
@@ -631,6 +634,35 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
             scalarField('Name', input('name', { required: true, maxlength: 128 })),
             scalarField('HTTPS catalog URL', input('url', { type: 'url', required: true, maxlength: 1000 })),
         ], values => ({ operation: 'catalog-add', ...values }));
+    }
+
+    function browsePinnedWorkflows(node) {
+        const title = `Browse ${node.name}`;
+        void readDialog(title, () => api('/api/workflow/catalog', { id: node.id }), result => {
+            const label = release => `${release.key} · ${release.version}${release.installed ? ` (installed: ${release.installed.version ?? 'unknown'})` : ''}`;
+            const releases = result.releases;
+            if (!result.installAllowed || !releases.length) {
+                dialogBody.replaceChildren(
+                    facts([['Catalog source', result.url]]),
+                    result.installAllowed ? null : paragraph('This source is discovery-only. To register a release, first review and allow installations in its inspector.'),
+                    releases.length ? el('ul', {}, releases.map(release => el('li', { text: label(release) }))) :
+                        paragraph('No standalone YAML releases pinned to a Git commit and SHA-256 are available. For other workflows, use a reviewed local directory.'),
+                    actions(button('Close', () => dialog.close())));
+                return;
+            }
+            const releaseField = select('selection', [['', 'Choose a release'], ...releases.map(release => [release.selection, label(release)])]);
+            releaseField.required = true;
+            form(title, [
+                facts([['Catalog source', result.url]]),
+                paragraph('Choose an exact release. Preview shows the definition and files before registering or replacing the workflow. No workflow steps run.'),
+                scalarField('Workflow release', releaseField),
+            ], ({ selection }) => {
+                const release = releases.find(item => item.selection === selection);
+                if (!release) throw new Error('Choose a workflow release.');
+                return { operation: release.installed ? 'update' : 'install', id: release.installed?.id,
+                    kind: 'Workflows', key: release.key, catalogId: node.id, selection };
+            });
+        });
     }
 
     function guidedStatus(status) {
@@ -787,12 +819,14 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
 
     async function readDialog(title, request, view) {
         openDialog(title);
-        dialogBody.append(paragraph('Loading…'), actions(button('Close', () => dialog.close())));
+        const loading = el('p', { role: 'status', text: 'Loading…' });
+        dialogBody.append(loading, actions(button('Close', () => dialog.close())));
+        const current = () => dialog.open && dialogBody.contains(loading);
         try {
             const result = await request();
-            if (dialog.open && $('workflow-dialog-title').textContent === title) view(result);
+            if (current()) view(result);
         } catch (error) {
-            if (dialog.open) {
+            if (current()) {
                 errorBox.textContent = error.message;
                 dialogBody.replaceChildren(actions(button('Close', () => dialog.close())));
             }
@@ -886,6 +920,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                             before.active !== after.active ? (after.active ? 'Enabled' : 'Disabled') :
                             before.nativeConfiguration !== after.nativeConfiguration && after.nativeConfiguration === 'replaced' ?
                                 'Replaced on next integration refresh' :
+                            before.nativeConfiguration !== after.nativeConfiguration && after.nativeConfiguration === 'inherited' ?
+                                'Inherited on next integration refresh' :
                             before.priority !== after.priority ? `Priority ${before.priority} → ${after.priority}` :
                             before.version !== after.version ? `Version ${before.version ?? 'none'} → ${after.version ?? 'none'}` :
                             before.approval !== after.approval ? `${human(before.approval)} → ${human(after.approval)}` : 'Metadata changed';
@@ -927,7 +963,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     ...(item.kind === 'drawing' ? drawingEvidence(item) : [el('pre', { text: item.text, tabindex: 0 })]),
                 ])] : []),
                 ...(result.packageDefinition ? [
-                    facts([['Remote source', result.packageDefinition.url], ['SHA-256', result.packageDefinition.sha256]]),
+                    facts([['Catalog source', result.packageDefinition.catalog], ['Catalog version', result.packageDefinition.version],
+                        ['Remote source', result.packageDefinition.url], ['SHA-256', result.packageDefinition.sha256]]),
                     heading('Installed definition'), result.packageDefinition.before == null ? paragraph('No definition is installed at this path.') :
                         el('pre', { text: result.packageDefinition.before, tabindex: 0 }),
                     heading('Reviewed source definition'), el('pre', { text: result.packageDefinition.after, tabindex: 0 }),

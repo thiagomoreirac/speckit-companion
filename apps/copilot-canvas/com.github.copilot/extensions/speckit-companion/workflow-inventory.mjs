@@ -8,7 +8,7 @@ import { hookFixtures } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, isReviewArtifactPath, reviewGates, reviewOverlayPath } from './workflow-review-run.mjs';
 import { issueLabelStep } from './workflow-github.mjs';
 import { guidedReview } from './workflow-guided-run.mjs';
-import { sourceFile, validPinnedUrl } from './workflow-remote.mjs';
+import { sourceFile, validPinnedUrl, validWorkflowCatalogUrl } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, ROADMAP_STATUSES, parseRoadmap } from './workflow-roadmap.mjs';
 import { WIREFRAME_CONFIG, standardWireframeFeature } from './workflow-wireframe.mjs';
 import { ADR_DIR, standardAdr } from './workflow-adr.mjs';
@@ -279,7 +279,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     const hasNativeOverride = safeId(integrationKey) && object(nativeSettings) && Object.hasOwn(nativeSettings, integrationKey);
     const overrideEvents = hasNativeOverride ? nativeSettings[integrationKey]?.events : null;
     const validOverride = object(overrideEvents) && entries(overrideEvents).every(([event, value]) => {
-        const handlers = list(value).filter(object);
+        const handlers = list(value);
         return NATIVE_EVENTS.has(event) && handlers.length && handlers.every(validNativeHandler);
     });
     if ((hasNativeOverride && !validOverride) || (nativeDocument && Object.hasOwn(nativeDocument, 'integrations') && !object(nativeSettings))) {
@@ -425,7 +425,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         const owner = defaultNode(`native-events:${integrationKey}`, `${integrationKey} native event override`, 'Hooks', NATIVE_HOOK_PATH, {
             installed: validOverride, active: validOverride, state: validOverride ? 'installed' : 'proposed',
             effect: 'unknown', approval: 'inspect', artifacts: validOverride ? [NATIVE_HOOK_PATH] : [],
-            hooks: [], canMuteNativeEvents,
+            hooks: [], canMuteNativeEvents, canRestoreNativeInheritance: nativeEventOverrideSupported && validOverride,
             note: validOverride
                 ? 'This replaces inherited native handlers for the selected integration when Spec Kit regenerates its settings. The canvas cannot verify which generated settings an agent currently uses.'
                 : 'No override is configured for this integration. Spec Kit can inherit built-in and extension handlers.',
@@ -833,6 +833,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                     installAllowed ? 'This repository permits installation from this source. User-level sources or environment overrides may also affect resolution.' :
                         'This repository registers this source for discovery only.',
                 installAllowed, priority: catalog?.priority, effect: 'external-read',
+                canBrowsePinnedWorkflows: category === 'workflow' && validWorkflowCatalogUrl(catalog.url),
             }));
         }
     }

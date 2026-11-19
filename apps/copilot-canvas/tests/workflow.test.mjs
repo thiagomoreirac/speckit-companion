@@ -53,6 +53,19 @@ const guidedDefinition = artifact => ({
     ],
 });
 
+function catalogFixture(f, installAllowed) {
+    const path = '.specify/workflow-catalogs.yml';
+    const id = 'catalog:workflow:delivery';
+    const index = 'https://raw.githubusercontent.com/acme/fixtures/main/catalog.json';
+    const url = `https://raw.githubusercontent.com/acme/fixtures/${'e'.repeat(40)}/gate.yml`;
+    const body = JSON.stringify({ ...guidedDefinition(), workflow: { id: 'release-review', version: '1.0.0', name: 'Release review' },
+        steps: [{ id: 'review', type: 'gate', message: 'Inspect the release.', verdict_input: 'verdict' }] });
+    const digest = createHash('sha256').update(body).digest('hex');
+    const configure = allowed => f.put(path, { catalogs: [{ name: 'delivery', url: index, priority: 20, install_allowed: allowed }] });
+    configure(installAllowed);
+    return { id, index, url, body, digest, configure, path };
+}
+
 function fixture(t) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'canvas-workflow-')));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -416,6 +429,95 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(calls.length, 2);
     });
 
+    it('registers only a trusted, rechecked catalog release and records its provenance', {
+        timeout: 240_000,
+    }, async t => {
+        const f = fixture(t);
+        const { id, index, url, body, digest, configure, path } = catalogFixture(f, false);
+        const calls = [];
+        let version = '1.0.0';
+        let advertisedDigest = digest;
+        let workflowBytes = body;
+        const fetchSource = async (target, options) => {
+            calls.push(target);
+            assert.equal(options.redirect, 'error');
+            assert.equal(options.credentials, 'omit');
+            if (target === index) return new Response(JSON.stringify({ workflows: {
+                'release-review': { version, url, sha256: advertisedDigest, releases: {
+                    '0.9.0': { url, sha256: `sha256:${digest}` },
+                } },
+                archive: { version: '1.0.0', url: url.replace('gate.yml', 'gate.zip'), sha256: digest },
+                dependent: { version: '1.0.0', url, sha256: digest, requires: { workflows: ['other'] } },
+            } }));
+            assert.equal(target, url);
+            return new Response(workflowBytes);
+        };
+        const installed = '.specify/workflows/release-review/workflow.yml';
+        const executions = [];
+        const real = process.env.SPECKIT_CANVAS_TEST_CLI === '1';
+        const cli = async (root, args, probe) => {
+            if (real) return callSpecKit(root, args, probe);
+            if (probe) return '--dev';
+            assert.deepEqual(args.slice(0, 3), ['workflow', 'add', '--dev']);
+            assert.equal(readFileSync(args[3], 'utf8'), workflowBytes);
+            executions.push(root);
+            if (root === f.root) {
+                f.put(installed, workflowBytes);
+                f.put('.specify/workflows/workflow-registry.json', { workflows: { 'release-review': {
+                    version, enabled: true, source: args[3],
+                } } });
+            }
+            return 'Registered';
+        };
+        const { api } = await serve(t, f.root, { workflowCli: cli, workflowFetch: fetchSource });
+        const browse = await api('/workflow/catalog', { id });
+        assert.equal(browse.installAllowed, false);
+        assert.deepEqual(browse.releases.map(release => release.version), ['1.0.0', '0.9.0']);
+        const request = { operation: 'install', kind: 'Workflows', key: 'release-review', catalogId: id, selection: browse.releases[0].selection };
+        await api('/workflow/preview', request, 409);
+        assert.deepEqual(calls, [index]);
+        configure(true);
+        await api('/workflow/preview', { ...request, remoteUrl: url }, 400);
+        await api('/workflow/preview', { ...request, selection: browse.releases[1].selection }, 400);
+        const preview = await api('/workflow/preview', request);
+        assert.deepEqual(preview.packageDefinition, { path: installed, before: null, after: body, url, sha256: digest,
+            catalog: index, version: '1.0.0' });
+        assert.equal(existsSync(join(f.root, installed)), false);
+        version = '1.0.1';
+        await api('/workflow/apply', { id: preview.id }, 409);
+        version = '1.0.0';
+        const approved = await api('/workflow/preview', request);
+        workflowBytes += '\n';
+        await api('/workflow/apply', { id: approved.id }, 409);
+        workflowBytes = body;
+        const noLongerTrusted = await api('/workflow/preview', request);
+        configure(false);
+        await api('/workflow/apply', { id: noLongerTrusted.id }, 409);
+        configure(true);
+        const final = await api('/workflow/preview', request);
+        const applied = await api('/workflow/apply', { id: final.id });
+        assert.equal(readFileSync(join(f.root, installed), 'utf8'), body);
+        assert.equal(applied.graph.nodes.find(node => node.id === 'workflow:release-review').origin, url);
+        const receipt = `.speckit-companion/workflow-sources/catalog-${request.selection}.json`;
+        assert.ok(final.paths.includes(receipt));
+        assert.deepEqual(JSON.parse(readFileSync(join(f.root, receipt), 'utf8')), { catalog: index, id: 'release-review', version: '1.0.0', url, sha256: digest });
+        assert.equal(JSON.parse(readFileSync(join(f.root, path), 'utf8')).catalogs[0].install_allowed, true);
+
+        version = '1.0.1';
+        workflowBytes = body.replace('1.0.0', version);
+        advertisedDigest = createHash('sha256').update(workflowBytes).digest('hex');
+        const { releases: [replacement] } = await api('/workflow/catalog', { id });
+        assert.deepEqual(replacement.installed, { id: 'workflow:release-review', version: '1.0.0' });
+        const update = await api('/workflow/preview', { ...request, operation: 'update',
+            id: replacement.installed.id, selection: replacement.selection });
+        assert.equal(update.packageDefinition.before, body);
+        assert.equal(update.packageDefinition.after, workflowBytes);
+        const updated = await api('/workflow/apply', { id: update.id });
+        assert.equal(updated.graph.nodes.find(node => node.id === 'workflow:release-review').version, version);
+        assert.equal(readFileSync(join(f.root, installed), 'utf8'), workflowBytes);
+        assert.equal(executions.filter(root => root === f.root).length, real ? 0 : 2);
+    });
+
     it('previews a new empty native override and rejects it if a concurrent edit creates the file', async t => {
         const f = fixture(t);
         const id = 'native-events:copilot';
@@ -459,9 +561,39 @@ describe('workflow previews and confirmed changes', () => {
         await api('/workflow/preview', request, 400);
         f.put(NATIVE_HOOK_PATH, 'integrations: [');
         await api('/workflow/preview', request, 400);
+        f.put(NATIVE_HOOK_PATH, { integrations: { copilot: { events: { stop: [{ command: 'speckit.reporter.run' }, 'malformed'] } } } });
+        await api('/workflow/preview', request, 400);
+        await api('/workflow/preview', { ...request, operation: 'native-override-restore' }, 400);
         f.put(NATIVE_HOOK_PATH, { integrations: {} });
         f.put('.specify/init-options.json', { speckit_version: '1.2.0', integration: 'copilot' });
         await api('/workflow/preview', request, 400);
+    });
+
+    it('reviews restoring inheritance without restoring an unsafe handler or touching generated settings', async t => {
+        const f = fixture(t);
+        const readOnly = { command: 'speckit.reporter.run' };
+        f.install('reporter', { manifest: { extension: { effect: 'read-only' }, events: { stop: readOnly } } });
+        f.install('unsafe', { manifest: { 'x-companion': { effect: 'external-write' }, events: { stop: { command: 'speckit.unsafe.run' } } } });
+        const unrelated = { events: { stop: readOnly } };
+        f.put(NATIVE_HOOK_PATH, { integrations: { copilot: { events: {} }, claude: unrelated } });
+        const generated = '.github/hooks/speckit.json';
+        f.put(generated, { version: 1 });
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'native-override-restore', id: 'native-events:copilot' };
+        const blocked = await api('/workflow/preview', request);
+        assert.equal(blocked.id, null);
+        assert.ok(blocked.findings.some(item => item.code === 'unguarded-hook' && item.edgeIds.includes('native:unsafe:stop:0')));
+        f.registry.unsafe.enabled = false;
+        f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+        const preview = await api('/workflow/preview', request);
+        assert.ok(preview.id, JSON.stringify(preview.findings));
+        assert.deepEqual(preview.diff.edges.changed.filter(item => item.after.active).map(item => item.after.nativeConfiguration), ['inherited']);
+        const restored = await api('/workflow/apply', { id: preview.id });
+        assert.ok(restored.graph.edges.some(edge => edge.id === 'native:reporter:stop:0' && edge.nativeConfiguration === 'inherited'));
+        const saved = readFileSync(join(f.root, NATIVE_HOOK_PATH), 'utf8');
+        assert.doesNotMatch(saved, /copilot:/);
+        assert.match(saved, /claude:\r?\n\s+events:\r?\n\s+stop:\r?\n\s+command: speckit\.reporter\.run/);
+        assert.equal(readFileSync(join(f.root, generated), 'utf8'), '{"version":1}');
     });
 
     it('previews native override edits without rewriting generated settings or restoring inherited handlers', async t => {
@@ -1801,6 +1933,43 @@ describe('workflow previews and confirmed changes', () => {
 });
 
 describe('workflow in the browser', () => {
+    it('browses and previews an exact pinned workflow from the catalog inspector', { timeout: 45_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const { index, url: definition, body, digest } = catalogFixture(f, true);
+        const { url } = await serve(t, f.root, {
+            workflowFetch: target => new Response(target === index ? JSON.stringify({
+                workflows: [{ id: 'release-review', version: '1.0.0', url: definition, sha256: digest }],
+            }) : body),
+            workflowCli: async (_root, [group, verb], probe) => {
+                assert.deepEqual([group, verb], ['workflow', 'add']);
+                return probe ? '--dev' : 'Validated';
+            },
+        });
+        const page = await browser.newPage({ viewport: { width: 480, height: 900 } });
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Spec Kit Management' }).click();
+        await page.getByLabel('Filter by category').selectOption('Catalogs');
+        await page.getByRole('button', { name: 'Inspect delivery', exact: true }).click();
+        await page.getByRole('button', { name: 'Browse pinned workflows…' }).click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByLabel('Workflow release').selectOption({ label: 'release-review · 1.0.0' });
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByText('Catalog source', { exact: true }).waitFor();
+        await dialog.getByText(digest, { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: 'Confirm change' }).waitFor();
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        assert.equal(existsSync(join(f.root, '.specify/workflows/workflow-registry.json')), false);
+    });
+
     it('refreshes hook edits made on disk without replacing an open confirmation', { timeout: 45_000 }, async t => {
         let browser;
         try {
