@@ -8,7 +8,7 @@ import { hookFixtures } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, isReviewArtifactPath, reviewGates, reviewOverlayPath } from './workflow-review-run.mjs';
 import { issueLabelStep } from './workflow-github.mjs';
 import { guidedReview } from './workflow-guided-run.mjs';
-import { sourceFile, validPinnedUrl, validWorkflowCatalogUrl } from './workflow-remote.mjs';
+import { sourceFile, validPinnedUrl, validPinnedCatalogUrl } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, ROADMAP_STATUSES, parseRoadmap } from './workflow-roadmap.mjs';
 import { WIREFRAME_CONFIG, standardWireframeFeature } from './workflow-wireframe.mjs';
 import { ADR_DIR, standardAdr } from './workflow-adr.mjs';
@@ -836,7 +836,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                     installAllowed ? 'This repository permits installation from this source. User-level sources or environment overrides may also affect resolution.' :
                         'This repository registers this source for discovery only.',
                 installAllowed, priority: catalog?.priority, effect: 'external-read',
-                canBrowsePinnedWorkflows: category === 'workflow' && validWorkflowCatalogUrl(catalog.url),
+                canBrowsePinnedReleases: ['bundle', 'workflow'].includes(category) && validPinnedCatalogUrl(catalog.url),
             }));
         }
     }

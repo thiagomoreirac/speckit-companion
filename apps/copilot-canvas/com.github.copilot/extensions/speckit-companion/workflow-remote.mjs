@@ -12,7 +12,7 @@ export const reviewedWorkflowSources = '.speckit-companion/workflow-sources';
 export const sourceFile = (key, digest) => `${reviewedWorkflowSources}/${key}-${digest}.yml`;
 export const bundleReceiptFile = (key, digest) => `${reviewedWorkflowSources}/bundle-${key}-${digest}.json`;
 export const validPinnedUrl = url => canonical(url, pinnedSource);
-export const validWorkflowCatalogUrl = url => canonical(url, catalogSource);
+export const validPinnedCatalogUrl = url => canonical(url, catalogSource);
 export const validPinnedWorkflowId = key => typeof key === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(key) &&
     !['overlays', 'runs', 'steps', 'functions'].includes(key);
 
@@ -84,36 +84,47 @@ export async function fetchPinnedYaml(url, digest, fetchSource = fetch, kind = '
     return { url, hash, text: decodeFile(bytes, label) };
 }
 
-export async function fetchWorkflowCatalog(url, fetchSource = fetch) {
-    if (!validWorkflowCatalogUrl(url)) throw invalid('Choose a project workflow catalog registered at a public raw GitHub JSON URL.');
-    const label = 'The workflow catalog JSON';
+export async function fetchPinnedCatalog(url, kind, fetchSource = fetch) {
+    if (!['workflow', 'bundle'].includes(kind) || !validPinnedCatalogUrl(url)) {
+        throw invalid('Choose a supported project catalog registered at a public raw GitHub JSON URL.');
+    }
+    const bundle = kind === 'bundle';
+    const collection = bundle ? 'bundles' : 'workflows';
+    const label = `The ${kind} catalog JSON`;
     const text = decodeFile(await fetchGitHubFile(url, fetchSource, catalogLimit, label), label);
-    let workflows;
-    try { workflows = JSON.parse(text)?.workflows; }
+    let payload;
+    try { payload = JSON.parse(text); }
     catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
-        throw invalid('The workflow catalog is not valid JSON.');
+        throw invalid(`${label} is not valid JSON.`);
     }
-    const entries = Array.isArray(workflows) ? workflows.map(entry => [entry?.id, entry]) :
-        mapping(workflows) ? Object.entries(workflows) : null;
-    if (!entries || entries.length > 300) throw invalid('The workflow catalog must list no more than 300 workflows in a workflows mapping or list.');
+    if (bundle && payload?.schema_version != null && !/^1(?:\.|$)/.test(String(payload.schema_version).trim())) {
+        throw invalid('This bundle catalog uses an unsupported schema version.');
+    }
+    const source = payload?.[collection];
+    const entries = mapping(source) ? Object.entries(source) :
+        !bundle && Array.isArray(source) ? source.map(entry => [entry?.id, entry]) : null;
+    if (!entries || entries.length > 300) throw invalid(`${label} must contain a ${collection} ${bundle ? 'mapping' : 'mapping or list'} of at most 300 entries.`);
     const ids = new Set(), releases = [];
     const empty = value => value == null || ((Array.isArray(value) || mapping(value)) && !Object.keys(value).length);
     for (const [key, entry] of entries) {
-        if (!validPinnedWorkflowId(key) || !mapping(entry) || (entry.id != null && entry.id !== key)) continue;
-        if (ids.has(key)) throw invalid('The workflow catalog repeats a workflow identifier.');
+        const validKey = bundle ? /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(key) : validPinnedWorkflowId(key);
+        if (!validKey || !mapping(entry) || (bundle || entry.id != null) && entry.id !== key) continue;
+        if (ids.has(key)) throw invalid(`${label} repeats a ${kind} identifier.`);
         ids.add(key);
         const history = mapping(entry.releases) ? Object.entries(entry.releases) : [];
         if ((entry.releases != null && !mapping(entry.releases)) || history.length > 40 ||
-            history.some(([version]) => version === entry.version)) throw invalid(`The workflow catalog has an invalid release list for ${key}.`);
+            history.some(([version]) => version === entry.version)) throw invalid(`${label} has an invalid release list for ${key}.`);
         for (const [version, record] of [[entry.version, entry], ...history]) {
+            const releaseUrl = bundle ? record?.download_url : record?.url;
             if (!mapping(record) || typeof version !== 'string' || !/^[a-z0-9][a-z0-9.+!-]{0,63}$/i.test(version) ||
-                !validPinnedUrl(record.url) || !empty(record.requires) || !empty(record.bundled)) continue;
+                !validPinnedUrl(releaseUrl) || (bundle ? !releaseUrl.endsWith('/bundle.yml') || (record.version != null && record.version !== version) :
+                    !empty(record.requires) || !empty(record.bundled))) continue;
             const sha256 = typeof record.sha256 === 'string' && /^(?:sha256:)?([a-f0-9]{64})$/i.exec(record.sha256)?.[1]?.toLowerCase();
             if (!sha256) continue;
-            if (releases.length >= 500) throw invalid('The workflow catalog advertises too many pinned releases to review.');
-            const selection = createHash('sha256').update(JSON.stringify([url, key, version, record.url, sha256])).digest('hex');
-            releases.push({ key, version, url: record.url, sha256, selection });
+            if (releases.length >= 500) throw invalid(`${label} advertises too many pinned releases to review.`);
+            const selection = createHash('sha256').update(JSON.stringify([url, key, version, releaseUrl, sha256])).digest('hex');
+            releases.push({ key, version, url: releaseUrl, sha256, selection });
         }
     }
     return releases.sort((a, b) => a.key.localeCompare(b.key));

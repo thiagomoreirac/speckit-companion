@@ -12,7 +12,7 @@ import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
 import { canGuide, createGuidedRuns } from './workflow-guided-run.mjs';
 import { planEmbeddedHookEdit } from './workflow-embedded-hooks.mjs';
-import { bundleReceiptFile, fetchPinnedYaml, fetchWorkflowCatalog, parsePinnedYaml, reviewedWorkflowSources, sourceFile, validPinnedWorkflowId } from './workflow-remote.mjs';
+import { bundleReceiptFile, fetchPinnedYaml, fetchPinnedCatalog, parsePinnedYaml, reviewedWorkflowSources, sourceFile, validPinnedWorkflowId } from './workflow-remote.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH, changeRoadmapStatus } from './workflow-roadmap.mjs';
 import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeName } from './workflow-wireframe.mjs';
 import { stageAdrAcceptance } from './workflow-adr.mjs';
@@ -91,13 +91,34 @@ function catalogUrl(value) {
     return url.href;
 }
 
-function requireWorkflowCatalog(graph, id, installing = false) {
-    const catalog = graph.nodes.find(node => node.id === id && node.canBrowsePinnedWorkflows);
+function requirePinnedCatalog(graph, id, kind) {
+    const catalog = graph.nodes.find(node => node.id === id && node.canBrowsePinnedReleases && (!kind || node.category === kind));
     if (!catalog || catalog.healthStatus === 'blocked' || graph.findings.some(item => item.path === catalog.source)) {
-        throw invalid('Select a valid project workflow catalog registered at a public raw GitHub JSON URL.');
+        throw invalid('Select a supported project catalog registered at a public raw GitHub JSON URL.');
     }
-    if (installing && catalog.installAllowed !== true) throw invalid('This source is discovery-only. Review its installation policy separately before registering a workflow.', 409);
     return catalog;
+}
+
+function readCatalogBase(root, catalog, inputs) {
+    const base = file(root, catalog.source);
+    if (base === null || createHash('sha256').update(base).digest('hex') !== inputs.get(catalog.source)) {
+        throw invalid('The catalog configuration changed. Open the catalog again.', 409);
+    }
+    return base;
+}
+
+async function reviewCatalogRelease(root, { graph, inputs }, request, kind, key, fetchSource) {
+    if (['source', 'remoteUrl', 'sha256'].some(field => Object.hasOwn(request, field)) ||
+        typeof request.selection !== 'string' || !/^[a-f0-9]{64}$/.test(request.selection)) {
+        throw invalid('Choose a pinned release from the catalog rather than substituting a source.');
+    }
+    const catalog = requirePinnedCatalog(graph, request.catalogId, kind);
+    if (catalog.installAllowed !== true) throw invalid(`This source is discovery-only. Review its installation policy separately before registering a ${kind}.`, 409);
+    const catalogBase = readCatalogBase(root, catalog, inputs);
+    const candidate = (await fetchPinnedCatalog(catalog.origin, kind, fetchSource))
+        .find(release => release.key === key && release.selection === request.selection);
+    if (!candidate) throw invalid('The selected release changed or is no longer advertised. Browse the catalog again.', 409);
+    return { catalog, catalogBase, candidate };
 }
 
 function packageDigest(root, path, capture) {
@@ -851,7 +872,15 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 !request.remoteUrl.endsWith('/bundle.yml'))) {
                 throw invalid('Select one source: a local bundle.yml or a pinned raw GitHub bundle.yml URL.');
             }
-            const remote = request.remoteUrl === undefined ? null : await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource, 'bundle');
+            const catalogReview = Object.hasOwn(request, 'catalogId') ?
+                await reviewCatalogRelease(root, current, request, 'bundle', request.key, fetchSource) : null;
+            const candidate = catalogReview?.candidate;
+            const remote = candidate ? await fetchPinnedYaml(candidate.url, candidate.sha256, fetchSource, 'bundle') :
+                request.remoteUrl === undefined ? null : await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource, 'bundle');
+            if (candidate) {
+                const { id, version } = parsePinnedYaml(remote.text)?.bundle ?? {};
+                if (id !== candidate.key || version !== candidate.version) throw invalid('The manifest does not declare the reviewed catalog release.');
+            }
             const staged = await stageBundleRecord(root, before, request, base, cli, reviewedAt, remote);
             sourcePath = remote?.url ?? staged.sourcePath;
             const receiptPath = remote ? bundleReceiptFile(staged.id, remote.hash) : null;
@@ -859,11 +888,18 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             if (receiptPath && file(root, receiptPath) !== null && file(root, receiptPath) !== receipt) {
                 throw invalid('The existing pinned bundle receipt does not match the reviewed manifest.', 409);
             }
-            sourceStamp = [staged.raw, staged.generated, remote?.hash];
-            paths = [BUNDLE_RECORDS, ...(receiptPath ? [receiptPath] : [])];
-            readPaths = [sourcePath, ...staged.components.map(item => item.source)];
+            const catalogReceiptPath = candidate ? `${reviewedWorkflowSources}/bundle-catalog-${candidate.selection}.json` : null;
+            const catalogReceipt = candidate ? json({ catalog: catalogReview.catalog.origin, id: candidate.key, version: candidate.version, url: candidate.url, sha256: candidate.sha256 }) : null;
+            if (catalogReceiptPath && file(root, catalogReceiptPath) !== null && file(root, catalogReceiptPath) !== catalogReceipt) {
+                throw invalid('The existing catalog receipt does not match the reviewed release.', 409);
+            }
+            sourceStamp = [staged.raw, staged.generated, remote?.hash, catalogReview?.catalogBase, candidate?.selection];
+            paths = [BUNDLE_RECORDS, ...[receiptPath, catalogReceiptPath].filter(Boolean)];
+            readPaths = [sourcePath, ...(catalogReview ? [catalogReview.catalog.source, catalogReview.catalog.origin] : []),
+                ...staged.components.map(item => item.source)];
             documentChange = { path: BUNDLE_RECORDS, before: base, after: staged.generated };
-            if (remote) packageDefinition = { path: receiptPath, before: null, after: remote.text, url: remote.url, sha256: remote.hash };
+            if (remote) packageDefinition = { path: receiptPath, before: null, after: remote.text, url: remote.url, sha256: remote.hash,
+                ...(candidate ? { catalog: catalogReview.catalog.origin, version: candidate.version } : {}) };
             overrides.set(BUNDLE_RECORDS, staged.next);
             title = `${operation === 'bundle-update-record' ? 'Refresh' : 'Register'} ${staged.id} ${staged.version}`;
             invocation = ['specify', ...staged.args].map(word => word.includes(' ') ? JSON.stringify(word) : word).join(' ');
@@ -871,7 +907,11 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 ...(remote ? ['Confirmation retains the reviewed manifest and provenance in a separate receipt before saving the bundle record. This does not trust or change any catalog.'] : [])];
             execute = () => {
                 if (!remote && file(root, sourcePath) !== staged.raw) throw invalid('The bundle manifest changed. Review a new preview.', 409);
+                if (catalogReview && file(root, catalogReview.catalog.source) !== catalogReview.catalogBase) {
+                    throw invalid('The bundle catalog policy changed. Review a new preview.', 409);
+                }
                 if (receiptPath) retainWorkflowSource(root, receiptPath, receipt);
+                if (catalogReceiptPath) retainWorkflowSource(root, catalogReceiptPath, catalogReceipt);
                 writeConfig(root, BUNDLE_RECORDS, staged.generated, base, { exclusiveCreate: true });
                 return { output: staged.output.slice(0, 6000) };
             };
@@ -1134,16 +1174,8 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 if (remoteSource) {
                     if (!workspaceEntry(root, '.specify')?.stat.isDirectory()) throw invalid('Initialize Spec Kit before registering a pinned workflow.');
                     if (fromCatalog) {
-                        if (['source', 'remoteUrl', 'sha256'].some(field => Object.hasOwn(request, field)) ||
-                            typeof request.selection !== 'string' || !/^[a-f0-9]{64}$/.test(request.selection)) {
-                            throw invalid('Choose a pinned release from the catalog rather than substituting a source.');
-                        }
-                        const catalog = requireWorkflowCatalog(before, request.catalogId, true);
-                        const catalogBase = file(root, catalog.source);
-                        const candidate = (await fetchWorkflowCatalog(catalog.origin, fetchSource))
-                            .find(release => release.key === key && release.selection === request.selection);
-                        if (!candidate) throw invalid('The selected release changed or is no longer advertised. Browse the catalog again.', 409);
-                        catalogReview = { catalog, catalogBase, candidate };
+                        catalogReview = await reviewCatalogRelease(root, current, request, 'workflow', key, fetchSource);
+                        const { candidate } = catalogReview;
                         remote = await fetchPinnedYaml(candidate.url, candidate.sha256, fetchSource);
                     } else remote = await fetchPinnedYaml(request.remoteUrl, request.sha256, fetchSource);
                     sourcePath = sourceFile(key, remote.hash);
@@ -1355,15 +1387,17 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             requireGitHubWriter(snapshot(), id);
             return github.inspect(url, true);
         },
-        async browseWorkflowCatalog(id) {
-            const { root, revision } = context();
-            const catalog = requireWorkflowCatalog(snapshot(), id);
-            const base = file(root, catalog.source);
-            const releases = await fetchWorkflowCatalog(catalog.origin, fetchSource);
+        async browsePinnedCatalog(id) {
+            const { root, revision, specs, specDirs } = context();
+            const { graph, inputs } = readWorkflow(root, specs, specDirs);
+            const catalog = requirePinnedCatalog(graph, id);
+            const base = readCatalogBase(root, catalog, inputs);
+            const releases = await fetchPinnedCatalog(catalog.origin, catalog.category, fetchSource);
             if (context().revision !== revision || file(root, catalog.source) !== base) {
                 throw invalid('The repository or catalog policy changed while browsing. Open the catalog again.', 409);
             }
-            const installed = new Map(snapshot().nodes.filter(node => node.kind === 'Workflows' && node.installed)
+            const kind = catalog.category === 'bundle' ? 'Bundles' : 'Workflows';
+            const installed = new Map(snapshot().nodes.filter(node => node.kind === kind && node.installed)
                 .map(node => [node.key, { id: node.id, version: node.version }]));
             return { url: catalog.origin, installAllowed: catalog.installAllowed, releases: releases.map(release => ({
                 key: release.key, version: release.version, selection: release.selection, installed: installed.get(release.key) ?? null,

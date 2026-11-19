@@ -1600,6 +1600,77 @@ describe('workflow previews and confirmed changes', () => {
         assert.equal(downloads, 4);
     });
 
+    it('reviews an exact catalog bundle release and rechecks listing and trust at confirmation', { timeout: 120_000 }, async t => {
+        const f = fixture(t);
+        f.install('reporter');
+        const catalogPath = '.specify/bundle-catalogs.yml';
+        const catalogId = 'catalog:bundle:bundles';
+        const index = 'https://raw.githubusercontent.com/acme/fixtures/main/bundles.json';
+        const url = `https://raw.githubusercontent.com/acme/fixtures/${'d'.repeat(40)}/bundle.yml`;
+        const id = 'release-tools';
+        const raw = JSON.stringify({ schema_version: '1.0', bundle: {
+            id, name: 'Release tools', version: '1.0.0', role: 'test', description: 'Fixture', author: 'Tests', license: 'MIT',
+        }, requires: { speckit_version: '>=1.0.0' }, provides: { extensions: [{ id: 'reporter', version: '1.0.0' }] } });
+        const sha256 = createHash('sha256').update(raw).digest('hex');
+        const configure = policy => f.put(catalogPath, { schema_version: '1.0', catalogs: [{ id: 'bundles', url: index, install_policy: policy }] });
+        const record = '.specify/bundle-records.json';
+        const release = { download_url: url, sha256 };
+        let releases = { '1.0.0': release };
+        let manifest = raw;
+        const real = Boolean(process.env.SPECKIT_CANVAS_TEST_CLI);
+        configure('discovery-only');
+        const { api } = await serve(t, f.root, {
+            workflowFetch: target => {
+                if (target === index) return new Response(JSON.stringify({ schema_version: '1.0', bundles: {
+                    [id]: { id, version: '2.0.0', download_url: 'https://github.com/acme/fixtures/releases/download/v2/bundle.zip', sha256, releases },
+                } }));
+                assert.equal(target, url);
+                return new Response(manifest);
+            },
+            workflowCli: async (project, args) => {
+                assert.notEqual(project, f.root);
+                assert.deepEqual(args.slice(0, 2), ['bundle', 'install']);
+                assert.ok(args.includes('--offline'));
+                if (real) return callSpecKit(project, args);
+                writeFileSync(join(project, record), JSON.stringify({ schema_version: '1.0', bundles: [{
+                    bundle_id: id, version: '1.0.0', contributed_components: [],
+                    required_components: [{ kind: 'extensions', id: 'reporter', version: '1.0.0' }],
+                }] }));
+                return 'Bundle record staged';
+            },
+        });
+        const browse = await api('/workflow/catalog', { id: catalogId });
+        assert.equal(browse.installAllowed, false);
+        assert.deepEqual(browse.releases.map(item => [item.key, item.version, item.installed]), [[id, '1.0.0', null]]);
+        const [{ selection }] = browse.releases;
+        const request = { operation: 'bundle-install-record', key: id, catalogId, selection };
+        await api('/workflow/preview', request, 409);
+        configure('install-allowed');
+        await api('/workflow/preview', { ...request, remoteUrl: url, sha256 }, 400);
+        const approved = await api('/workflow/preview', request);
+        assert.equal(approved.packageDefinition.catalog, index);
+        assert.equal(approved.packageDefinition.after, raw);
+        releases = {};
+        await api('/workflow/apply', { id: approved.id }, 409);
+        releases = { '1.0.0': release };
+        const noLongerTrusted = await api('/workflow/preview', request);
+        configure('discovery-only');
+        await api('/workflow/apply', { id: noLongerTrusted.id }, 409);
+        assert.equal(existsSync(join(f.root, record)), false);
+        configure('install-allowed');
+        manifest += '\n';
+        await api('/workflow/preview', request, 409);
+        manifest = raw;
+        const reviewed = await api('/workflow/preview', request);
+        await api('/workflow/apply', { id: reviewed.id });
+        assert.equal(readFileSync(join(f.root, record), 'utf8'), reviewed.documentChange.after);
+        const receipt = `.speckit-companion/workflow-sources/bundle-catalog-${selection}.json`;
+        assert.ok(reviewed.paths.includes(receipt));
+        assert.deepEqual(JSON.parse(readFileSync(join(f.root, receipt), 'utf8')), { catalog: index, id, version: '1.0.0', url, sha256 });
+        const installed = await api('/workflow/catalog', { id: catalogId });
+        assert.deepEqual(installed.releases[0].installed, { id: `bundle:${id}`, version: '1.0.0' });
+    });
+
     it('runs real local registration against Spec Kit when explicitly enabled', { skip: !process.env.SPECKIT_CANVAS_TEST_CLI }, async t => {
         const f = fixture(t);
         f.packageFiles('sources/preview', 'preview', { command: { description: 'Fixture command' }, manifest: { requires: { speckit_version: '>=1.0.0' }, extension: {
@@ -1997,7 +2068,7 @@ describe('workflow previews and confirmed changes', () => {
 });
 
 describe('workflow in the browser', () => {
-    it('browses and previews an exact pinned workflow from the catalog inspector', { timeout: 45_000 }, async t => {
+    it('browses and previews pinned workflows and bundles from the catalog inspector', { timeout: 45_000 }, async t => {
         let browser;
         try {
             const { chromium } = await import('playwright-core');
@@ -2009,10 +2080,20 @@ describe('workflow in the browser', () => {
         t.after(() => browser.close());
         const f = fixture(t);
         const { index, url: definition, body, digest } = catalogFixture(f, true);
+        const bundleIndex = 'https://raw.githubusercontent.com/acme/fixtures/main/bundles.json';
+        const bundleUrl = `https://raw.githubusercontent.com/acme/fixtures/${'d'.repeat(40)}/bundle.yml`;
+        const bundle = JSON.stringify({ bundle: { id: 'release-tools', version: '1.0.0' },
+            provides: { extensions: [{ id: 'reporter', version: '1.0.0' }] } });
+        const bundleDigest = createHash('sha256').update(bundle).digest('hex');
+        f.put('.specify/bundle-catalogs.yml', { schema_version: '1.0', catalogs: [
+            { id: 'bundles', install_policy: 'install-allowed', url: bundleIndex },
+        ] });
         const { url } = await serve(t, f.root, {
             workflowFetch: target => new Response(target === index ? JSON.stringify({
                 workflows: [{ id: 'release-review', version: '1.0.0', url: definition, sha256: digest }],
-            }) : body),
+            }) : target === bundleIndex ? JSON.stringify({
+                bundles: { 'release-tools': { id: 'release-tools', version: '1.0.0', download_url: bundleUrl, sha256: bundleDigest } },
+            }) : target === bundleUrl ? bundle : body),
             workflowCli: async (_root, [group, verb], probe) => {
                 assert.deepEqual([group, verb], ['workflow', 'add']);
                 return probe ? '--dev' : 'Validated';
@@ -2032,6 +2113,12 @@ describe('workflow in the browser', () => {
         await dialog.getByRole('button', { name: 'Confirm change' }).waitFor();
         await dialog.getByRole('button', { name: 'Cancel' }).click();
         assert.equal(existsSync(join(f.root, '.specify/workflows/workflow-registry.json')), false);
+        await page.getByRole('button', { name: 'Inspect bundles', exact: true }).click();
+        await page.getByRole('button', { name: 'Browse pinned bundles…' }).click();
+        await dialog.getByLabel('Bundle release').selectOption({ label: 'release-tools · 1.0.0' });
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByText('reporter must be an unblocked, independently installed extension at 1.0.0.', { exact: false }).waitFor();
+        assert.equal(existsSync(join(f.root, '.specify/bundle-records.json')), false);
     });
 
     it('refreshes hook edits made on disk without replacing an open confirmation', { timeout: 45_000 }, async t => {

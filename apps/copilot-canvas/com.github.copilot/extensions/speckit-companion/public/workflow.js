@@ -490,8 +490,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     scalarField('Priority', input('priority', { type: 'number', min: 1, max: 99999, step: 1, required: true, value: node.priority })),
                 ], values => ({ operation: 'preset-priority', id: node.id, priority: Number(values.priority) }))) : null,
                 node.kind === 'Catalogs' && node.healthStatus !== 'blocked' ? button('Remove catalog…', () => direct('catalog-remove', node.id)) : null,
-                node.canBrowsePinnedWorkflows && node.healthStatus !== 'blocked' ?
-                    button('Browse pinned workflows…', () => browsePinnedWorkflows(node)) : null,
+                node.canBrowsePinnedReleases && node.healthStatus !== 'blocked' ?
+                    button(node.category === 'bundle' ? 'Browse pinned bundles…' : 'Browse pinned workflows…', () => browsePinnedReleases(node)) : null,
                 node.kind === 'Catalogs' && node.installAllowed ? button('Restrict to discovery…', () => direct('catalog-discovery', node.id)) : null,
                 node.kind === 'Catalogs' && node.installAllowed === false && node.healthStatus !== 'blocked' ? button('Allow installations…', () => {
                     openDialog('Preparing catalog trust preview');
@@ -636,8 +636,9 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         ], values => ({ operation: 'catalog-add', ...values }));
     }
 
-    function browsePinnedWorkflows(node) {
+    function browsePinnedReleases(node) {
         const title = `Browse ${node.name}`;
+        const bundle = node.category === 'bundle';
         void readDialog(title, () => api('/api/workflow/catalog', { id: node.id }), result => {
             const label = release => `${release.key} · ${release.version}${release.installed ? ` (installed: ${release.installed.version ?? 'unknown'})` : ''}`;
             const releases = result.releases;
@@ -646,7 +647,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     facts([['Catalog source', result.url]]),
                     result.installAllowed ? null : paragraph('This source is discovery-only. To register a release, first review and allow installations in its inspector.'),
                     releases.length ? el('ul', {}, releases.map(release => el('li', { text: label(release) }))) :
-                        paragraph('No standalone YAML releases pinned to a Git commit and SHA-256 are available. For other workflows, use a reviewed local directory.'),
+                        paragraph(bundle ? 'No bundle.yml releases pinned to a Git commit and SHA-256 are available. You can also register a reviewed local bundle.yml.' :
+                            'No standalone YAML releases pinned to a Git commit and SHA-256 are available. For other workflows, use a reviewed local directory.'),
                     actions(button('Close', () => dialog.close())));
                 return;
             }
@@ -654,11 +656,14 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
             releaseField.required = true;
             form(title, [
                 facts([['Catalog source', result.url]]),
-                paragraph('Choose an exact release. Preview shows the definition and files before registering or replacing the workflow. No workflow steps run.'),
-                scalarField('Workflow release', releaseField),
+                paragraph(bundle ? 'Choose an exact release to preview its manifest and record. All components must already be installed independently at the listed versions.' :
+                    'Choose an exact release. Preview shows the definition and files before registering or replacing the workflow. No workflow steps run.'),
+                scalarField(bundle ? 'Bundle release' : 'Workflow release', releaseField),
             ], ({ selection }) => {
                 const release = releases.find(item => item.selection === selection);
-                if (!release) throw new Error('Choose a workflow release.');
+                if (!release) throw new Error('Choose a pinned release.');
+                if (bundle) return { operation: release.installed ? 'bundle-update-record' : 'bundle-install-record', id: release.installed?.id,
+                    key: release.key, catalogId: node.id, selection };
                 return { operation: release.installed ? 'update' : 'install', id: release.installed?.id,
                     kind: 'Workflows', key: release.key, catalogId: node.id, selection };
             });

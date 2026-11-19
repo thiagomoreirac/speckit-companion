@@ -689,7 +689,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             const body = await readJson(req, pathname === '/api/workflow/preview' ? 64 * 1024 : BODY_LIMIT);
             if (pathname === '/api/workflow/preview') return sendJson(res, 200, await workflow.preview(body));
             if (pathname === '/api/workflow/composition') return sendJson(res, 200, await workflow.inspectComposition(body.id));
-            if (pathname === '/api/workflow/catalog') return sendJson(res, 200, await workflow.browseWorkflowCatalog(body.id));
+            if (pathname === '/api/workflow/catalog') return sendJson(res, 200, await workflow.browsePinnedCatalog(body.id));
             if (pathname === '/api/workflow/github-target') return sendJson(res, 200, await workflow.githubTarget(body));
             if (pathname === '/api/workflow/apply') return sendJson(res, 200, await workflow.apply(body.id));
             if (pathname === '/api/workflow/test-hook') return sendJson(res, 200, await workflow.testHook(body.id, body.fixture));
