@@ -508,8 +508,9 @@ function restoreStates(picked) {
     });
 }
 
-const previewTags = new Set(('div span p h1 h2 h3 h4 h5 h6 figure figcaption ' +
+const previewTags = new Set(('section article div span p h1 h2 h3 h4 h5 h6 figure figcaption ' +
     'ul ol li dl dt dd table caption thead tbody tfoot tr th td blockquote pre code strong em b i small hr br details summary').split(' '));
+const previewDestinations = new Set('section article div h1 h2 h3 h4 h5 h6'.split(' '));
 const previewOmissions = new Set('head title script style template noscript iframe object embed svg math canvas'.split(' '));
 
 function prototypePreview(text, wireflow) {
@@ -517,7 +518,7 @@ function prototypePreview(text, wireflow) {
     const template = document.createElement('template');
     template.innerHTML = text;
     let remaining = 1200, limited = false, hasContent = false;
-    const actions = [], targets = new Map(), statusTarget = '[data-preview-status]';
+    const actions = [], links = [], targets = new Map(), statusTarget = '[data-preview-status]';
     const simpleId = /^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/;
     function register(key, element) {
         targets.set(key, targets.has(key) ? null : element);
@@ -544,6 +545,12 @@ function prototypePreview(text, wireflow) {
                     rebuild(child, placeholder, depth + 1);
                     if (!child.disabled) actions.push({ placeholder, selector: child.getAttribute('data-preview-target') || statusTarget,
                         message: child.getAttribute('data-preview-label') });
+                } else if (wireflow && child.localName === 'a') {
+                    const placeholder = document.createElement('span');
+                    parent.append(placeholder);
+                    rebuild(child, placeholder, depth + 1);
+                    const fragment = child.getAttribute('href');
+                    if (fragment?.startsWith('#') && simpleId.test(fragment.slice(1))) links.push({ placeholder, fragment });
                 } else {
                     rebuild(child, parent, depth + 1);
                 }
@@ -552,7 +559,7 @@ function prototypePreview(text, wireflow) {
     }
     const preview = el('div', { class: 'sb-prototype-preview', role: 'region', 'aria-label': 'Structural preview', tabindex: 0 });
     rebuild(template.content, preview, 0);
-    let interactive = false;
+    let interactive = false, navigable = false;
     for (const { placeholder, selector, message } of actions) {
         const target = targets.get(selector);
         const label = placeholder.textContent.trim();
@@ -564,11 +571,30 @@ function prototypePreview(text, wireflow) {
         target.setAttribute('aria-live', 'polite');
         interactive = true;
     }
+    for (const { placeholder, fragment } of links) {
+        const target = targets.get(fragment);
+        const label = placeholder.textContent.trim();
+        if (!target || !previewDestinations.has(target.localName) || !label || !preview.contains(placeholder) ||
+            !preview.contains(target) || target.contains(placeholder) || placeholder.contains(target) ||
+            placeholder.querySelector('button') || target.closest('summary')) continue;
+        const button = el('button', { type: 'button', class: 'btn btn-quiet', onclick: () => {
+            if (!preview.contains(target)) return;
+            for (let ancestor = target.parentElement; ancestor !== preview; ancestor = ancestor.parentElement) {
+                if (ancestor.localName === 'details') ancestor.open = true;
+            }
+            target.focus();
+        } }, label);
+        target.tabIndex = -1;
+        placeholder.replaceWith(button);
+        navigable = true;
+    }
     if (!hasContent) return [el('p', {}, limited ? 'The preview exceeded the display limit. See the source below.' :
         'This export has no static text to preview. Repository scripts are not executed.'), el('pre', { tabindex: 0 }, text)];
-    return [el('p', { class: 'run-meta' }, interactive
-        ? 'Try the preview buttons to see their declared feedback. Repository scripts, styles, links and forms are not active.'
-        : 'Structural preview. Repository scripts, styles, links and form controls are not active.'),
+    return [el('p', { class: 'run-meta' }, [
+        interactive ? 'Try the preview buttons to see their declared feedback.' : '',
+        navigable ? 'Use the screen buttons to move within this wireflow.' : '',
+        'Repository scripts, styles, external links and forms are not active.',
+    ].filter(Boolean).join(' ')),
         limited ? el('p', {}, 'The preview is limited. See the full source below.') : null,
         preview, el('details', {}, el('summary', {}, 'HTML source'), el('pre', { tabindex: 0 }, text))];
 }

@@ -3466,7 +3466,7 @@ describe('workflow in the browser', () => {
         await dialog.getByRole('button', { name: 'Approve & dispatch' }).waitFor();
     });
 
-    it('replays declared wireflow feedback without executing repository interactions', { timeout: 60_000 }, async t => {
+    it('replays wireflow feedback and local screen navigation without executing repository interactions', { timeout: 60_000 }, async t => {
         let browser;
         try {
             const { chromium } = await import('playwright-core');
@@ -3489,6 +3489,17 @@ describe('workflow in the browser', () => {
             <p data-preview-status>Awaiting an action</p>
             <p id="export-validation">No validation yet</p>
             <p id="duplicate">First duplicate</p><p id="duplicate">Second duplicate</p>
+            <h2 id="start-screen">Start screen</h2>
+            <a href="#review-screen" onclick="document.body.dataset.prototypeRan = 'yes'">Go to review</a>
+            <a href="#duplicate-screen">Ambiguous screen</a>
+            <a href="#missing-screen">Missing screen</a>
+            <a href="/prototype-fixture-submit">External screen</a>
+            <a href="javascript:void(0)">Script screen</a>
+            <h2 id="duplicate-screen">Duplicate one</h2><h2 id="duplicate-screen">Duplicate two</h2>
+            <details><summary>Review screen details</summary>
+                <h2 id="review-screen">Review screen</h2>
+                <a href="#start-screen">Back to start</a>
+            </details>
         `);
         const { url, focus } = await serve(t, f.root);
         focus('001-exports');
@@ -3503,7 +3514,15 @@ describe('workflow in the browser', () => {
         await outline.getByText('Export queued', { exact: true }).waitFor();
         await outline.getByRole('button', { name: 'Validate export' }).click();
         await outline.getByText('<b>Missing name</b>', { exact: true }).waitFor();
-        assert.deepEqual(await outline.getByRole('button').allTextContents(), ['Queue export', 'Validate export']);
+        assert.deepEqual(await outline.getByRole('button').allTextContents(), ['Queue export', 'Validate export', 'Go to review']);
+        await outline.getByRole('button', { name: 'Go to review' }).press('Enter');
+        const review = outline.getByRole('heading', { name: 'Review screen', exact: true });
+        await review.waitFor();
+        assert.equal(await review.evaluate(node => node === document.activeElement), true);
+        await outline.getByRole('button', { name: 'Back to start' }).press('Enter');
+        assert.equal(await outline.getByRole('heading', { name: 'Start screen' }).evaluate(node => node === document.activeElement), true);
+        assert.equal(await outline.locator('a[href], [id="review-screen"]').count(), 0);
+        assert.equal(new URL(page.url()).hash, '');
         assert.equal(await page.evaluate(() => document.body.dataset.prototypeRan), undefined);
         assert.deepEqual(requests, []);
     });
