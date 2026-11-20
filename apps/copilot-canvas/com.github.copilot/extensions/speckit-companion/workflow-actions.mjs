@@ -18,7 +18,7 @@ import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeNa
 import { stageAdrAcceptance } from './workflow-adr.mjs';
 import { PRODUCT_CONFIG, planProductApply, planProductArchive } from './workflow-product.mjs';
 import { featureEvidence, planAgentAssignment } from './feature-evidence.mjs';
-import { requireFreshApmImport, stageApmImport } from './workflow-apm.mjs';
+import { requireApmImportTarget, stageApmImport } from './workflow-apm.mjs';
 import { listTasks } from './spec-rules.mjs';
 
 const PACKAGES = {
@@ -586,17 +586,20 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
         } else if (operation === 'agent-apm-import') {
             const feature = specs.find(spec => spec.id === request.feature);
             if (!feature || node?.id !== `feature:${feature.id}`) throw invalid('Select an inventoried feature.');
-            requireFreshApmImport(root, workspaceEntry);
-            apmStage = reviewedApmStage ?? await stageApmImport(workspaceEntry);
+            const target = requireApmImportTarget(root, workspaceEntry);
+            apmStage = reviewedApmStage ?? await stageApmImport(workspaceEntry, target);
             documentChanges = apmStage.documents;
+            if (documentChanges[0].before !== target.before || documentChanges[0].after !== target.after) {
+                throw invalid('The APM manifest changed. Review a new import preview before confirming.', 409);
+            }
             paths = documentChanges.map(doc => doc.path);
             sourceStamp = createHash('sha256').update(JSON.stringify(documentChanges)).digest('hex');
             affected = [node];
             title = 'Import the HVE Core functional code reviewer';
             notes = [`APM staged one Copilot profile from microsoft/hve-core at ${apmStage.commit}. This import belongs to the project, not just this feature.`,
-                'Confirmation copies the three reviewed files only. No package cache, settings, hooks, or services are installed. This Copilot profile is inspect-only in Agent Assign; no agent is run.'];
+                'Confirmation writes the three reviewed files only. No package cache, settings, hooks, or services are installed. This Copilot profile is inspect-only in Agent Assign; no agent is run.'];
             execute = () => {
-                requireFreshApmImport(root, workspaceEntry);
+                requireApmImportTarget(root, workspaceEntry);
                 const created = [];
                 try {
                     for (const dir of ['.github', '.github/agents']) {

@@ -359,7 +359,7 @@ describe('graph from a Spec Kit repository', () => {
         assert.equal(missing.verified, false);
     });
 
-    it('does not stage an HVE import over an existing APM setup', async t => {
+    it('does not stage an HVE import over an unsupported APM setup', async t => {
         const f = fixture(t);
         const feature = 'specs/001-exports';
         f.put(`${feature}/spec.md`, '# Export');
@@ -370,6 +370,24 @@ describe('graph from a Spec Kit repository', () => {
         assert.match(result.error, /existing APM setup.*apm\.yaml/);
         assert.equal(readFileSync(join(f.root, 'apm.yaml'), 'utf8'), 'name: existing-project\n');
         assert.equal(existsSync(join(f.root, 'apm.lock.yaml')), false);
+        rmSync(join(f.root, 'apm.yaml'));
+        const initialized = 'name: existing-project\nversion: 1.0.0\ntargets:\n- copilot\ndependencies:\n  apm: []\n  mcp: []\n';
+        for (const text of [
+            initialized.replace('apm: []', 'apm: [acme/tool]'),
+            initialized.replace('mcp: []', 'mcp: [custom-service]'),
+            `${initialized}scripts:\n  prepare: echo hi\n`,
+            initialized.replace('- copilot', '- copilot\n- claude'),
+        ]) {
+            f.put('apm.yml', text);
+            assert.equal((await api(`/spec?id=${feature}`)).canImportHve, false);
+            const preview = await api('/workflow/preview', { operation: 'agent-apm-import', id: `feature:${feature}`, feature }, 409);
+            assert.match(preview.error, /Use APM directly/);
+            assert.equal(readFileSync(join(f.root, 'apm.yml'), 'utf8'), text);
+        }
+        f.put('apm.yml', initialized);
+        assert.equal((await api(`/spec?id=${feature}`)).canImportHve, true);
+        f.put('apm.lock.yaml', '# Existing lock');
+        assert.equal((await api(`/spec?id=${feature}`)).canImportHve, false);
     });
 
     it('imports only the reviewed pinned HVE files and refuses a concurrent profile', {
@@ -406,6 +424,40 @@ describe('graph from a Spec Kit repository', () => {
         assert.equal(detail.canImportHve, false);
         assert.deepEqual(detail.assignments.imports.map(({ harness, verified, assignable }) => [harness, verified, assignable]),
             [['Copilot', true, false]]);
+    });
+
+    it('adds the pinned reviewer to an initialized APM manifest without rewriting its metadata', {
+        skip: process.env.SPECKIT_CANVAS_TEST_APM !== '1', timeout: 90_000,
+    }, async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        const manifest = ['name: existing-project', 'version: 1.2.3', 'description: Local notes', 'author: Developer',
+            '# Project targets', 'targets:', '- copilot', 'dependencies:', '  apm: [] # Pending first dependency',
+            '  mcp: []', 'includes: auto', 'scripts: {}', ''].join('\r\n');
+        f.put('apm.yml', manifest);
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'agent-apm-import', id: `feature:${feature}`, feature };
+        assert.equal((await api(`/spec?id=${feature}`)).canImportHve, true);
+        const proposal = await api('/workflow/preview', request);
+        const [manifestChange, lockChange, profileChange] = proposal.documentChanges;
+        const dependency = 'microsoft/hve-core/.github/agents/code-review/functional-code-review.agent.md';
+        assert.equal(manifestChange.before, manifest);
+        assert.equal(manifestChange.after,
+            manifest.replace('apm: [] # Pending first dependency', `apm: # Pending first dependency\r\n    - ${dependency}#e69486a5f809ede45c63c0a31358c12912bd5168`));
+        assert.equal(readFileSync(join(f.root, 'apm.yml'), 'utf8'), manifest);
+        assert.equal(existsSync(join(f.root, lockChange.path)), false);
+        const concurrent = manifest.replace('Local notes', 'Changed notes');
+        f.put('apm.yml', concurrent);
+        const stale = await api('/workflow/apply', { id: proposal.id }, 409);
+        assert.match(stale.error, /APM manifest changed/);
+        assert.equal(readFileSync(join(f.root, 'apm.yml'), 'utf8'), concurrent);
+        assert.equal(existsSync(join(f.root, profileChange.path)), false);
+        const reviewed = await api('/workflow/preview', request);
+        await api('/workflow/apply', { id: reviewed.id });
+        for (const { path, after } of reviewed.documentChanges) assert.equal(readFileSync(join(f.root, path), 'utf8'), after);
+        assert.equal((await api(`/spec?id=${feature}`)).assignments.imports[0].verified, true);
+        assert.equal(existsSync(join(f.root, 'apm_modules')), false);
     });
 
     it('shows every requested participant with distinct roles, provenance and artifact lanes', t => {
