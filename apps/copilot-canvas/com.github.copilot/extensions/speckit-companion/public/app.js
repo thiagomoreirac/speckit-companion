@@ -1,6 +1,6 @@
 import { selectState, setupStatesSelect } from '/states-select.mjs';
 import { setupWorkflow } from '/workflow.js';
-import { staticDrawings } from '/diagram-preview.js';
+import { flowchartDrawing, staticDrawings } from '/diagram-preview.js';
 
 const params = new URLSearchParams(location.search);
 const token = params.get('token') ?? '';
@@ -625,6 +625,20 @@ function renderEvidence(item) {
     const src = item.format === 'svg' ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(item.text)}` : item.image;
     if (src) return [el('img', { class: 'workflow-drawing', src, alt: item.label })];
     if (item.model) return [modelPreview(item.model, item.text)];
+    if (item.flowchart) {
+        const { nodes, edges } = item.flowchart;
+        const names = new Map(nodes.map(({ id, label }) => [id, label]));
+        return [
+            el('div', { class: 'sb-flowchart-scroll', tabindex: 0, role: 'region', 'aria-label': 'Flowchart diagram' }, flowchartDrawing(item.flowchart)),
+            el('details', {},
+                el('summary', {}, 'Flowchart connections'),
+                el('ul', { class: 'sb-flowchart-links' }, edges.map(({ from, to, label, dashed }) =>
+                    el('li', {}, `${names.get(from)} to ${names.get(to)}${label ? `: ${label}` : ''}${dashed ? ' (dashed arrow)' : ''}`))),
+                nodes.filter(({ id }) => !edges.some(edge => edge.from === id || edge.to === id))
+                    .map(({ label }) => el('p', {}, `Unconnected node: ${label}`))),
+            el('details', {}, el('summary', {}, 'Mermaid source'), el('pre', { tabindex: 0 }, item.text)),
+        ];
+    }
     if (item.sequence) {
         const { participants, messages } = item.sequence;
         const names = new Map(participants.map(({ id, label }) => [id, label]));

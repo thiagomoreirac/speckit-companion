@@ -5,6 +5,7 @@ import { dump, load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 import { HOOK_PATH, object, safeId, workspaceEntry } from './workflow-inventory.mjs';
 import { parseErModel } from './er-model.mjs';
 import { parseSequenceModel } from './sequence-model.mjs';
+import { parseFlowchartModel } from './flowchart-model.mjs';
 
 const MAX_SOURCE = 256 * 1024;
 const MAX_EVIDENCE = 48;
@@ -113,7 +114,8 @@ export function readFeatureEvidence(root, id, path) {
     const text = bytes.toString('utf8');
     const model = /\.mmd$/i.test(path) && parseErModel(text);
     const sequence = !model && /\.mmd$/i.test(path) && parseSequenceModel(text);
-    return { ...item, text, ...(model ? { model } : {}), ...(sequence ? { sequence } : {}) };
+    const flowchart = !model && !sequence && /\.mmd$/i.test(path) && parseFlowchartModel(text);
+    return { ...item, text, ...(model ? { model } : {}), ...(sequence ? { sequence } : {}), ...(flowchart ? { flowchart } : {}) };
 }
 
 const assignmentError = (message, status = 400) => Object.assign(new Error(message), { status });

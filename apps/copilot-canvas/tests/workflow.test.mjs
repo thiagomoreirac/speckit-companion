@@ -168,6 +168,39 @@ function routingFixture(t) {
 }
 
 describe('graph from a Spec Kit repository', () => {
+    it('projects acyclic architecture flowcharts and keeps unsupported syntax as source', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const path = `${feature}/diagrams/architecture.mmd`;
+        f.put(`${feature}/spec.md`, '# Export');
+        const source = 'graph LR\nRead["Read <b>draft</b>"] --> Review{Accept?}\nReview -->|Yes| Save --> Audit\nReview -.->|No| Revise --> Audit\nRead --> Audit';
+        f.put(path, source);
+        const { api } = await serve(t, f.root);
+        const route = `/spec/evidence?id=${feature}&path=${path}`;
+        const artifact = await api(route);
+        assert.equal(artifact.text, source);
+        assert.equal(artifact.flowchart.direction, 'horizontal');
+        assert.deepEqual(artifact.flowchart.nodes.map(({ id, kind, rank }) => [id, kind, rank]), [
+            ['Read', 'step', 0], ['Review', 'decision', 1], ['Save', 'step', 2], ['Audit', 'step', 3], ['Revise', 'step', 2],
+        ]);
+        assert.equal(artifact.flowchart.nodes[0].label, 'Read <b>draft</b>');
+        assert.deepEqual(artifact.flowchart.edges.find(edge => edge.to === 'Revise'), {
+            from: 'Review', to: 'Revise', dashed: true, label: 'No',
+        });
+        for (const unsupported of [
+            'flowchart TD\nA-->B\nB-->A',
+            '%%{init: {"theme": "dark"}}%%\nflowchart TD\nA-->B',
+            'flowchart TD\nA-->B\nclick A "https://example.test/"',
+            'flowchart TD\nsubgraph Cluster\nA-->B\nend',
+            'flowchart TD\nA[First]-->B\nA[Second]',
+        ]) {
+            f.put(path, unsupported);
+            const fallback = await api(route);
+            assert.equal(fallback.text, unsupported);
+            assert.equal(fallback.flowchart, undefined);
+        }
+    });
+
     it('recognizes fan-out occurrences from a released native checkpoint', {
         skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
     }, async t => {
@@ -3282,6 +3315,49 @@ describe('workflow in the browser', () => {
         await page.getByText('A structured preview is not available for this Mermaid source.').waitFor();
         assert.equal(await messages.count(), 0);
         await page.getByText(/alt accepted/).waitFor();
+    });
+
+    it('renders architecture flowcharts with a keyboard-accessible text alternative', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const artifact = `${feature}/diagrams/flowchart.mmd`;
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(artifact, 'flowchart LR\nRead["Read <b>draft</b>"]-->Gate{Accept?}\nGate-->|Yes|Save-->Log\nGate-.->|No|Revise-->Log\nRead-->Log');
+        const { url, focus } = await serve(t, f.root);
+        focus('001-exports');
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        page.setDefaultTimeout(12_000);
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.getByRole('tab', { name: /^Architecture/ }).click();
+        const diagram = page.getByRole('region', { name: 'Flowchart diagram' });
+        await diagram.waitFor();
+        assert.equal(await diagram.locator('.sb-flowchart-decision').count(), 1);
+        assert.equal(await diagram.locator('path[stroke-dasharray]').count(), 1);
+        assert.equal(await diagram.locator('foreignObject b').count(), 0);
+        assert.equal(await diagram.locator('foreignObject .sb-flowchart-label').first().textContent(), 'Read <b>draft</b>');
+        const sizes = () => diagram.evaluate(element => ({ visible: element.clientWidth, full: element.scrollWidth }));
+        const narrow = await sizes();
+        assert.ok(narrow.full > narrow.visible);
+        await diagram.focus();
+        await page.keyboard.press('Tab');
+        await page.keyboard.press('Enter');
+        await page.getByText('Accept? to Revise: No (dashed arrow)', { exact: true }).waitFor();
+        await page.setViewportSize({ width: 1280, height: 900 });
+        assert.ok((await sizes()).visible > narrow.visible);
+        await page.getByText('Mermaid source', { exact: true }).click();
+        await page.locator('pre').filter({ hasText: 'flowchart LR' }).waitFor();
+        f.put(artifact, 'flowchart TD\nA-->B\nB-->A');
+        await page.getByText('A structured preview is not available for this Mermaid source.').waitFor();
+        assert.equal(await diagram.count(), 0);
     });
 
     it('copies a native start command without starting a run or filling its inputs', { timeout: 60_000 }, async t => {

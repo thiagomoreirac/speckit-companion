@@ -61,3 +61,66 @@ export function staticDrawings(html) {
     }
     return results;
 }
+
+export function flowchartDrawing({ nodes, edges, direction }) {
+    function svg(tag, attrs, ...children) {
+        const element = document.createElementNS(svgNS, tag);
+        for (const [name, value] of Object.entries(attrs)) element.setAttribute(name, value);
+        element.append(...children);
+        return element;
+    }
+
+    const horizontal = direction === 'horizontal';
+    const layers = [];
+    for (const node of nodes) (layers[node.rank] ??= []).push(node);
+    const primarySize = horizontal ? 184 : 76;
+    const crossSize = horizontal ? 76 : 184;
+    const gap = 58, crossGap = 22, inset = 16;
+    const crossSpan = count => count * (crossSize + crossGap) - crossGap;
+    const breadth = Math.max(...layers.map(layer => crossSpan(layer.length)));
+    const primary = inset * 2 + layers.length * (primarySize + gap) - gap;
+    const points = new Map();
+    const pair = (along, across) => horizontal ? [along, across] : [across, along];
+    layers.forEach((layer, rank) => layer.forEach((node, slot) => points.set(node.id, {
+        along: inset + rank * (primarySize + gap),
+        across: inset + (breadth - crossSpan(layer.length)) / 2 + slot * (crossSize + crossGap),
+        node,
+    })));
+
+    let detours = 0;
+    const paths = edges.map(({ from, to, label, dashed }) => {
+        const a = points.get(from), b = points.get(to);
+        const start = a.along + primarySize, end = b.along;
+        const ac = a.across + crossSize / 2, bc = b.across + crossSize / 2;
+        const mid = start + gap / 2;
+        // Keep connectors that skip a layer outside the node area.
+        const route = b.node.rank === a.node.rank + 1
+            ? `C ${pair(mid, ac)} ${pair(mid, bc)} ${pair(end, bc)}`
+            : (() => {
+                const lane = inset + breadth + 14 + detours++ * 10;
+                return `L ${pair(mid, ac)} ${pair(mid, lane)} ${pair(end - gap / 2, lane)} ${pair(end - gap / 2, bc)} ${pair(end, bc)}`;
+            })();
+        return svg('g', {},
+            svg('path', { d: `M ${pair(start, ac)} ${route}`, class: 'sb-flowchart-line', ...(dashed ? { 'stroke-dasharray': '5 4' } : {}) },
+                ...(label ? [svg('title', {}, label)] : [])),
+            svg('polygon', { points: [pair(end, bc), pair(end - 8, bc - 4), pair(end - 8, bc + 4)].join(' '),
+                class: 'sb-flowchart-tip' }));
+    });
+    const length = breadth + inset * 2 + (detours ? 8 + detours * 10 : 0);
+    const [width, height] = pair(primary, length);
+    return svg('svg', { width, height, viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', class: 'sb-flowchart-diagram' },
+        ...paths, ...[...points.values()].map(({ along, across, node }) => {
+            const [x, y] = pair(along, across);
+            const w = 184, h = 76;
+            const cut = node.kind === 'decision' ? 16 : 0;
+            const shape = cut ? svg('polygon', { points: `${x + cut},${y} ${x + w - cut},${y} ${x + w},${y + h / 2} ${x + w - cut},${y + h} ${x + cut},${y + h} ${x},${y + h / 2}`,
+                class: 'sb-flowchart-node sb-flowchart-decision' })
+                : svg('rect', { x, y, width: w, height: h, rx: 5, class: 'sb-flowchart-node' });
+            const label = document.createElement('div');
+            label.className = 'sb-flowchart-label';
+            label.dir = 'auto';
+            label.textContent = node.label;
+            return svg('g', {}, svg('title', {}, node.label), shape,
+                svg('foreignObject', { x: x + 10 + cut, y: y + 6, width: w - 20 - 2 * cut, height: h - 12 }, label));
+        }));
+}

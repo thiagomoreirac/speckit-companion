@@ -86,6 +86,20 @@
 .sb-sequence-arrow { position: relative; border-block-start: 1px solid currentColor; }
 .sb-sequence-arrow[data-dashed="true"] { border-block-start-style: dashed; }
 .sb-sequence-arrow::after { content: ''; position: absolute; inset: -4px 1px auto auto; width: 7px; height: 7px; border-block-start: 1px solid; border-inline-end: 1px solid; transform: rotate(45deg); }
+.sb-flowchart-scroll { max-width: 100%; max-height: 28rem; overflow: auto; border: 1px solid var(--border); }
+.sb-flowchart-diagram { display: block; max-width: none; }
+.sb-flowchart-node { fill: var(--bg-primary); stroke: var(--text-body); stroke-width: 1; }
+.sb-flowchart-decision { stroke-width: 1.5; }
+.sb-flowchart-line { fill: none; stroke: var(--text-body); stroke-width: 1.5; }
+.sb-flowchart-tip { fill: var(--text-body); }
+.sb-flowchart-label { display: grid; place-items: center; min-height: 100%; color: var(--text-body); font-size: 13px; line-height: 16px; overflow-wrap: anywhere; text-align: center; }
+.sb-flowchart-links { overflow-wrap: anywhere; }
+@media (forced-colors: active) {
+    .sb-flowchart-node { fill: Canvas; stroke: CanvasText; }
+    .sb-flowchart-line { stroke: CanvasText; }
+    .sb-flowchart-tip { fill: CanvasText; }
+    .sb-flowchart-label { color: CanvasText; }
+}
 .workflow-dialog #workflow-dialog-error:empty { display: none; }
 .workflow-dialog #workflow-dialog-error { color: var(--error); }
 @media (max-width: 760px) {
