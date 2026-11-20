@@ -53,7 +53,8 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
     const repository = $('repository-form'), repositoryToggle = $('workflow-repository');
     const runs = $('workflow-runs');
     const tabs = { workflow: $('workflow-tab'), management: $('management-tab'), specs: $('specs-tab'), runs: $('runs-tab') };
-    const runSelection = { workflow: null, run: null, feature: null };
+    const newRunSelection = () => ({ workflow: null, run: null, feature: null, tab: 'overview', pane: 'board', query: '', filter: 'all' });
+    const runSelection = newRunSelection();
     const state = { graph: null, snapshot: null, selected: null, view: 'specs', changedView: false, text: false,
         management: 'Extensions', filter: '', world: { width: 1240, height: 610 }, camera: null, request: 0, workflowDirty: false };
 
@@ -141,7 +142,7 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
             ++state.request;
             state.selected = null;
             state.graph = null;
-            Object.assign(runSelection, { workflow: null, run: null, feature: null });
+            Object.assign(runSelection, newRunSelection());
             state.camera = null;
             if (dialog.open) dialog.close();
         }
@@ -1284,7 +1285,7 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
             return Boolean(state.graph?.nodes.some(node => node.kind === 'Workflows' && node.key === key && node.installed));
         },
         openRun(key, feature) {
-            Object.assign(runSelection, { workflow: `workflow:${key}`, run: null, feature });
+            Object.assign(runSelection, { workflow: `workflow:${key}`, run: null, feature, tab: 'overview', pane: 'detail', query: '', filter: 'all' });
             show('runs');
         },
     };

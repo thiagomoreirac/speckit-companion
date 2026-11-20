@@ -10,6 +10,10 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 - **Explore evidence in Specs & runs.** Open extension tabs, read decisions, inspect architecture flowcharts, and move between screens in a wireflow without leaving the preview.
 - **Assign an HVE Core reviewer from Tasks.** Preview local or Codespace imports, then assign the Claude Code reviewer and copy a brief for one task.
 
+### Changed
+
+- **Browse workflows like specs.** Find installed workflows in the familiar sidebar, then open their steps, evidence, activity, and waiting decisions in tabs.
+
 ### Fixed
 
 - **Choose coordinated sessions from a list.** The coordinating agent maintains the session options and updates the selected worktree. <!-- area: copilot-app -->

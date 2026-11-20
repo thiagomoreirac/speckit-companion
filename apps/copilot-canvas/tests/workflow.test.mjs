@@ -3390,6 +3390,7 @@ describe('workflow in the browser', () => {
         page.setDefaultTimeout(10_000);
         await page.goto(url);
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Routed review', exact: true }).click();
         await page.getByRole('button', { name: 'Start isolated review…' }).click();
         const dialog = page.getByRole('dialog');
         const track = dialog.getByLabel('track', { exact: true });
@@ -3404,7 +3405,9 @@ describe('workflow in the browser', () => {
         await page.reload();
         const runs = page.getByRole('button', { name: 'Workflow & runs', exact: true });
         if (await runs.getAttribute('aria-pressed') !== 'true') await runs.click();
+        await page.getByRole('button', { name: 'Routed review', exact: true }).click();
         await page.getByLabel('Run record', { exact: true }).selectOption('isolated');
+        await page.getByRole('tab', { name: 'Activity' }).click();
         await page.getByRole('heading', { name: 'Recorded start inputs' }).waitFor();
         assert.match(await page.getByRole('heading', { name: 'Recorded start inputs' }).locator('..').innerText(), /track\s+extended\s+detail\s+brief/);
         await page.getByRole('button', { name: 'Review verdict…' }).click();
@@ -3445,7 +3448,9 @@ describe('workflow in the browser', () => {
         page.setDefaultTimeout(10_000);
         await page.goto(url);
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Guided publish', exact: true }).click();
         await page.getByLabel('Run record', { exact: true }).selectOption('guided');
+        await page.getByRole('tab', { name: 'Activity' }).click();
         const decisions = page.getByRole('list', { name: 'Recorded gate decisions' });
         const dialog = page.getByRole('dialog');
         const compare = decisions.getByRole('button', { name: 'Compare current evidence…' });
@@ -3533,6 +3538,84 @@ describe('workflow in the browser', () => {
         assert.equal(await diagram.count(), 0);
     });
 
+    it('uses the spec board layout for different installed workflows and preserves keyboard navigation', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const { f, id, path, definition } = routingFixture(t);
+        f.put(path, { ...definition, steps: [...definition.steps, { id: 'check-plugin', type: 'custom-check' }] });
+        f.put('.specify/workflows/workflow-registry.json', { workflows: {
+            'routed-review': { enabled: true }, 'quick-check': { enabled: true },
+        } });
+        f.put('.specify/workflows/quick-check/workflow.yml', {
+            workflow: { id: 'quick-check', name: 'Quick check' },
+            steps: [{ id: 'check-readiness', type: 'gate', show_file: 'specs/001-exports/spec.md', message: 'Ready?' }],
+        });
+        const { url, focus, api } = await serve(t, f.root);
+        const graph = await api('/workflow');
+        assert.ok(graph.findings.some(finding => finding.code === 'missing-step-package' && finding.nodeIds.includes(`${id}:check-plugin`)));
+        focus('001-exports');
+        const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Specs & runs', exact: true }).click();
+        const spec = page.locator('#layout');
+        await spec.getByRole('tab', { name: 'Spec', exact: true }).waitFor();
+        async function metrics(root) {
+            return root.evaluate(element => {
+                const css = (selector, property) => getComputedStyle(element.querySelector(selector))[property];
+                return {
+                    columns: getComputedStyle(element).gridTemplateColumns,
+                    toolsPadding: css('.board-tools', 'padding'),
+                    cardPadding: css('.spec-card', 'padding'),
+                    detailPadding: css('.detail-inner', 'padding'),
+                    tabPadding: css('.tab', 'padding'),
+                    nextPadding: css('.next', 'padding'),
+                };
+            });
+        }
+        const specMetrics = await metrics(spec);
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        const runs = page.locator('#workflow-runs');
+        const sidebar = runs.getByRole('complementary', { name: 'Workflows' });
+        await sidebar.getByRole('button', { name: 'Routed review', exact: true }).waitFor();
+        assert.deepEqual(await metrics(runs), specMetrics);
+        await sidebar.getByRole('searchbox', { name: 'Search workflows' }).fill('quick-check');
+        assert.equal(await sidebar.getByRole('button', { name: 'Routed review', exact: true }).count(), 0);
+        await sidebar.getByRole('button', { name: 'Quick check', exact: true }).click();
+        assert.deepEqual(await runs.getByRole('list', { name: 'Workflow pipeline' }).locator('.sb-rail-label').allTextContents(), ['check-readiness']);
+        await runs.getByRole('tab', { name: 'Overview' }).focus();
+        await page.keyboard.press('ArrowRight');
+        assert.equal(await runs.getByRole('tab', { name: 'Steps' }).getAttribute('aria-selected'), 'true');
+        await page.keyboard.press('ArrowRight');
+        const evidence = runs.getByRole('tabpanel', { name: 'Evidence' });
+        await evidence.getByRole('button', { name: 'Read definition evidence…' }).click();
+        await page.getByRole('dialog').getByText(/Feature Specification: Export board/).waitFor();
+        await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+        await sidebar.getByRole('searchbox').fill('');
+        await sidebar.getByRole('button', { name: 'Routed review', exact: true }).click();
+        assert.deepEqual(await runs.getByRole('list', { name: 'Workflow pipeline' }).locator('.sb-rail-label').allTextContents(),
+            ['route', 'check-detail', 'check-plugin']);
+        await runs.getByRole('tab', { name: 'Steps' }).click();
+        await runs.getByRole('tabpanel').getByText('Conditional', { exact: true }).first().waitFor();
+        await runs.getByRole('tabpanel').getByText('custom-check', { exact: true }).waitFor();
+        for (const width of [420, 320]) {
+            await page.setViewportSize({ width, height: 780 });
+            await sidebar.waitFor({ state: 'hidden' });
+            await runs.getByRole('button', { name: '← All workflows' }).click();
+            await sidebar.waitFor({ state: 'visible' });
+            assert.equal(await sidebar.getByRole('button', { name: 'Routed review', exact: true }).evaluate(button => button === document.activeElement), true);
+            await sidebar.getByRole('button', { name: 'Routed review', exact: true }).click();
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        }
+    });
+
     it('keeps a removed workflow in the Decision inbox without offering runtime actions', { timeout: 60_000 }, async t => {
         let browser;
         try {
@@ -3559,6 +3642,7 @@ describe('workflow in the browser', () => {
         page.setDefaultTimeout(12_000);
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: /^Decision inbox/ }).click();
         await page.getByRole('region', { name: 'Decision inbox' }).getByRole('button', { name: 'Inspect checkpoint' }).click();
         await page.getByRole('heading', { name: 'History without an installed workflow' }).waitFor();
         const card = page.getByRole('region', { name: 'retired', exact: true });
@@ -3627,6 +3711,8 @@ describe('workflow in the browser', () => {
         page.setDefaultTimeout(12_000);
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Release review', exact: true }).click();
+        await page.getByRole('tab', { name: 'Steps' }).click();
         await page.getByRole('button', { name: 'Change step label: approve' }).click();
         const dialog = page.getByRole('dialog');
         await dialog.getByLabel('Step label').selectOption({ label: 'Acceptance gate' });
@@ -4005,6 +4091,8 @@ describe('workflow in the browser', () => {
         }));
         await page.goto(url);
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        const inbox = page.getByRole('button', { name: /^Decision inbox/ });
+        await inbox.click();
         await page.getByText('Native gate needs input', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Inspect checkpoint' }).click();
         const records = page.getByLabel('Run record', { exact: true });
@@ -4016,38 +4104,45 @@ describe('workflow in the browser', () => {
         assert.deepEqual(await page.getByRole('list', { name: 'Recorded choices' }).getByRole('listitem').allTextContents(),
             ['Accept design', 'Reject']);
         await page.getByText('Recorded behavior on rejection: retry.', { exact: true }).waitFor();
-        await page.getByText('check[0]:item', { exact: true }).waitFor();
-        await page.getByText('Fan-out expansion · 2 items · Recorded concurrency limit: 2', { exact: true }).waitFor();
-        const items = page.getByRole('list', { name: 'Recorded items for old-check' });
+        await page.getByRole('button', { name: 'Copy resume command', exact: true }).click();
+        await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow resume native-1');
+        const activity = page.getByRole('tab', { name: 'Activity' });
+        const stepsTab = page.getByRole('tab', { name: 'Steps' });
+        await activity.click();
+        const activityPanel = page.getByRole('tabpanel', { name: 'Activity' });
+        await activityPanel.getByText('check[0]:item', { exact: true }).waitFor();
+        await activityPanel.getByText('Fan-out expansion · 2 items · Recorded concurrency limit: 2', { exact: true }).waitFor();
+        const items = activityPanel.getByRole('list', { name: 'Recorded items for old-check' });
         assert.deepEqual(await items.locator('code').allTextContents(), ['old-check:previous-reviewer:0', 'old-check:previous-reviewer:1']);
         await items.getByText('Failed', { exact: true }).waitFor();
-        await page.getByText('old-check:previous-reviewer:2', { exact: true }).waitFor();
+        await activityPanel.getByText('old-check:previous-reviewer:2', { exact: true }).waitFor();
         assert.equal(await page.getByText('private-item-a', { exact: true }).count(), 0);
-        await page.getByText('Human review gate · Approved', { exact: true }).waitFor();
-        const rejected = page.getByRole('listitem').filter({ hasText: 'first-rejection' });
+        await activityPanel.getByText('Human review gate · Approved', { exact: true }).waitFor();
+        const rejected = activityPanel.getByRole('listitem').filter({ hasText: 'first-rejection' });
         await rejected.getByText('Human review gate · Rejected', { exact: true }).waitFor();
         await rejected.getByText('Completed', { exact: true }).waitFor();
+        await stepsTab.click();
         await page.getByText('The diagram is the current definition, not a reconstruction of this historical run.').waitFor();
         await page.getByText('Up to 3 items run in parallel.').waitFor();
         await page.getByText('Collects results from check.').waitFor();
         await page.getByText('Validation check', { exact: true }).waitFor();
         await page.getByText('Acceptance gate', { exact: true }).waitFor();
         assert.equal(await page.getByRole('button', { name: /^resume|review verdict/i }).count(), 0);
-        await page.getByRole('button', { name: 'Copy resume command', exact: true }).click();
-        await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
-        assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow resume native-1');
         await records.selectOption({ label: 'Current definition' });
         assert.equal(await page.getByRole('heading', { name: 'Recorded decision' }).count(), 0);
         assert.equal(await page.getByRole('button', { name: 'Copy resume command', exact: true }).count(), 0);
         await records.selectOption('native:native-1');
-        await page.getByRole('listitem').filter({ hasText: 'old-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
+        await page.getByRole('tab', { name: 'Evidence' }).click();
+        await page.getByRole('tabpanel').getByRole('listitem').filter({ hasText: 'old-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
         await page.getByRole('dialog').getByText(/Evidence referenced by the previous workflow definition/).waitFor();
         await page.getByRole('dialog').getByText(/may have changed since that checkpoint/).waitFor();
         await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
-        await page.getByRole('listitem').filter({ hasText: 'first-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
+        await page.getByRole('tabpanel').getByRole('listitem').filter({ hasText: 'first-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
         await page.getByRole('dialog').getByText('0..*', { exact: true }).waitFor();
         await page.getByRole('dialog').getByText(/may have changed since that checkpoint/).waitFor();
         await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+        await stepsTab.click();
         const definitionEvidence = page.getByRole('list', { name: 'Workflow steps', exact: true })
             .getByRole('button', { name: 'Read definition evidence…' });
         assert.equal(await definitionEvidence.count(), 2);
@@ -4071,6 +4166,7 @@ describe('workflow in the browser', () => {
                 updated_at: `2026-01-${String(day).padStart(2, '0')}T00:00:00Z` });
         }
         await page.getByRole('button', { name: 'Refresh runs', exact: true }).click();
+        await inbox.click();
         await page.getByText('1 additional paused checkpoint is outside this view. Inspect native run records for the rest.', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Specs & runs', exact: true }).click();
         focus(feature);
@@ -4562,7 +4658,8 @@ describe('workflow in the browser', () => {
         await dialog.getByText('review', { exact: true }).waitFor();
         await dialog.getByRole('button', { name: 'Confirm change' }).click();
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
-        await page.getByRole('navigation', { name: 'Installed workflows' }).getByRole('button', { name: 'Guided publish', exact: true }).click();
+        await page.getByRole('complementary', { name: 'Workflows' }).getByRole('button', { name: 'Guided publish', exact: true }).click();
+        await page.getByRole('tab', { name: 'Steps' }).click();
         await page.locator('#workflow-runs .run-step[data-current="true"]').getByText('review', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Review verdict…', exact: true }).click();
         await dialog.getByLabel('Verdict').selectOption('approve');
