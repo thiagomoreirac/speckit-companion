@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createSpecServer } from '../com.github.copilot/extensions/speckit-companion/server.mjs';
@@ -3574,7 +3574,7 @@ describe('workflow in the browser', () => {
             { 'workflow:release:approve': 'acceptance' });
     });
 
-    it('copies a native start command without starting a run or filling its inputs', { timeout: 60_000 }, async t => {
+    it('copies a native start command with selected inputs without starting a run', { timeout: 60_000 }, async t => {
         let browser;
         try {
             const { chromium } = await import('playwright-core');
@@ -3585,13 +3585,41 @@ describe('workflow in the browser', () => {
         }
         t.after(() => browser.close());
         const f = fixture(t);
-        f.put('.specify/workflows/workflow-registry.json', { workflows: { review: { enabled: true }, retired: { enabled: false } } });
-        for (const id of ['review', 'retired']) f.put(`.specify/workflows/${id}/workflow.yml`, {
-            workflow: { id, name: id === 'review' ? 'Review release' : 'Retired review' },
-            inputs: { release: { type: 'string', required: true } },
-            steps: [{ id: 'check', type: 'gate', message: 'Inspect the release.' }],
+        f.put('.specify/workflows/workflow-registry.json', { workflows: {
+            review: { enabled: true }, delivery: { enabled: true }, retired: { enabled: false },
+            layered: { enabled: true }, blocked: { enabled: true }, plain: { enabled: true },
+        } });
+        for (const [id, name] of [['review', 'Review release'], ['retired', 'Retired review'],
+            ['layered', 'Layered review'], ['blocked', 'Blocked review'], ['plain', 'Plain review']]) {
+            f.put(`.specify/workflows/${id}/workflow.yml`, {
+                workflow: { id, name },
+                ...(id === 'plain' ? {} : { inputs: { release: id === 'review' ?
+                    { type: 'string', required: true } : { type: 'string', enum: ['quick', 'full'], required: true } } }),
+                steps: id === 'blocked' ? [{ id: 'label', type: 'github' }] :
+                    [{ id: 'check', type: 'gate', message: 'Inspect the release.' }],
+            });
+        }
+        f.put('.specify/workflows/overlays/layered/local.yml', { id: 'local', extends: 'layered', edits: [{
+            insert_after: 'check', step: { id: 'extra', type: 'gate', message: 'Check the layer.', verdict_input: 'release' },
+        }] });
+        f.put('.specify/workflows/delivery/workflow.yml', {
+            schema_version: '1.0', workflow: { id: 'delivery', name: 'Delivery check', version: '1.0.0' },
+            inputs: {
+                route: { type: 'string', required: true, enum: ['quick', 'full'], description: 'Choose a review route.' },
+                dry_run: { type: 'boolean', default: true },
+                decision: { type: 'string', enum: ['approve', 'reject'] },
+                unsupported: { type: 'string', enum: ['plain', 'not portable'] },
+                integration: { type: 'string', enum: ['copilot'] },
+            },
+            steps: [{ id: 'branch', type: 'if', condition: true,
+                then: [{ id: 'check', type: 'gate', message: 'Inspect the release.', verdict_input: 'decision' }] }],
         });
-        const { url } = await serve(t, f.root);
+        const { url, api } = await serve(t, f.root, { send: () => assert.fail('Unexpected agent dispatch') });
+        const graph = await api('/workflow');
+        assert.deepEqual(graph.nodes.find(node => node.id === 'workflow:delivery').nativeStartFields.map(field => field.name), ['route', 'dry_run']);
+        const layered = graph.nodes.find(node => node.id === 'workflow:layered');
+        assert.equal(layered.hasProjectOverlay, true);
+        assert.equal(layered.nativeStartFields, undefined);
         const page = await browser.newPage();
         page.setDefaultTimeout(10_000);
         await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
@@ -3604,9 +3632,39 @@ describe('workflow in the browser', () => {
         await page.getByRole('button', { name: 'Copy start command' }).click();
         await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
         assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow run review');
+        await page.getByRole('button', { name: 'Delivery check', exact: true }).click();
+        const start = page.getByRole('region', { name: 'Native start command', exact: true });
+        await start.getByText('Choose all required values to preview the command.').waitFor();
+        assert.equal(await start.getByRole('button', { name: 'Copy start command' }).count(), 0);
+        await start.getByLabel('route', { exact: true }).selectOption('quick');
+        await start.getByText('specify workflow run delivery --input route=quick', { exact: true }).waitFor();
+        await start.getByText('Use workflow default (true)', { exact: true }).waitFor({ state: 'attached' });
+        await start.getByLabel('dry_run', { exact: true }).selectOption('false');
+        await start.getByRole('button', { name: 'Copy start command' }).click();
+        await start.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        const command = 'specify workflow run delivery --input route=quick --input dry_run=false';
+        assert.equal(await page.evaluate(() => window.testCopied), command);
+        await page.getByRole('button', { name: 'Plain review', exact: true }).click();
+        await start.getByText('specify workflow run plain', { exact: true }).waitFor();
+        assert.equal(await start.getByRole('combobox').count(), 0);
+        await page.getByRole('button', { name: 'Layered review', exact: true }).click();
+        await start.getByText('specify workflow run layered', { exact: true }).waitFor();
+        assert.equal(await start.getByRole('combobox').count(), 0);
+        for (const name of ['Blocked review', 'Retired review']) {
+            await page.getByRole('button', { name, exact: true }).click();
+            await start.waitFor({ state: 'hidden' });
+        }
         assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
-        await page.getByRole('button', { name: 'Retired review', exact: true }).click();
-        assert.equal(await page.getByRole('button', { name: 'Copy start command' }).count(), 0);
+        if (process.env.SPECKIT_CANVAS_TEST_CLI) {
+            const outcome = await callSpecKit(f.root, command.split(' ').slice(1), false, { workflowOutcome: true });
+            const runs = join(f.root, '.specify/workflows/runs');
+            assert.ok(existsSync(runs), outcome);
+            const ids = readdirSync(runs);
+            assert.equal(ids.length, 1, outcome);
+            const run = JSON.parse(readFileSync(join(runs, ids[0], 'state.json'), 'utf8'));
+            assert.deepEqual(run.inputs, { route: 'quick', dry_run: false });
+            assert.equal(run.status, 'paused');
+        }
     });
 
     it('shows a static Illustrate drawing without loading active HTML or SVG resources', { timeout: 60_000 }, async t => {

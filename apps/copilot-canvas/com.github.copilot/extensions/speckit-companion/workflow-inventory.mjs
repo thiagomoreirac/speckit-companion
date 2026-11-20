@@ -101,6 +101,28 @@ const nestedSteps = step => [
     ...(object(step.step) ? [['fan-out template', [step.step]]] : []),
 ];
 
+function nativeStartFields(inputs, verdictInputs) {
+    const fields = [];
+    for (const [name, def] of entries(inputs)) {
+        if (fields.length === 8) break;
+        if (!safeId(name) || name.length > 64 || verdictInputs.has(name) || name === 'integration' || !object(def) ||
+            Object.keys(def).some(key => !['type', 'enum', 'required', 'default', 'description'].includes(key)) ||
+            (Object.hasOwn(def, 'required') && typeof def.required !== 'boolean')) continue;
+        const type = Object.hasOwn(def, 'type') ? def.type : 'string';
+        const options = type === 'boolean' && !Object.hasOwn(def, 'enum') ? ['true', 'false'] :
+            type === 'string' && Array.isArray(def.enum) && def.enum.length > 0 && def.enum.length <= 12 &&
+                def.enum.every(value => safeId(value) && value.length <= 48) ? unique(def.enum) : null;
+        if (!options) continue;
+        const hasDefault = Object.hasOwn(def, 'default');
+        const defaultValue = type === 'boolean' && typeof def.default === 'boolean' ? String(def.default) : def.default;
+        if (hasDefault && !options.includes(defaultValue)) continue;
+        fields.push({ name, options, required: def.required === true && !hasDefault,
+            defaultValue: hasDefault ? defaultValue : null,
+            description: typeof def.description === 'string' ? def.description.slice(0, 240) : null });
+    }
+    return fields;
+}
+
 export function bundleRecordRemoval(registry, id, { allowWorkflowRemoval = false } = {}) {
     const records = registry?.bundles;
     if (!Array.isArray(records) || !/^1(?:\.\d+)?$/.test(registry.schema_version)) return null;
@@ -832,7 +854,9 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             }
             let stepCount = 0;
             let incomplete = false;
+            let hasIndirectSteps = false;
             const stepIds = new Set();
+            const verdictInputs = new Set();
             const addSteps = (steps, parent, branch, depth, seenIds) => {
                 if (depth > 12) {
                     incomplete = true;
@@ -855,6 +879,8 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                     seenIds.add(step.id);
                     stepIds.add(stepId);
                     const stepType = Object.hasOwn(step, 'type') ? step.type : 'command';
+                    if (stepType === 'slot' || stepType === 'workflow' || !BUILTIN_STEP_TYPES.has(stepType)) hasIndirectSteps = true;
+                    if (stepType === 'gate' && safeId(step.verdict_input)) verdictInputs.add(step.verdict_input);
                     const dependency = strings(step.depends_on ?? step.needs);
                     const command = typeof step.command === 'string' ? step.command : null;
                     const reviewArtifact = stepType === 'gate' && isReviewArtifactPath(step.show_file) ? step.show_file : null;
@@ -905,6 +931,10 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             addSteps(list(reviewDefinition?.steps), id, null, 0, new Set());
             if (incomplete) warning('workflow-inspection-limit', node.active ? 'blocked' : 'advisory',
                 `The canvas cannot inspect all steps in ${node.name}. Reduce nesting or split the workflow.`, [id]);
+            else if (!overlays.error && !declared?.length && !hasIndirectSteps) {
+                const fields = nativeStartFields(config.inputs, verdictInputs);
+                if (fields.length) node.nativeStartFields = fields;
+            }
         }
     }
     const detachedNativeWorkflows = new Map();

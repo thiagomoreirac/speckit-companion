@@ -87,6 +87,37 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         ? `specify workflow resume ${native.id}` : null;
     const startCommand = key === 'definition' && selected.active && selected.state !== 'blocked' && !issue.length && cliId.test(selected.key)
         ? `specify workflow run ${selected.key}` : null;
+    function nativeStart() {
+        const fields = selected.nativeStartFields ?? [];
+        const manual = selected.inputs.filter(name => !fields.some(field => field.name === name));
+        const controls = fields.map(({ name, options, defaultValue, required, description }) => {
+            const id = `native-start-${name}`;
+            const control = el('select', { id, class: 'search', required, 'aria-describedby': description ? `${id}-help` : null },
+                el('option', { value: '' }, required ? 'Choose a value' : defaultValue === null ? 'Do not supply' : `Use workflow default (${defaultValue})`),
+                options.map(value => el('option', { value }, value)));
+            return { name, options, required, control,
+                row: el('div', {}, el('label', { for: id }, name), control, description ? el('p', { id: `${id}-help` }, description) : null) };
+        });
+        const invocation = el('code', {});
+        const copy = el('div', { class: 'workflow-actions' });
+        function compose() {
+            const missing = controls.some(({ control, required }) => required && !control.value);
+            const invalid = controls.some(({ control, name, options }) =>
+                control.value && (!cliId.test(name) || !options.includes(control.value) || !cliId.test(control.value)));
+            const command = [startCommand, ...controls.filter(({ control }) => control.value)
+                .map(({ name, control }) => `--input ${name}=${control.value}`)].join(' ');
+            invocation.textContent = invalid ? 'Choose a listed value to preview the command.' :
+                missing ? 'Choose all required values to preview the command.' : command;
+            copy.replaceChildren(...(missing || invalid ? [] : [copyButton(command, 'Copy start command', { id: 'run-copy-start' })]));
+        }
+        controls.forEach(({ control }) => control.addEventListener('change', compose));
+        compose();
+        return el('section', { class: 'run-native-start', 'aria-label': 'Native start command' },
+            p('Review the command, then run it from the repository root in an interactive terminal. The canvas does not start the run.'),
+            controls.length ? el('fieldset', {}, el('legend', {}, 'Native start inputs'), controls.map(({ row }) => row)) : null,
+            manual.length ? p(`Declared inputs: ${manual.join(', ')}. Review any values you need to supply in the terminal. Answer gate prompts interactively.`) : null,
+            el('p', { class: 'workflow-actions', 'aria-live': 'polite' }, invocation), copy);
+    }
     const run = native ?? (key === 'guided' ? selected.guidedRun : key === 'isolated' ? selected.isolatedRun : null);
     const children = new Map(), incoming = new Map(), readable = new Set(), featureIds = new Set();
     for (const edge of graph.edges) {
@@ -214,11 +245,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             p('Run this from the repository root in an interactive terminal. Review any prompts there; the canvas does not supply a verdict or run the command.'),
             el('div', { class: 'workflow-actions' }, el('code', {}, resumeCommand),
                 copyButton(resumeCommand, 'Copy resume command', { id: 'run-copy-resume' }))) : null,
-        startCommand ? el('div', {},
-            p('To start a native run, review the workflow and run this command from the repository root in an interactive terminal.'),
-            selected.inputs.length ? p(`Declared inputs: ${selected.inputs.join(', ')}. Add --input key=value for each value you need to supply.`) : null,
-            el('div', { class: 'workflow-actions' }, el('code', {}, startCommand),
-                copyButton(startCommand, 'Copy start command', { id: 'run-copy-start' }))) : null,
+        startCommand ? nativeStart() : null,
         native?.checkpoint?.evidence && !native.steps.some(result => result.id === native.checkpoint.id)
             ? recordedEvidence(native.checkpoint, 'run-checkpoint-evidence') : null,
         native?.steps.length ? el('section', {}, el('h4', {}, 'Recorded step results'),

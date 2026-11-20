@@ -123,6 +123,9 @@
 .run-picker .btn[aria-pressed="true"] { background: var(--background-color-muted, var(--border-color-default)); font-weight: 600; }
 .run-detail h3, .run-picker h3, .run-inbox h3 { margin: 0.25rem 0 0.65rem; }
 .run-detail label, .run-detail select { display: block; margin-block: 0.4rem; }
+.run-native-start { overflow-wrap: anywhere; }
+.run-native-start fieldset { min-inline-size: 0; margin-inline: 0; border: 1px solid var(--border); }
+.run-native-start select { max-inline-size: 100%; }
 .run-question { overflow-wrap: anywhere; }
 .run-question-message { white-space: pre-wrap; }
 .run-lines, .run-steps { padding: 0; margin: 0 0 1rem; list-style: none; }
