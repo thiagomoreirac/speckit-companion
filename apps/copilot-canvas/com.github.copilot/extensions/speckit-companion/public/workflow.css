@@ -113,6 +113,7 @@
 .run-lines li, .run-step-title { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.45rem 0.85rem; }
 .run-lines li { padding: 0.65rem 0; border-top: 1px solid var(--border-color-default, #6e7781); overflow-wrap: anywhere; }
 .run-lines p, .run-step p { margin: 0.35rem 0; }
+.run-occurrences { flex-basis: 100%; min-width: 0; list-style: none; padding-inline-start: 1rem; }
 .run-meta { font-size: 0.86em; overflow-wrap: anywhere; }
 .run-status { display: inline-block; font-size: 0.82em; border: 1px solid currentColor; border-radius: 0.3rem; padding: 0.1rem 0.45rem; }
 .run-step-labels { display: flex; flex-wrap: wrap; gap: 0.35rem; }

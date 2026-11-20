@@ -60,10 +60,26 @@ function nativeStepResult([id, result]) {
     const gate = result.type === 'gate' || (result.type == null && object(result.output) && Object.hasOwn(result.output, 'on_reject'));
     const choice = gate && typeof result.output?.choice === 'string' ? result.output.choice.toLowerCase() : null;
     const path = result.output?.show_file;
+    const count = result.output?.item_count;
+    const concurrency = result.output?.max_concurrency;
+    const fanOut = result.type === 'fan-out' && Number.isSafeInteger(count) && count >= 0
+        ? { count, concurrency: Number.isSafeInteger(concurrency) && concurrency >= 1 ? concurrency : null } : null;
     return { id, status: result.status, gate,
+        ...(fanOut ? { fanOut } : {}),
         ...(['approve', 'reject', 'abort'].includes(choice) ? { verdict: choice } : {}),
         ...(gate && (isReviewArtifactPath(path) ||
             (typeof path === 'string' && path.length <= 420 && /\.(?:mmd|html?|svg|png)$/i.test(path))) ? { evidenceCandidate: path } : {}) };
+}
+function nativeStepResults(results) {
+    const steps = results.map(nativeStepResult);
+    const groups = new Map(steps.filter(step => step.fanOut).map(step => [step.id, step.fanOut]));
+    for (const step of steps) {
+        const alias = /^(.+):([a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}):(0|[1-9]\d*)$/.exec(step.id);
+        const group = alias && groups.get(alias[1]);
+        const index = alias ? Number(alias[3]) : -1;
+        if (group && Number.isSafeInteger(index) && index < group.count) step.fanOutItem = { parent: alias[1], index };
+    }
+    return steps;
 }
 const BUNDLE_COMPONENT_TYPES = new Map([['presets', 'preset'], ['extensions', 'extension'], ['workflows', 'workflow'], ['steps', 'step-package']]);
 const BUILTIN_STEP_TYPES = new Set(['command', 'prompt', 'gate', 'shell', 'github', 'workflow', 'init', 'if', 'switch', 'while', 'do-while', 'fan-out', 'fan-in', 'slot']);
@@ -890,7 +906,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             const checkpoint = current ? nativeStepResult(current) : null;
             (owner.nativeRuns ??= []).push({ id: runId, status: run.status, updatedAt: run.updated_at, step,
                 gateWaiting: run.status === 'paused' && Boolean(checkpoint?.gate),
-                checkpoint, steps: results.slice(0, 192).map(nativeStepResult), omittedSteps: Math.max(0, results.length - 192),
+                checkpoint, steps: nativeStepResults(results.slice(0, 192)), omittedSteps: Math.max(0, results.length - 192),
             });
             if (owner.lastRun && Date.parse(owner.lastRun) >= Date.parse(run.updated_at)) continue;
             owner.lastRun = run.updated_at;

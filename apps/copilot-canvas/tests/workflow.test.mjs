@@ -161,6 +161,35 @@ function routingFixture(t) {
 }
 
 describe('graph from a Spec Kit repository', () => {
+    it('recognizes fan-out occurrences from a released native checkpoint', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
+    }, async t => {
+        const f = fixture(t);
+        const id = 'native-fan-out';
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { [id]: { enabled: true } } });
+        f.put(`.specify/workflows/${id}/workflow.yml`, {
+            schema_version: '1.0',
+            workflow: { id, version: '1.0.0', name: 'Native fan-out' },
+            steps: [{ id: 'check', type: 'fan-out', max_concurrency: 1, items: ['private-item-a', 'private-item-b'],
+                step: { id: 'item', type: 'if', condition: false, then: [{ id: 'unused', type: 'gate', message: 'Not executed.' }] } },
+            { id: 'gather', type: 'fan-in', wait_for: ['check'] }],
+        });
+        await callSpecKit(f.root, ['workflow', 'run', id]);
+        const { api } = await serve(t, f.root);
+        const graph = await api('/workflow');
+        const records = graph.nodes.find(node => node.id === `workflow:${id}`).nativeRuns;
+        assert.equal(records.length, 1);
+        const [run] = records;
+        assert.equal(run.status, 'completed');
+        assert.deepEqual(run.steps.find(step => step.id === 'check').fanOut, { count: 2, concurrency: 1 });
+        assert.deepEqual(run.steps.filter(step => step.fanOutItem).sort((a, b) => a.fanOutItem.index - b.fanOutItem.index)
+            .map(({ id, status, fanOutItem }) => [id, status, fanOutItem]), [
+            ['check:item:0', 'completed', { parent: 'check', index: 0 }],
+            ['check:item:1', 'completed', { parent: 'check', index: 1 }],
+        ]);
+        assert.doesNotMatch(JSON.stringify(graph), /private-item/);
+    });
+
     it('projects native checkpoints without exposing run inputs or outputs and inventories only linked feature evidence', async t => {
         const f = fixture(t);
         const feature = 'specs/001-exports';
@@ -3236,7 +3265,12 @@ describe('workflow in the browser', () => {
             'workflow:review:check:item': 'validation', 'workflow:review:approve': 'acceptance',
         } });
         f.put('.specify/workflows/runs/native-1/state.json', { run_id: 'native-1', workflow_id: 'review', status: 'paused', updated_at: '2026-01-02T00:00:00Z',
-            current_step_id: 'old-approval', step_results: { 'check[0]:item': { status: 'completed' },
+            current_step_id: 'old-approval', step_results: {
+                'old-check': { type: 'fan-out', status: 'completed', output: { item_count: 2, max_concurrency: 2, items: ['private-item-a'] } },
+                'old-check:previous-reviewer:1': { status: 'failed' },
+                'old-check:previous-reviewer:0': { status: 'completed' },
+                'old-check:previous-reviewer:2': { status: 'completed' },
+                'check[0]:item': { status: 'completed' },
                 'first-approval': { type: 'gate', status: 'completed', output: { choice: 'approve', show_file: `${feature}/data-model-diagram.mmd` } },
                 'first-rejection': { type: 'gate', status: 'completed', output: { choice: 'reject', on_reject: 'continue' } },
                 'old-approval': { type: 'gate', status: 'paused', output: { show_file: `${feature}/historical-review.md` } } } });
@@ -3252,6 +3286,12 @@ describe('workflow in the browser', () => {
         await page.getByText('Native gate needs input', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Inspect checkpoint' }).click();
         await page.getByText('check[0]:item', { exact: true }).waitFor();
+        await page.getByText('Fan-out expansion · 2 items · Recorded concurrency limit: 2', { exact: true }).waitFor();
+        const items = page.getByRole('list', { name: 'Recorded items for old-check' });
+        assert.deepEqual(await items.locator('code').allTextContents(), ['old-check:previous-reviewer:0', 'old-check:previous-reviewer:1']);
+        await items.getByText('Failed', { exact: true }).waitFor();
+        await page.getByText('old-check:previous-reviewer:2', { exact: true }).waitFor();
+        assert.equal(await page.getByText('private-item-a', { exact: true }).count(), 0);
         await page.getByText('Human review gate · Approved', { exact: true }).waitFor();
         const rejected = page.getByRole('listitem').filter({ hasText: 'first-rejection' });
         await rejected.getByText('Human review gate · Rejected', { exact: true }).waitFor();

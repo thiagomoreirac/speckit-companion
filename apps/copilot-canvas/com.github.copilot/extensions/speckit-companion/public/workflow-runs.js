@@ -143,6 +143,26 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         el('p', { class: 'run-meta' }, result.evidence.path),
         roleButton('Read recorded evidence reference…',
             () => inspectEvidence(byId.get(result.evidence.feature), result.evidence.path, result.evidence), { id }));
+    const recordedItems = new Map();
+    for (const step of native?.steps ?? []) {
+        const parent = step.fanOutItem?.parent;
+        if (!parent) continue;
+        if (!recordedItems.has(parent)) recordedItems.set(parent, []);
+        recordedItems.get(parent).push(step);
+    }
+    function recordedStep(step) {
+        const items = recordedItems.get(step.id);
+        return el('li', {}, el('div', {}, el('code', {}, step.id),
+            step.fanOutItem ? el('p', { class: 'run-meta' }, `Item ${step.fanOutItem.index + 1}`) : null,
+            step.gate ? el('p', { class: 'run-meta' }, ['Human review gate', verdicts[step.verdict]].filter(Boolean).join(' · ')) : null,
+            step.fanOut ? el('p', { class: 'run-meta' },
+                `Fan-out expansion · ${step.fanOut.count} ${step.fanOut.count === 1 ? 'item' : 'items'} · ${
+                    step.fanOut.concurrency == null ? 'No recorded concurrency limit' : `Recorded concurrency limit: ${step.fanOut.concurrency}`}`) : null,
+            recordedEvidence(step, `run-recorded-evidence-${step.id}`)),
+        tag(step.status),
+        items?.length ? el('ul', { class: 'run-occurrences', 'aria-label': `Recorded items for ${step.id}` },
+            items.sort((a, b) => a.fanOutItem.index - b.fanOutItem.index).map(recordedStep)) : null);
+    }
     const detail = el('section', { class: 'run-detail', 'aria-labelledby': 'run-details-heading' },
         el('div', { class: 'run-step-title' }, el('h3', { id: 'run-details-heading', tabindex: -1 }, selected.name), run?.status ? tag(run.status) : null),
         el('label', { for: 'run-record-select' }, 'Run record'),
@@ -180,11 +200,9 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             ? recordedEvidence(native.checkpoint, 'run-checkpoint-evidence') : null,
         native?.steps.length ? el('section', {}, el('h4', {}, 'Recorded step results'),
             native.steps.some(result => result.evidence) ? p('Recorded paths open the current files. Native run records do not preserve the reviewed bytes.') : null,
+            native.steps.some(step => step.fanOut) ? p('Fan-out results show recorded item outcomes, not whether their execution overlapped.') : null,
             el('ul', { class: 'run-lines' },
-            native.steps.map(step => el('li', {}, el('div', {}, el('code', {}, step.id),
-                step.gate ? el('p', { class: 'run-meta' }, ['Human review gate', verdicts[step.verdict]].filter(Boolean).join(' · ')) : null,
-                recordedEvidence(step, `run-recorded-evidence-${step.id}`)),
-                tag(step.status)))),
+                native.steps.filter(step => !step.fanOutItem).map(recordedStep)),
             native.omittedSteps ? p(`${native.omittedSteps} additional results are available in the native run record.`) : null) : null,
         el('div', { class: 'workflow-actions' },
             button('Inspect configuration', () => openWorkflow(selected.id)),
