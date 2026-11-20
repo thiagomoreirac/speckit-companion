@@ -479,7 +479,8 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
             ...(node.effect === 'external-write' ? [paragraph('Automatic external writes are blocked. Supported GitHub changes require a separate confirmation for the exact target and field.')] : []),
             ...(findings.length ? [findingGroup(findings)] : []),
             ...(node.artifacts.length ? [heading('Artifacts & provenance'),
-                el('ul', {}, node.artifacts.map(path => el('li', {}, button(path, () => artifact(node, path)))))] : []),
+                el('ul', {}, node.artifacts.map(path => el('li', {}, button(path, () => artifact(node, path,
+                    node.definitionEvidence?.path === path ? node.definitionEvidence : null)))))] : []),
             ...(commands.length ? [heading('Commands'), el('ul', {}, commands)] : []),
             ...(hasHooks ? [heading('Attached hooks'), el('ul', {}, node.hooks.map(id => {
                 const hook = state.graph.edges.find(item => item.id === id);
@@ -957,12 +958,12 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
     }
 
     const params = (id, path) => new URLSearchParams({ id, path });
-    const artifact = (node, path, recorded) => readDialog(path, () => recorded?.featureArtifact
-        ? api(`/api/spec/evidence?${params(node.key, path)}`)
+    const artifact = (node, path, reference, historical = false) => readDialog(path, () => reference?.featureArtifact
+        ? api(`/api/spec/evidence?${params(reference.feature.slice('feature:'.length), path)}`)
         : api(`/api/workflow/artifact?${params(node.id, path)}`),
         result => dialogBody.replaceChildren(
-            ...(recorded ? [paragraph('Current repository copy of the file referenced in the run record. It may have changed since that checkpoint.')] : []),
-            ...(recorded?.featureArtifact ? renderEvidence(result) : [el('pre', { text: result.text, tabindex: 0 })]),
+            ...(historical ? [paragraph('Current repository copy of the file referenced in the run record. It may have changed since that checkpoint.')] : []),
+            ...(reference?.featureArtifact ? renderEvidence(result) : [el('pre', { text: result.text, tabindex: 0 })]),
             actions(button('Close', () => dialog.close()))));
 
     const decisionEvidence = (id, mode, runId, step, path) => readDialog(path,

@@ -119,7 +119,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             el('p', { class: 'workflow-actions', 'aria-live': 'polite' }, invocation), copy);
     }
     const run = native ?? (key === 'guided' ? selected.guidedRun : key === 'isolated' ? selected.isolatedRun : null);
-    const children = new Map(), incoming = new Map(), readable = new Set(), featureIds = new Set();
+    const children = new Map(), incoming = new Map(), featureIds = new Set();
     for (const edge of graph.edges) {
         if (edge.kind === 'contains' && byId.get(edge.target)?.workflowOwner === selected.id) {
             if (!children.has(edge.source)) children.set(edge.source, []);
@@ -130,7 +130,6 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             incoming.get(edge.target).push(byId.get(edge.source)?.name ?? edge.source.split(':').at(-1));
         }
         if (edge.kind === 'input' && byId.get(edge.target)?.workflowOwner === selected.id && edge.source.startsWith('feature:')) {
-            readable.add(edge.target);
             featureIds.add(edge.source);
         }
     }
@@ -166,7 +165,8 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                         step.gateRejection ? p(`On rejection: ${step.gateRejection}.`) : null,
                         step.inputs.length ? p(`Declared inputs: ${step.inputs.join(', ')}`) : null,
                         step.outputs.length ? p(`Declared outputs: ${step.outputs.join(', ')}`) : null,
-                        step.reviewArtifact && readable.has(step.id) ? roleButton('Read definition evidence…', () => inspectEvidence(step, step.reviewArtifact), { id: `run-evidence-${step.id}` }) : null,
+                        step.definitionEvidence ? roleButton('Read definition evidence…',
+                            () => inspectEvidence(step, step.definitionEvidence.path, step.definitionEvidence), { id: `run-evidence-${step.id}` }) : null,
                         gate?.artifact && gate.artifact !== step.reviewArtifact ? p(`Review evidence: ${gate.artifact}`) : null,
                         key === 'definition' && step.stepType ? button('Change step label…', () => configurePurpose(step), {
                             'aria-label': `Change step label: ${step.name}`, id: `run-purpose-${step.id}`,
@@ -188,7 +188,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
     const recordedEvidence = (result, id) => result?.evidence && el('div', {},
         el('p', { class: 'run-meta' }, result.evidence.path),
         roleButton('Read recorded evidence reference…',
-            () => inspectEvidence(byId.get(result.evidence.feature), result.evidence.path, result.evidence), { id }));
+            () => inspectEvidence(byId.get(result.evidence.feature), result.evidence.path, result.evidence, true), { id }));
     const recordedItems = new Map();
     for (const step of native?.steps ?? []) {
         const parent = step.fanOutItem?.parent;

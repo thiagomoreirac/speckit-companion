@@ -58,6 +58,9 @@ const validOverlayId = value => safeId(value) && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9]
 const RUN_STATES = new Set(['created', 'running', 'paused', 'completed', 'failed', 'aborted']);
 const STEP_STATES = new Set([...RUN_STATES, 'skipped', 'pending']);
 const runStepId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:[\]-]{1,160}$/.test(value);
+const workflowEvidencePath = path => isReviewArtifactPath(path) ||
+    (typeof path === 'string' && path.length <= 420 && /\.(?:mmd|html?|svg|png)$/i.test(path) &&
+        !/{{/.test(path) && path.split('/').every(part => Boolean(part) && !part.startsWith('.') && !/[\\:\x00-\x1f\x7f]/.test(part)));
 function nativeStepResult([id, result]) {
     const gate = result.type === 'gate' || (result.type == null && object(result.output) && Object.hasOwn(result.output, 'on_reject'));
     const choice = gate && typeof result.output?.choice === 'string' ? result.output.choice.toLowerCase() : null;
@@ -69,8 +72,7 @@ function nativeStepResult([id, result]) {
     return { id, status: result.status, gate,
         ...(fanOut ? { fanOut } : {}),
         ...(['approve', 'reject', 'abort'].includes(choice) ? { verdict: choice } : {}),
-        ...(gate && (isReviewArtifactPath(path) ||
-            (typeof path === 'string' && path.length <= 420 && /\.(?:mmd|html?|svg|png)$/i.test(path))) ? { evidenceCandidate: path } : {}) };
+        ...(gate && workflowEvidencePath(path) ? { evidenceCandidate: path } : {}) };
 }
 function nativeGateQuestion(output) {
     if (!object(output)) return null;
@@ -883,7 +885,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                     if (stepType === 'gate' && safeId(step.verdict_input)) verdictInputs.add(step.verdict_input);
                     const dependency = strings(step.depends_on ?? step.needs);
                     const command = typeof step.command === 'string' ? step.command : null;
-                    const reviewArtifact = stepType === 'gate' && isReviewArtifactPath(step.show_file) ? step.show_file : null;
+                    const reviewArtifact = stepType === 'gate' && workflowEvidencePath(step.show_file) ? step.show_file : null;
                     if (stepType === 'gate' && (typeof step.message !== 'string' || !step.message.trim())) {
                         warning('malformed-step', 'blocked', `Gate step ${step.id} must declare a review message.`, [id, stepId]);
                     }
@@ -898,7 +900,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                         outputs: Object.keys(object(step.outputs) ? step.outputs : {}),
                         approval: stepType === 'gate' || stepType === 'github' ? 'confirm' : 'manual',
                         effect: stepType === 'github' ? 'external-write' : stepType === 'gate' ? 'read-only' : 'unknown',
-                        commands: command ? [{ id: command, name: command }] : [], artifacts: unique([stepSource, file, reviewArtifact]), note: step.message,
+                        commands: command ? [{ id: command, name: command }] : [], artifacts: unique([stepSource, file]), note: step.message,
                         stepType: safeId(stepType) ? stepType : null, reviewArtifact, workflowOwner: id,
                         fanOutConcurrency: stepType === 'fan-out'
                             ? (step.max_concurrency === undefined ? 1 : Number.isSafeInteger(step.max_concurrency) && step.max_concurrency > 0 ? step.max_concurrency : null) : null,
@@ -1266,7 +1268,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         .flatMap(node => node.artifacts.map(path => [path, node.id])));
     const featureIds = new Set(specs.map(spec => spec.id));
     const evidenceByFeature = new Map();
-    function findRecordedEvidence(path) {
+    function findWorkflowEvidence(path) {
         const feature = isReviewArtifactPath(path) && featureArtifacts.get(path);
         if (feature) return { feature, path };
         if (!listEvidence) return null;
@@ -1285,17 +1287,18 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 if (!result?.evidenceCandidate) continue;
                 const path = result.evidenceCandidate;
                 delete result.evidenceCandidate;
-                const evidence = findRecordedEvidence(path);
+                const evidence = findWorkflowEvidence(path);
                 if (evidence) result.evidence = evidence;
             }
         }
     }
     for (const node of nodes.filter(item => item.reviewArtifact)) {
         const path = node.reviewArtifact;
-        const feature = featureArtifacts.get(path);
-        if (feature) {
+        const evidence = findWorkflowEvidence(path);
+        if (evidence) {
+            node.definitionEvidence = evidence;
             node.artifacts.push(path);
-            addEdge('input', feature, node.id, `Review ${path}`, { active: node.active, approval: 'confirm', reads: [path] });
+            addEdge('input', evidence.feature, node.id, `Review ${path}`, { active: node.active, approval: 'confirm', reads: [path] });
         } else {
             warning('missing-gate-artifact', 'advisory', `Gate ${node.name} references ${path}, which is not an inventoried feature artifact.`,
                 [node.id, node.workflowOwner]);

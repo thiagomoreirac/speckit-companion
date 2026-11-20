@@ -352,9 +352,12 @@ describe('graph from a Spec Kit repository', () => {
         f.put('apm.lock.yaml', { dependencies: [{ repo_url: 'microsoft/hve-core', deployed_files: [agent],
             deployed_file_hashes: { [agent]: `sha256:${createHash('sha256').update(text).digest('hex')}` } }] });
         f.put(`${feature}/agent-assignments.yml`, { assignments: { T001: { agent: 'technical-reviewer' }, T009: { agent: 'default' } } });
+        const unlistedDefinitionFile = `${feature}/drafts/unlisted-definition.html`;
+        f.put(unlistedDefinitionFile, '<p>Not in the evidence inventory</p>');
         f.put('.specify/workflows/workflow-registry.json', { workflows: { review: { enabled: true } } });
         f.put('.specify/workflows/review/workflow.yml', { workflow: { id: 'review', name: 'Release review', version: '1.0.0' },
-            steps: [{ id: 'review', type: 'gate', message: 'Inspect the release.' }] });
+            steps: [{ id: 'review', type: 'gate', message: 'Inspect the release.', show_file: proof },
+                { id: 'private', type: 'gate', message: 'Not inventoried.', show_file: unlistedDefinitionFile }] });
         for (const [id, status, date] of [['old-run', 'completed', '2026-01-01'], ['waiting', 'paused', '2026-01-02']]) {
             f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'review', status, updated_at: `${date}T00:00:00Z`,
                 current_step_id: 'review', inputs: { token: 'private-test-input' },
@@ -368,6 +371,15 @@ describe('graph from a Spec Kit repository', () => {
         }
         f.put(`${feature}/drafts/private-test-unlinked.html`, '<p>Not in the evidence inventory</p>');
         const { api } = await serve(t, f.root);
+        const definition = await api('/workflow');
+        const gate = definition.nodes.find(node => node.id === 'workflow:review:review');
+        const unlinked = definition.nodes.find(node => node.id === 'workflow:review:private');
+        assert.deepEqual(gate.definitionEvidence, { feature: `feature:${feature}`, path: proof, featureArtifact: true });
+        assert.ok(definition.edges.some(edge => edge.kind === 'input' && edge.target === gate.id && edge.source === `feature:${feature}` &&
+            edge.approval === 'confirm' && edge.reads.includes(proof)));
+        assert.equal(unlinked.definitionEvidence, undefined);
+        assert.equal(unlinked.artifacts.includes(unlistedDefinitionFile), false);
+        assert.ok(definition.findings.some(finding => finding.code === 'missing-gate-artifact' && finding.nodeIds.includes(unlinked.id)));
         const graph = await api('/workflow');
         const workflow = graph.nodes.find(node => node.id === 'workflow:review');
         assert.deepEqual(workflow.nativeRuns.map(run => [run.id, run.status]), [['waiting', 'paused'], ['old-run', 'completed']]);
@@ -3859,7 +3871,8 @@ describe('workflow in the browser', () => {
         f.put('.specify/workflows/review/workflow.yml', { workflow: { id: 'review', name: 'Release review', version: '1.0.0' },
             steps: [{ id: 'check', type: 'fan-out', max_concurrency: 3, items: '[]', step: { id: 'item', type: 'prompt', agent: 'reviewer' } },
                 { id: 'gather', type: 'fan-in', wait_for: ['check'] },
-                { id: 'approve', type: 'gate', message: 'Inspect the release.', show_file: `${feature}/spec.md` }] });
+                { id: 'approve', type: 'gate', message: 'Inspect the release.', show_file: `${feature}/spec.md` },
+                { id: 'design-gate', type: 'gate', message: 'Inspect the prototype.', show_file: `${feature}/preview/wireflow.html` }] });
         f.put(POLICY_PATH, { version: 1, decisions: [], runAnnotations: {
             'workflow:review:check:item': 'validation', 'workflow:review:approve': 'acceptance',
         } });
@@ -3931,9 +3944,19 @@ describe('workflow in the browser', () => {
         await page.getByRole('dialog').getByText('0..*', { exact: true }).waitFor();
         await page.getByRole('dialog').getByText(/may have changed since that checkpoint/).waitFor();
         await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
-        await page.getByRole('button', { name: 'Read definition evidence…' }).click();
+        const definitionEvidence = page.getByRole('list', { name: 'Workflow steps', exact: true })
+            .getByRole('button', { name: 'Read definition evidence…' });
+        assert.equal(await definitionEvidence.count(), 2);
+        await definitionEvidence.nth(0).click();
         await page.getByRole('dialog').getByText(/Review this mockup/).waitFor();
         await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+        await definitionEvidence.nth(1).click();
+        const visualEvidence = page.getByRole('dialog');
+        await visualEvidence.getByRole('heading', { name: 'Export prototype' }).waitFor();
+        assert.equal(await visualEvidence.getByText(/may have changed since that checkpoint/).count(), 0);
+        assert.equal(await visualEvidence.getByRole('link').count(), 0);
+        assert.equal(await page.locator('body').getAttribute('data-prototype-ran'), null);
+        await visualEvidence.getByRole('button', { name: 'Close' }).click();
         for (const width of [420, 1080]) {
             await page.setViewportSize({ width, height: 900 });
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
