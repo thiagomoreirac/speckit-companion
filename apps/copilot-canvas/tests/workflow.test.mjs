@@ -570,7 +570,8 @@ describe('graph from a Spec Kit repository', () => {
             initialized.replace('apm: []', 'apm: [acme/tool]'),
             initialized.replace('mcp: []', 'mcp: [custom-service]'),
             `${initialized}scripts:\n  prepare: echo hi\n`,
-            initialized.replace('- copilot', '- copilot\n- claude'),
+            initialized.replace('- copilot', '- copilot\n- copilot'),
+            initialized.replace('- copilot', '- copilot\n- claude\n- codex'),
         ]) {
             f.put('apm.yml', text);
             assert.deepEqual((await api(`/spec?id=${feature}`)).hveImportOptions, []);
@@ -582,6 +583,18 @@ describe('graph from a Spec Kit repository', () => {
         assert.deepEqual((await api(`/spec?id=${feature}`)).hveImportOptions, [{ harness: 'copilot', label: 'Copilot' }]);
         await api('/workflow/preview', { operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness: 'claude' }, 409);
         await api('/workflow/preview', { operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness: 'unsupported' }, 400);
+        const dual = initialized.replace('- copilot', '- claude\n- copilot');
+        f.put('apm.yml', dual);
+        assert.deepEqual((await api(`/spec?id=${feature}`)).hveImportOptions, [{ harness: 'both', label: 'Copilot and Claude Code' }]);
+        await api('/workflow/preview', { operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness: 'claude' }, 409);
+        const occupied = '.github/agents/functional-code-review.agent.md';
+        f.put(occupied, 'User-owned profile');
+        const collision = await api('/workflow/preview', {
+            operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness: 'both',
+        }, 409);
+        assert.match(collision.error, /existing APM setup or destination profile/);
+        assert.equal(readFileSync(join(f.root, occupied), 'utf8'), 'User-owned profile');
+        rmSync(join(f.root, occupied));
         f.put('apm.lock.yaml', '# Existing lock');
         assert.deepEqual((await api(`/spec?id=${feature}`)).hveImportOptions, []);
     });
@@ -599,7 +612,7 @@ describe('graph from a Spec Kit repository', () => {
         const request = { operation: 'agent-apm-import', id: `feature:${feature}`, feature };
         const before = await api(`/spec?id=${feature}`);
         assert.equal(before.assignments, null);
-        assert.deepEqual(before.hveImportOptions, [{ harness: 'copilot', label: 'Copilot' }, { harness: 'claude', label: 'Claude Code' }]);
+        assert.deepEqual(before.hveImportOptions.map(option => option.harness), ['copilot', 'claude', 'both']);
         const preview = await api('/workflow/preview', request);
         assert.deepEqual(preview.paths, paths);
         assert.deepEqual(preview.documentChanges.map(doc => [doc.path, doc.before]), paths.map(path => [path, null]));
@@ -3732,7 +3745,7 @@ describe('workflow in the browser', () => {
         assert.deepEqual(requests, []);
     });
 
-    it('imports the pinned Claude Code reviewer in Tasks and assigns it after a separate review', {
+    it('imports both pinned HVE profiles in Tasks and assigns the Claude reviewer after a separate review', {
         skip: process.env.SPECKIT_CANVAS_TEST_APM !== '1', timeout: 180_000,
     }, async t => {
         let browser;
@@ -3747,7 +3760,10 @@ describe('workflow in the browser', () => {
         const f = fixture(t);
         const feature = 'specs/001-exports';
         const profile = '.claude/agents/functional-code-review.md';
+        const copilot = '.github/agents/functional-code-review.agent.md';
         const assignment = `${feature}/agent-assignments.yml`;
+        const manifest = 'name: existing-project\nversion: 1.0.0\ntargets:\n  - claude\n  - copilot\ndependencies:\n  apm: [] # Pending first dependency\n';
+        f.put('apm.yml', manifest);
         f.put(`${feature}/spec.md`, '# Feature Specification: Export board');
         f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
         f.install('agent-assign', { manifest: { extension: { version: '1.1.0' } } });
@@ -3760,18 +3776,24 @@ describe('workflow in the browser', () => {
         page.setDefaultTimeout(30_000);
         await page.goto(url);
         await page.getByRole('tab', { name: /^Tasks/ }).click();
-        await page.getByRole('button', { name: 'Preview HVE Core import for Copilot…' }).waitFor();
+        const dualImport = page.getByRole('button', { name: 'Preview HVE Core import for Copilot and Claude Code…' });
+        await dualImport.waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Preview HVE Core import for Copilot…', exact: true }).count(), 0);
         const importResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workflow/preview', { timeout: 90_000 });
-        await page.getByRole('button', { name: 'Preview HVE Core import for Claude Code…' }).click();
+        await dualImport.click();
         const result = await importResponse;
         assert.equal(result.status(), 200, await result.text());
         const dialog = page.getByRole('dialog');
         await dialog.getByRole('heading', { name: 'Import the HVE Core functional code reviewer' }).waitFor();
         await dialog.getByRole('heading', { name: profile, exact: true }).waitFor();
+        await dialog.getByRole('heading', { name: copilot, exact: true }).waitFor();
         assert.equal(existsSync(join(f.root, 'apm.lock.yaml')), false);
+        assert.equal(existsSync(join(f.root, profile)), false);
+        assert.equal(existsSync(join(f.root, copilot)), false);
+        assert.equal(readFileSync(join(f.root, 'apm.yml'), 'utf8'), manifest);
         await dialog.getByRole('button', { name: 'Confirm change' }).click();
         await page.getByRole('button', { name: 'See agent assignments' }).click();
-        await page.getByText('HVE Core imports (1)', { exact: true }).click();
+        await page.getByText('HVE Core imports (2)', { exact: true }).click();
         await page.getByText('Verified · assignable', { exact: true }).waitFor();
         assert.equal(existsSync(join(f.root, assignment)), false);
         await page.getByRole('button', { name: 'Assign a task…' }).click();
@@ -3788,8 +3810,10 @@ describe('workflow in the browser', () => {
         const detail = await api(`/spec?id=${feature}`);
         assert.deepEqual(detail.assignments.assignments.map(row => [row.task, row.agent, row.import.harness, row.import.verified]),
             [['T001', 'functional-code-review', 'Claude Code', true]]);
+        assert.deepEqual(detail.assignments.imports.map(({ harness, verified, assignable }) => [harness, verified, assignable]).sort(),
+            [['Claude Code', true, true], ['Copilot', true, false]]);
         assert.equal(readFileSync(join(f.root, '.claude/settings.json'), 'utf8'), '{"unrelated":true}\n');
-        assert.equal(existsSync(join(f.root, '.github/agents/functional-code-review.agent.md')), false);
+        assert.deepEqual(readFileSync(join(f.root, profile)), readFileSync(join(f.root, copilot)));
     });
 
     it('copies the installed Claude Code validation command without dispatching it', { timeout: 45_000 }, async t => {
