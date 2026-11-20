@@ -230,17 +230,21 @@ describe('graph from a Spec Kit repository', () => {
         assert.doesNotMatch(JSON.stringify(graph), /private-item/);
     });
 
-    it('projects the saved question from a released native gate checkpoint', {
+    it('keeps the saved question from a released native gate checkpoint after its workflow is removed', {
         skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
     }, async t => {
         const f = fixture(t);
         const id = 'native-gate';
+        const definition = `.specify/workflows/${id}/workflow.yml`;
+        const feature = 'specs/001-exports';
+        const evidence = `${feature}/spec.md`;
+        f.put(evidence, '# Export');
         f.put('.specify/workflows/workflow-registry.json', { workflows: { [id]: { enabled: true } } });
-        f.put(`.specify/workflows/${id}/workflow.yml`, {
+        f.put(definition, {
             schema_version: '1.0',
             workflow: { id, version: '1.0.0', name: 'Native gate' },
             steps: [{ id: 'check', type: 'gate', message: 'Accept the draft?\nReview the acceptance criteria first.',
-                options: ['Approve draft', 'Reject'], on_reject: 'abort' }],
+                options: ['Approve draft', 'Reject'], on_reject: 'abort', show_file: evidence }],
         });
         await callSpecKit(f.root, ['workflow', 'run', id], false, { workflowOutcome: true });
         const { api } = await serve(t, f.root);
@@ -250,6 +254,31 @@ describe('graph from a Spec Kit repository', () => {
         assert.equal(run.gateWaiting, true);
         assert.deepEqual(run.question, { message: 'Accept the draft?\nReview the acceptance criteria first.',
             options: ['Approve draft', 'Reject'], onReject: 'abort' });
+        assert.deepEqual(run.checkpoint.evidence, { feature: `feature:${feature}`, path: evidence });
+        rmSync(join(f.root, definition));
+        f.put('.specify/workflows/workflow-registry.json', { workflows: {} });
+        const removed = await api('/workflow');
+        assert.equal(removed.nodes.some(node => node.id === `workflow:${id}`), false);
+        assert.deepEqual(removed.nativeHistory.map(({ key, nativeRuns }) => [key, nativeRuns]), [[id, [run]]]);
+    });
+
+    it('keeps only valid detached records and reserves space for paused runs', async t => {
+        const f = fixture(t);
+        const put = (id, fields = {}) => f.put(`.specify/workflows/runs/${id}/state.json`, {
+            run_id: id, workflow_id: 'file-workflow', status: 'completed', updated_at: '2026-01-03T00:00:00Z', ...fields,
+        });
+        for (let i = 0; i < 21; i++) put(`completed-${i}`);
+        put('waiting', { status: 'paused', updated_at: '2026-01-01T00:00:00Z' });
+        put('bad-key', { installed_workflow_id: '../not-a-workflow' });
+        put('bad-id', { run_id: 'wrong', workflow_id: 'bad-id' });
+        put('bad-date', { updated_at: 'not-a-date', workflow_id: 'bad-date' });
+        put('bad-status', { status: 'unknown', workflow_id: 'bad-status' });
+        const { api } = await serve(t, f.root);
+        const graph = await api('/workflow');
+        assert.deepEqual(graph.nativeHistory.map(owner => owner.key), ['file-workflow']);
+        assert.equal(graph.nativeHistory[0].nativeRuns.length, 20);
+        assert.ok(graph.nativeHistory[0].nativeRuns.some(run => run.id === 'waiting'));
+        assert.equal(graph.nodes.some(node => node.id === 'workflow:file-workflow'), false);
     });
 
     it('projects native checkpoint metadata without exposing other run inputs or outputs and inventories only linked feature evidence', async t => {
@@ -3358,6 +3387,44 @@ describe('workflow in the browser', () => {
         f.put(artifact, 'flowchart TD\nA-->B\nB-->A');
         await page.getByText('A structured preview is not available for this Mermaid source.').waitFor();
         assert.equal(await diagram.count(), 0);
+    });
+
+    it('keeps a removed workflow in the Decision inbox without offering runtime actions', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const evidence = `${feature}/spec.md`;
+        f.put(evidence, '# Saved gate evidence');
+        f.put('.specify/workflows/runs/old-review/state.json', {
+            run_id: 'old-review', workflow_id: 'retired', installed_workflow_id: 'retired', status: 'paused',
+            updated_at: '2026-01-03T00:00:00Z', current_step_id: 'gate',
+            step_results: { gate: { type: 'gate', status: 'paused', output: {
+                message: 'Accept the previous release?', options: ['Approve', 'Reject'], on_reject: 'abort', show_file: evidence,
+            } } },
+        });
+        const { url } = await serve(t, f.root);
+        const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
+        page.setDefaultTimeout(12_000);
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('region', { name: 'Decision inbox' }).getByRole('button', { name: 'Inspect checkpoint' }).click();
+        await page.getByRole('heading', { name: 'History without an installed workflow' }).waitFor();
+        const card = page.getByRole('region', { name: 'retired', exact: true });
+        await card.getByText('Accept the previous release?', { exact: true }).waitFor();
+        await card.getByText('You can inspect its saved records, but this view cannot start or resume it.', { exact: false }).waitFor();
+        assert.deepEqual(await card.getByLabel('Run record').locator('option').allTextContents(), ['old-review · Paused']);
+        assert.equal(await card.getByRole('button', { name: /Copy (?:start|resume) command|Inspect configuration|Start isolated|Start guided/ }).count(), 0);
+        assert.equal(await card.getByRole('heading', { name: 'Step diagram' }).count(), 0);
+        await card.getByRole('button', { name: 'Read recorded evidence reference…' }).click();
+        await page.getByRole('dialog').getByText('Saved gate evidence', { exact: false }).waitFor();
     });
 
     it('copies a native start command without starting a run or filling its inputs', { timeout: 60_000 }, async t => {

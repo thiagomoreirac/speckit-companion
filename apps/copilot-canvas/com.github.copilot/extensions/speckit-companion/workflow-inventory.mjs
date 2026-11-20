@@ -906,24 +906,33 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 `The canvas cannot inspect all steps in ${node.name}. Reduce nesting or split the workflow.`, [id]);
         }
     }
+    const detachedNativeWorkflows = new Map();
     for (const runId of dirs(WORKFLOW_RUNS)) {
         const path = `${WORKFLOW_RUNS}/${runId}/state.json`;
         try {
             const text = document(root, path);
             if (text == null) continue;
             const run = JSON.parse(text);
-            const owner = stage(`workflow:${run?.installed_workflow_id ?? run?.workflow_id}`);
-            if (!owner || run.run_id !== runId || !RUN_STATES.has(run.status) || !Number.isFinite(Date.parse(run.updated_at))) continue;
+            const key = run?.installed_workflow_id ?? run?.workflow_id;
+            if (!safeId(key) || run.run_id !== runId || !RUN_STATES.has(run.status) || !Number.isFinite(Date.parse(run.updated_at))) continue;
             const step = runStepId(run.current_step_id) ? run.current_step_id : null;
             const results = entries(run.step_results).filter(([key, result]) => runStepId(key) && STEP_STATES.has(result?.status));
             const current = results.find(([id]) => id === step);
             const checkpoint = current ? nativeStepResult(current) : null;
             const gateWaiting = run.status === 'paused' && checkpoint?.status === 'paused' && checkpoint.gate;
             const question = gateWaiting ? nativeGateQuestion(current[1].output) : null;
-            (owner.nativeRuns ??= []).push({ id: runId, status: run.status, updatedAt: run.updated_at, step,
+            const record = { id: runId, status: run.status, updatedAt: run.updated_at, step,
                 gateWaiting: Boolean(gateWaiting), ...(question ? { question } : {}),
                 checkpoint, steps: nativeStepResults(results.slice(0, 192)), omittedSteps: Math.max(0, results.length - 192),
-            });
+            };
+            const id = `workflow:${key}`;
+            const owner = stage(id);
+            if (!owner?.installed) {
+                if (!detachedNativeWorkflows.has(key)) detachedNativeWorkflows.set(key, { id, key, name: key, nativeRuns: [] });
+                detachedNativeWorkflows.get(key).nativeRuns.push(record);
+                continue;
+            }
+            (owner.nativeRuns ??= []).push(record);
             if (owner.lastRun && Date.parse(owner.lastRun) >= Date.parse(run.updated_at)) continue;
             owner.lastRun = run.updated_at;
             owner.lastRunStatus = run.status;
@@ -933,7 +942,9 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             warning('unreadable-run', 'advisory', `Spec Kit run ${runId} has an unreadable state record. Reload after the runtime finishes writing.`);
         }
     }
-    for (const owner of nodes.filter(item => item.nativeRuns)) {
+    const nativeHistory = [...detachedNativeWorkflows.values()].sort((a, b) => a.key.localeCompare(b.key));
+    const nativeRunOwners = [...nodes.filter(item => item.nativeRuns), ...nativeHistory];
+    for (const owner of nativeRunOwners) {
         owner.nativeRuns.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id));
         const paused = owner.nativeRuns.filter(run => run.status === 'paused');
         const visible = new Set([...paused, ...owner.nativeRuns.filter(run => run.status !== 'paused')].slice(0, MAX_NATIVE_RUNS));
@@ -1233,7 +1244,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         }
         return null;
     }
-    for (const owner of nodes.filter(item => item.nativeRuns)) {
+    for (const owner of nativeRunOwners) {
         for (const run of owner.nativeRuns) {
             for (const result of [run.checkpoint, ...run.steps]) {
                 if (!result?.evidenceCandidate) continue;
@@ -1361,7 +1372,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         edge.status = blockedNode || related.some(item => item.severity === 'blocked') ? 'blocked' : edge.approval === 'confirm' ? 'confirm' : related.length || !edge.active ? 'advisory' : 'valid';
     }
     return {
-        graph: { phases: PHASES, management: MANAGEMENT, nodes, edges, findings: validation, decisions,
+        graph: { phases: PHASES, management: MANAGEMENT, nodes, edges, findings: validation, decisions, nativeHistory,
             runtime: { version, integration: integrationKey, nativeEventOverrideSupported } },
         inputs, hookDocument, policy,
     };

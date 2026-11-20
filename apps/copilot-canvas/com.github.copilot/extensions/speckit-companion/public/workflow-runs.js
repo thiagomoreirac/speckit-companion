@@ -12,9 +12,12 @@ const cliId = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 
 export function renderWorkflowRuns({ root, graph, selection, el, button, copyButton, render, openFeature, openWorkflow,
     handleDecision, start, allowGuidedWrite, inspectEvidence, inspectDecision, refresh }) {
-    const workflows = graph.nodes.filter(node => node.kind === 'Workflows' && node.installed);
+    const installed = graph.nodes.filter(node => node.kind === 'Workflows' && node.installed);
+    const history = graph.nativeHistory ?? [];
+    const workflows = [...installed, ...history];
     const requested = workflows.find(node => node.id === selection.workflow);
     const selected = requested ?? workflows[0];
+    const historyOnly = Boolean(selected && history.includes(selected));
     const byId = new Map(graph.nodes.map(node => [node.id, node]));
     const focusId = root.contains(document.activeElement) ? document.activeElement.id : '';
     const changeWorkflow = id => { Object.assign(selection, { workflow: id, run: null, feature: null }); render(); };
@@ -63,20 +66,20 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         el('div', {}, el('h2', {}, 'Workflow & runs'), p('See what ran, what is waiting, and the evidence behind the next decision.')),
         button('Refresh runs', refresh, { id: 'run-refresh' })), section];
     if (!selected) {
-        root.replaceChildren(...content, p('No installed workflows were found in this repository.'));
+        root.replaceChildren(...content, p('No installed workflows or native run records were found in this repository.'));
         return;
     }
     const nativeRuns = selected.nativeRuns ?? [];
-    const options = [['definition', 'Current definition'], ...nativeRuns.map(run => [`native:${run.id}`, `${run.id} · ${statuses[run.status]}`]),
+    const options = [...(historyOnly ? [] : [['definition', 'Current definition']]), ...nativeRuns.map(run => [`native:${run.id}`, `${run.id} · ${statuses[run.status]}`]),
         ...(selected.guidedRun ? [['guided', 'Canvas guided run']] : []),
         ...(selected.isolatedRun ? [['isolated', 'Canvas isolated review']] : [])];
     const key = options.some(([id]) => id === selection.run) ? selection.run
-        : selected.guidedRun ? 'guided' : selected.isolatedRun ? 'isolated' : options[1]?.[0] ?? 'definition';
+        : selected.guidedRun ? 'guided' : selected.isolatedRun ? 'isolated' : nativeRuns.length ? `native:${nativeRuns[0].id}` : 'definition';
     const native = nativeRuns.find(run => key === `native:${run.id}`);
     const question = native?.question;
     const issue = graph.findings.filter(item => item.severity === 'blocked' &&
         item.nodeIds.some(id => id === selected.id || byId.get(id)?.workflowOwner === selected.id));
-    const resumeCommand = native?.status === 'paused' && cliId.test(native.id)
+    const resumeCommand = !historyOnly && native?.status === 'paused' && cliId.test(native.id)
         ? `specify workflow resume ${native.id}` : null;
     const startCommand = key === 'definition' && selected.active && selected.state !== 'blocked' && !issue.length && cliId.test(selected.key)
         ? `specify workflow run ${selected.key}` : null;
@@ -139,9 +142,11 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                 })))));
     }
 
-    const switcher = el('nav', { class: 'run-picker', 'aria-label': 'Installed workflows' },
-        el('h3', {}, 'Workflows'), workflows.map(node => button(node.name, () => changeWorkflow(node.id),
-            { id: `run-pick-${node.key}`, 'aria-pressed': String(node.id === selected.id), class: 'btn btn-quiet' })));
+    const pick = node => button(node.name, () => changeWorkflow(node.id),
+        { id: `run-pick-${node.key}`, 'aria-pressed': String(node.id === selected.id), class: 'btn btn-quiet' });
+    const switcher = el('nav', { class: 'run-picker', 'aria-label': history.length ? 'Workflows and history' : 'Installed workflows' },
+        installed.length ? [el('h3', {}, 'Installed workflows'), ...installed.map(pick)] : null,
+        history.length ? [el('h3', {}, 'History without an installed workflow'), ...history.map(pick)] : null);
     const recordedEvidence = (result, id) => result?.evidence && el('div', {},
         el('p', { class: 'run-meta' }, result.evidence.path),
         roleButton('Read recorded evidence reference…',
@@ -189,7 +194,8 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                     tag(verdicts[verdict]))))) : null,
         run?.error ? el('p', { role: 'alert' }, run.error) : null,
         native?.updatedAt ? el('p', { class: 'run-meta' }, 'Updated ', el('time', { datetime: native.updatedAt }, new Date(native.updatedAt).toLocaleString())) : null,
-        native?.status === 'paused' ? p('This checkpoint belongs to a native Spec Kit run. Inspect it here; resume it through the runtime that owns it.') : null,
+        historyOnly ? p('This workflow is not installed. You can inspect its saved records, but this view cannot start or resume it.')
+            : native?.status === 'paused' ? p('This checkpoint belongs to a native Spec Kit run. Inspect it here; resume it through the runtime that owns it.') : null,
         native?.gateWaiting ? el('section', { class: 'run-question' },
             el('h4', {}, 'Recorded decision'),
             question?.message ? el('p', { class: 'run-question-message', dir: 'auto' }, question.message) : p('Question text is not available in this view.'),
@@ -212,19 +218,19 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             el('ul', { class: 'run-lines' },
                 native.steps.filter(step => !step.fanOutItem).map(recordedStep)),
             native.omittedSteps ? p(`${native.omittedSteps} additional results are available in the native run record.`) : null) : null,
-        el('div', { class: 'workflow-actions' },
+        !historyOnly ? el('div', { class: 'workflow-actions' },
             button('Inspect configuration', () => openWorkflow(selected.id)),
             requested && selection.feature ? button('Return to linked spec', () => openFeature(selection.feature)) : null,
             [...featureIds].filter(id => id !== `feature:${selection.feature}`).map(id => button(`Spec evidence: ${byId.get(id).name}`, () => openFeature(byId.get(id).key))),
             selected.canRunReview && !selected.isolatedRun?.error && selected.isolatedRun?.status !== 'paused'
                 ? button('Start isolated review…', () => start(selected, 'isolated')) : null,
             selected.canRunGuided && !selected.guidedRun?.error && (!selected.guidedRun || ['aborted', 'completed'].includes(selected.guidedRun.status))
-                ? button('Start guided run…', () => start(selected, 'guided')) : null),
-        issue.length ? el('details', {}, el('summary', {}, `${issue.length} configuration ${issue.length === 1 ? 'blocker' : 'blockers'}`),
+                ? button('Start guided run…', () => start(selected, 'guided')) : null) : null,
+        !historyOnly && issue.length ? el('details', {}, el('summary', {}, `${issue.length} configuration ${issue.length === 1 ? 'blocker' : 'blockers'}`),
             el('ul', {}, issue.map(item => el('li', {}, item.message)))) : null,
-        el('h4', {}, 'Step diagram'), p(native ? 'The diagram is the current definition, not a reconstruction of this historical run.' :
+        !historyOnly ? [el('h4', {}, 'Step diagram'), p(native ? 'The diagram is the current definition, not a reconstruction of this historical run.' :
             'Branches show what can run; only a saved checkpoint confirms where a run stopped.'),
-        topSteps.length ? diagram(selected.id) : p('No steps are available in the repository definition.'));
+        topSteps.length ? diagram(selected.id) : p('No steps are available in the repository definition.')] : null);
     root.replaceChildren(...content, el('div', { class: 'run-grid' }, switcher, detail));
     if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
 }
