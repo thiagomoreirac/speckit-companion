@@ -777,6 +777,8 @@ function renderPanel(detail, tabId) {
         figma || assignments || importHve.length || links.size ? el('div', { class: 'sb-feature-evidence' },
             figma ? el('p', {}, 'This document contains an embedded Figma section. Its presence does not record a passed verification.') : null,
             assignments ? showTab('See agent assignments', 'assignments') : null,
+            importHve.length ? el('button', { type: 'button', class: 'btn btn-quiet',
+                onclick: () => workflowView.importHveExport(detail.spec.id, importHve) }, 'Import HVE Core from a Codespace…') : null,
             importHve.map(({ harness, label }) => el('button', { type: 'button', class: 'btn btn-quiet',
                 onclick: () => workflowView.importHve(detail.spec.id, harness) }, `Preview HVE Core import for ${label}…`)),
             [...links].map(([phase, preferred]) => showTab(`See ${phase.toLowerCase()} evidence`, `evidence:${phase}`, preferred))) : null,

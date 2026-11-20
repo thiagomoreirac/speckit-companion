@@ -18,7 +18,7 @@ import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeNa
 import { stageAdrAcceptance } from './workflow-adr.mjs';
 import { PRODUCT_CONFIG, planProductApply, planProductArchive } from './workflow-product.mjs';
 import { featureEvidence, planAgentAssignment } from './feature-evidence.mjs';
-import { requireApmImportTarget, stageApmImport } from './workflow-apm.mjs';
+import { readApmExport, requireApmImportTarget, stageApmImport } from './workflow-apm.mjs';
 import { listTasks } from './spec-rules.mjs';
 
 const PACKAGES = {
@@ -608,7 +608,8 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             if (!feature || node?.id !== `feature:${feature.id}`) throw invalid('Select an inventoried feature.');
             const importTarget = () => requireApmImportTarget(root, workspaceEntry, request.harness);
             const target = importTarget();
-            apmStage = reviewedApmStage ?? await stageApmImport(workspaceEntry, target);
+            apmStage = reviewedApmStage ?? (Object.hasOwn(request, 'apmExport')
+                ? readApmExport(target, request.apmExport) : await stageApmImport(workspaceEntry, target));
             documentChanges = apmStage.documents;
             if (documentChanges[0].before !== target.before || documentChanges[0].after !== target.after) {
                 throw invalid('The APM manifest changed. Review a new import preview before confirming.', 409);
@@ -617,7 +618,10 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             sourceStamp = createHash('sha256').update(JSON.stringify(documentChanges)).digest('hex');
             affected = [node];
             title = 'Import the HVE Core functional code reviewer';
-            notes = [`APM staged the ${target.label} deployment from microsoft/hve-core at ${apmStage.commit}. This import belongs to the project, not just this feature.`,
+            notes = [apmStage.source === 'export'
+                ? `This export matches the pinned ${target.label} deployment from microsoft/hve-core at ${apmStage.commit}. Companion normalizes the verified lock receipt and does not run APM locally.`
+                : `APM staged the ${target.label} deployment from microsoft/hve-core at ${apmStage.commit}.`,
+                'This import belongs to the project, not just this feature.',
                 'Confirmation writes only the reviewed files. No package cache, settings, hooks, or services are installed. No agent is run.',
                 target.harnesses.includes('claude') ? 'Use Agent Assign 1.1.0 to review an assignment of the Claude Code profile separately.' : 'This Copilot profile is inspect-only in Agent Assign.'];
             execute = () => {

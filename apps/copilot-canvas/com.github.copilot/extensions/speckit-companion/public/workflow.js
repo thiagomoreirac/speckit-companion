@@ -612,8 +612,12 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
         const element = el('form', { onsubmit: async event => {
             event.preventDefault();
             submit.disabled = true;
-            try { await preview(request(Object.fromEntries(new FormData(element)), element)); }
-            catch (error) { errorBox.textContent = error.message; }
+            try {
+                const proposal = await request(Object.fromEntries(new FormData(element)), element);
+                if (element.isConnected && dialog.open) await preview(proposal);
+            } catch (error) {
+                if (element.isConnected && dialog.open) errorBox.textContent = error.message;
+            }
             finally { submit.disabled = false; }
         } }, fields, actions(submit, button('Cancel', () => dialog.close())));
         dialogBody.append(element);
@@ -1234,6 +1238,24 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
         importHve(feature, harness) {
             openDialog('Preparing HVE Core import');
             void preview({ operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness });
+        },
+        importHveExport(feature, options) {
+            const target = select('harness', options.map(({ harness, label }) => [harness, label]));
+            if (options.some(({ harness }) => harness === 'both')) target.value = 'both';
+            form('Import HVE Core from a Codespace', [
+                paragraph('Choose the target used when preparing the export, then select the downloaded companion-hve-import.json. This does not run APM on this computer.'),
+                scalarField('Target', target),
+                scalarField('Companion export', input('artifact', { type: 'file', accept: '.json,application/json', required: true })),
+            ], async ({ harness, artifact }) => {
+                if (!artifact?.size || artifact.size > 32 * 1024) throw new Error('Choose a Companion JSON export up to 32 KiB.');
+                let apmExport;
+                try { apmExport = JSON.parse(await artifact.text()); }
+                catch (error) {
+                    if (!(error instanceof SyntaxError)) throw error;
+                    throw new Error('The selected file is not a valid JSON export.');
+                }
+                return { operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness, apmExport };
+            });
         },
         hasWorkflow(key) {
             return Boolean(state.graph?.nodes.some(node => node.kind === 'Workflows' && node.key === key && node.installed));

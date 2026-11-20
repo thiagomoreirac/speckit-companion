@@ -7,8 +7,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createSpecServer } from '../com.github.copilot/extensions/speckit-companion/server.mjs';
 import { callSpecKit } from '../com.github.copilot/extensions/speckit-companion/workflow-actions.mjs';
+import { exportApmImport } from '../com.github.copilot/extensions/speckit-companion/workflow-apm.mjs';
 import { createGitHubChanges } from '../com.github.copilot/extensions/speckit-companion/workflow-github.mjs';
-import { CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, readWorkflow } from '../com.github.copilot/extensions/speckit-companion/workflow-inventory.mjs';
+import { CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, readWorkflow, workspaceEntry } from '../com.github.copilot/extensions/speckit-companion/workflow-inventory.mjs';
 import { ROADMAP_CONFIG, ROADMAP_PATH } from '../com.github.copilot/extensions/speckit-companion/workflow-roadmap.mjs';
 
 const REGISTRY = '.specify/extensions/.registry';
@@ -667,6 +668,46 @@ describe('graph from a Spec Kit repository', () => {
         for (const { path, after } of reviewed.documentChanges) assert.equal(readFileSync(join(f.root, path), 'utf8'), after);
         assert.equal((await api(`/spec?id=${feature}`)).assignments.imports[0].verified, true);
         assert.equal(existsSync(join(f.root, 'apm_modules')), false);
+    });
+
+    it('rejects a malformed Codespace HVE export without using local APM', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness: 'both' };
+        const bad = await api('/workflow/preview', { ...request, apmExport: null }, 400);
+        assert.match(bad.error, /JSON export/);
+        const forged = await api('/workflow/preview', {
+            ...request, apmExport: { format: 'speckit-companion-hve-v1', lock: '{}', profile: 'Unreviewed profile' },
+        }, 400);
+        assert.match(forged.error, /reviewer does not match/);
+        assert.equal(existsSync(join(f.root, 'apm.yml')), false);
+    });
+
+    it('verifies a Codespace HVE export against the selected target and entire lock receipt', {
+        skip: process.env.SPECKIT_CANVAS_TEST_APM !== '1', timeout: 180_000,
+    }, async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness: 'both' };
+        const apmExport = await exportApmImport(workspaceEntry, 'both');
+        for (const body of [
+            { ...request, harness: 'copilot', apmExport },
+            { ...request, apmExport: { ...apmExport, lock: `${apmExport.lock}replacements:\n  microsoft/hve-core: other/source\n` } },
+            { ...request, apmExport: { ...apmExport, lock: apmExport.lock.replace('scope: project', 'scope: user') } },
+        ]) {
+            const result = await api('/workflow/preview', body, 400);
+            assert.match(result.error, /lock receipt does not match/);
+        }
+        assert.equal(existsSync(join(f.root, 'apm.yml')), false);
+        const proposal = await api('/workflow/preview', { ...request, apmExport });
+        f.put('apm.lock.yaml', '# A concurrent lock');
+        await api('/workflow/apply', { id: proposal.id }, 409);
+        assert.equal(readFileSync(join(f.root, 'apm.lock.yaml'), 'utf8'), '# A concurrent lock');
+        assert.equal(existsSync(join(f.root, 'apm.yml')), false);
     });
 
     it('shows every requested participant with distinct roles, provenance and artifact lanes', t => {
@@ -3780,10 +3821,17 @@ describe('workflow in the browser', () => {
         await dualImport.waitFor();
         assert.equal(await page.getByRole('button', { name: 'Preview HVE Core import for Copilot…', exact: true }).count(), 0);
         const importResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workflow/preview', { timeout: 90_000 });
-        await dualImport.click();
+        const apmExport = await exportApmImport(workspaceEntry, 'both');
+        await page.getByRole('button', { name: 'Import HVE Core from a Codespace…' }).click();
+        const dialog = page.getByRole('dialog');
+        assert.equal(await dialog.getByLabel('Target').inputValue(), 'both');
+        await dialog.getByLabel('Companion export').setInputFiles({
+            name: 'companion-hve-import.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(apmExport)),
+        });
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
         const result = await importResponse;
         assert.equal(result.status(), 200, await result.text());
-        const dialog = page.getByRole('dialog');
+        await dialog.getByText(/does not run APM locally/).waitFor();
         await dialog.getByRole('heading', { name: 'Import the HVE Core functional code reviewer' }).waitFor();
         await dialog.getByRole('heading', { name: profile, exact: true }).waitFor();
         await dialog.getByRole('heading', { name: copilot, exact: true }).waitFor();

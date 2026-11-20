@@ -4,13 +4,15 @@ import { accessSync, constants, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
-import { load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
+import { dump, load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 
 const version = '0.36.1';
 const commit = 'e69486a5f809ede45c63c0a31358c12912bd5168';
 const source = '.github/agents/code-review/functional-code-review.agent.md';
 const packageRef = `microsoft/hve-core/${source}#${commit}`;
 const profileDigest = 'sha256:d8e18f66997087a1dc0f254e5f1e3492ae2d5e2b6aaa83acaf754ae91e956d0e';
+const packageDigest = 'sha256:f72fb0576c878f16201a96a3b69a92b3c3a9e94e371dc7b543b2cae94b07c83b';
+const exportFormat = 'speckit-companion-hve-v1';
 const targets = new Map([
     ['copilot', { label: 'Copilot', directory: '.github', filename: 'functional-code-review.agent.md' }],
     ['claude', { label: 'Claude Code', directory: '.claude', filename: 'functional-code-review.md' }],
@@ -27,6 +29,55 @@ const emptyList = value => Array.isArray(value) && value.length === 0;
 const exactItems = (actual, expected) => Array.isArray(actual) && actual.length === expected.length &&
     expected.every(item => actual.includes(item));
 const allowedManifestKeys = new Set(['name', 'version', 'description', 'author', 'targets', 'dependencies', 'includes', 'scripts']);
+const bounded = text => typeof text === 'string' && Buffer.byteLength(text) <= 24 * 1024;
+const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+
+function lockReceipt(target) {
+    const owner = `microsoft/hve-core/${source}`;
+    const profiles = [...target.profiles].sort((a, b) => a.harness.localeCompare(b.harness, 'en'));
+    return {
+        lockfile_version: '1',
+        apm_version: version,
+        dependencies: [{
+            repo_url: 'microsoft/hve-core', name: 'hve-core-functional-code-review', host: 'github.com',
+            resolved_commit: commit, resolved_ref: commit, version: '1.0.0', virtual_path: source,
+            is_virtual: true, package_type: 'apm_package',
+            deployed_files: profiles.map(item => item.path),
+            deployed_file_hashes: Object.fromEntries(profiles.map(item => [item.path, profileDigest])),
+            content_hash: packageDigest,
+        }],
+        deployments: profiles.map(({ harness, path }) => ({
+            kind: 'project-relative', target: harness, value: path, runtime: null, scope: 'project',
+            owners: [owner], active_owner: owner, content_hash: profileDigest,
+        })),
+    };
+}
+
+export function readApmExport(target, data) {
+    if (!mapping(data) || !exactItems(Object.keys(data), ['format', 'lock', 'profile']) ||
+        data.format !== exportFormat || !bounded(data.lock) || !bounded(data.profile)) {
+        throw invalid('Choose the Companion HVE Core JSON export prepared in the Codespace.');
+    }
+    if (digest(data.profile) !== profileDigest) throw invalid('The exported reviewer does not match the reviewed pin.');
+    let receipt;
+    try { receipt = load(data.lock, { schema: JSON_SCHEMA }); }
+    catch (error) {
+        if (error.name !== 'YAMLException') throw error;
+        throw invalid('The export does not contain a readable APM lock receipt.');
+    }
+    const expected = lockReceipt(target);
+    if (!isDeepStrictEqual(receipt, expected)) {
+        throw invalid('The exported lock receipt does not match the reviewed package and selected targets.');
+    }
+    return {
+        commit, source: 'export',
+        documents: [
+            { path: 'apm.yml', before: target.before, after: target.after },
+            { path: 'apm.lock.yaml', before: null, after: dump(expected, { schema: JSON_SCHEMA, lineWidth: -1 }) },
+            ...target.profiles.map(({ path }) => ({ path, before: null, after: data.profile })),
+        ],
+    };
+}
 
 function initializedManifest(entry, harnesses, label) {
     const unsupported = () => invalid(`Use APM directly unless apm.yml targets exactly ${label} and has no packages, services, or custom configuration.`, 409);
@@ -151,7 +202,7 @@ export async function stageApmImport(workspaceEntry, target) {
             if (!entry?.stat.isFile() || entry.stat.size > 24 * 1024) throw invalid(`APM did not stage a bounded ${path}.`);
             const bytes = readFileSync(entry.target);
             if (bytes.length > 24 * 1024) throw invalid(`APM did not stage a bounded ${path}.`);
-            if (profilePaths.includes(path) && `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== profileDigest) {
+            if (profilePaths.includes(path) && digest(bytes) !== profileDigest) {
                 throw invalid('A staged profile does not match the reviewed pin.');
             }
             return bytes.toString('utf8');
@@ -172,6 +223,17 @@ export async function stageApmImport(workspaceEntry, target) {
                 item.value === path && item.content_hash === profileDigest))) {
             throw invalid('The staged APM manifest, profile, or lock receipt does not match the reviewed pin.');
         }
-        return { commit, documents: apmImportPaths.map((path, index) => ({ path, before: index === 0 ? target.before : null, after: files[index] })) };
+        return { commit, source: 'local', documents: apmImportPaths.map((path, index) => ({ path, before: index === 0 ? target.before : null, after: files[index] })) };
     } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+}
+
+export async function exportApmImport(workspaceEntry, harness) {
+    const root = mkdtempSync(join(tmpdir(), 'companion-hve-export-'));
+    try {
+        const target = requireApmImportTarget(root, workspaceEntry, harness);
+        const { documents } = await stageApmImport(workspaceEntry, target);
+        const data = { format: exportFormat, lock: documents[1].after, profile: documents[2].after };
+        readApmExport(target, data);
+        return data;
+    } finally { rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
 }
