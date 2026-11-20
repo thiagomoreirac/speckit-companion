@@ -2638,7 +2638,7 @@ describe('workflow previews and confirmed changes', () => {
         }
     });
 
-    it('installs only a reviewed disabled core workflow from an offline bundle', {
+    it('installs only reviewed disabled core workflows from offline bundles', {
         skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 90_000,
     }, async t => {
         const f = fixture(t);
@@ -2679,13 +2679,34 @@ describe('workflow previews and confirmed changes', () => {
         await api('/workflow/preview', request, 400);
         f.put(source, { ...manifest, provides: { workflows: [{ id: 'bugfix', version: '1.0.1', source: './workflow.yml' }] } });
         await api('/workflow/preview', request, 400);
-        for (const [id, version] of [['bugfix', '1.0.1'], ['speckit', '1.0.2']]) {
-            f.put(source, { ...manifest, bundle: { ...manifest.bundle, id: `${id}-only` }, provides: { workflows: [{ id, version }] } });
-            const prepared = await api('/workflow/preview', request);
-            assert.ok(prepared.id, JSON.stringify(prepared.findings));
-            const applied = await api('/workflow/apply', { id: prepared.id });
-            assert.equal(applied.graph.nodes.find(node => node.id === `workflow:${id}`).state, 'disabled');
+        const refs = [{ id: 'speckit', version: '1.0.2' }, { id: 'bugfix', version: '1.0.1' }];
+        const setWorkflows = workflows => f.put(source, { ...manifest, bundle: { ...manifest.bundle, id: 'delivery-core' }, provides: { workflows } });
+        setWorkflows([refs[0], refs[0]]);
+        await api('/workflow/preview', request, 400);
+        setWorkflows([...refs, manifest.provides.workflows[0]]);
+        await api('/workflow/preview', request, 400);
+        setWorkflows(refs);
+        const prepared = await api('/workflow/preview', request);
+        const paths = refs.map(ref => `.specify/workflows/${ref.id}/workflow.yml`);
+        assert.ok(prepared.id, JSON.stringify(prepared.findings));
+        assert.deepEqual(new Set(prepared.paths), new Set([...paths, registry, records]));
+        assert.ok(paths.every(path => !existsSync(join(f.root, path))));
+        f.put(paths[1], '# Another user created this workflow');
+        await api('/workflow/apply', { id: prepared.id }, 409);
+        assert.equal(read(paths[1]), '# Another user created this workflow');
+        assert.equal(existsSync(join(f.root, paths[0])), false);
+        assert.deepEqual(Object.keys(JSON.parse(read(registry)).workflows), ['other', 'assess']);
+        rmSync(join(f.root, dirname(paths[1])), { recursive: true });
+        const batch = await api('/workflow/preview', request);
+        const applied = await api('/workflow/apply', { id: batch.id });
+        for (const ref of refs) {
+            const installed = applied.graph.nodes.find(node => node.id === `workflow:${ref.id}`);
+            assert.equal(installed.state, 'disabled');
+            assert.equal(installed.origin, `specify-core:1.4.1/${ref.id}`);
         }
+        for (const change of batch.documentChanges) assert.equal(read(change.path), change.after);
+        assert.deepEqual(JSON.parse(read(records)).bundles.at(-1).contributed_components,
+            refs.map(ref => ({ kind: 'workflows', ...ref })));
     });
 
     it('binds declared routing choices to the exact isolated checkpoint with released Spec Kit', {
@@ -2992,7 +3013,7 @@ describe('workflow previews and confirmed changes', () => {
 });
 
 describe('workflow in the browser', () => {
-    it('previews the core bundle files before installing the disabled workflow in Management', {
+    it('previews every core bundle file before installing disabled workflows in Management', {
         skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
     }, async t => {
         let browser;
@@ -3006,11 +3027,11 @@ describe('workflow in the browser', () => {
         t.after(() => browser.close());
         const f = fixture(t);
         const source = 'bundles/assess/bundle.yml';
-        const definition = '.specify/workflows/assess/workflow.yml';
+        const refs = [{ id: 'assess', version: '1.0.0' }, { id: 'bugfix', version: '1.0.1' }];
         f.put(source, { schema_version: '1.0',
             bundle: { id: 'assessment', name: 'Assessment', version: '1.0.0', role: 'workflow',
-                description: 'One offline workflow', author: 'Fixture', license: 'MIT' },
-            requires: { speckit_version: '>=1.4.1' }, provides: { workflows: [{ id: 'assess', version: '1.0.0' }] } });
+                description: 'Offline workflows', author: 'Fixture', license: 'MIT' },
+            requires: { speckit_version: '>=1.4.1' }, provides: { workflows: refs } });
         const { url, api } = await serve(t, f.root);
         const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
         page.setDefaultTimeout(10_000);
@@ -3021,12 +3042,16 @@ describe('workflow in the browser', () => {
         const dialog = page.getByRole('dialog');
         await dialog.getByLabel('Path to bundle.yml').fill(source);
         await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
-        await dialog.getByRole('heading', { name: 'Install assessment 1.0.0 with assess disabled' }).waitFor();
-        await dialog.getByRole('heading', { name: definition, exact: true }).waitFor();
-        assert.equal(existsSync(join(f.root, definition)), false);
+        await dialog.getByRole('heading', { name: 'Install assessment 1.0.0 with assess, bugfix disabled' }).waitFor();
+        for (const { id } of refs) {
+            const definition = `.specify/workflows/${id}/workflow.yml`;
+            await dialog.getByRole('heading', { name: definition, exact: true }).waitFor();
+            assert.equal(existsSync(join(f.root, definition)), false);
+        }
         await dialog.getByRole('button', { name: 'Confirm change' }).click();
         await page.getByRole('table', { name: 'Participants' }).getByRole('button', { name: 'Inspect assessment', exact: true }).waitFor();
-        assert.equal((await api('/workflow')).nodes.find(node => node.id === 'workflow:assess').state, 'disabled');
+        const graph = await api('/workflow');
+        for (const { id } of refs) assert.equal(graph.nodes.find(node => node.id === `workflow:${id}`).state, 'disabled');
     });
 
     it('collects isolated workflow inputs from Workflow & runs and records them on reload', {

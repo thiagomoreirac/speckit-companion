@@ -349,32 +349,33 @@ async function stageCoreBundle(root, graph, request, cli, reviewedAt) {
     const manifest = load(raw, { schema: JSON_SCHEMA });
     const { id, version } = manifest?.bundle ?? {};
     const refs = manifest?.provides?.workflows;
-    const ref = Array.isArray(refs) && refs.length === 1 ? refs[0] : null;
-    const core = coreBundleWorkflows.get(ref?.id);
     if (request.remoteUrl !== undefined || request.catalogId !== undefined || !safeId(id) || typeof version !== 'string' ||
-        !core || ref.version !== core[0] || Object.keys(ref).some(key => !['id', 'version'].includes(key)) ||
+        !Array.isArray(refs) || !refs.length || refs.length > coreBundleWorkflows.size ||
+        refs.some(ref => !object(ref) || !coreBundleWorkflows.has(ref.id) || ref.version !== coreBundleWorkflows.get(ref.id)[0] ||
+            Object.keys(ref).some(key => !['id', 'version'].includes(key))) ||
+        new Set(refs.map(ref => ref.id)).size !== refs.length ||
         Object.entries(manifest.provides).some(([kind, list]) => kind !== 'workflows' && (!Array.isArray(list) || list.length))) {
-        throw invalid('Choose a flat local bundle pinned to exactly one core workflow from Spec Kit 1.4.1, with no component source.');
+        throw invalid('Choose a flat local bundle pinned only to distinct core workflows from Spec Kit 1.4.1, with no component sources.');
     }
     const directory = '.specify/workflows';
     const registry = `${directory}/workflow-registry.json`;
-    const workflowDir = `${directory}/${ref.id}`;
-    const path = `${workflowDir}/workflow.yml`;
+    const selected = new Set(refs.map(ref => ref.id));
+    const workflowDirs = refs.map(ref => `${directory}/${ref.id}`);
     const bundleBefore = file(root, BUNDLE_RECORDS), registryBefore = file(root, registry);
     const original = bundleBefore == null ? { schema_version: '1.0', bundles: [] } : JSON.parse(bundleBefore);
     const previous = registryBefore == null ? { schema_version: '1.0', workflows: {} } : JSON.parse(registryBefore);
     const exists = relative => lstatSync(join(root, relative), { throwIfNoEntry: false });
     const check = () => {
-        if (exists(workflowDir) || (exists(directory) && !workspaceEntry(root, directory)?.stat.isDirectory()) ||
+        if (workflowDirs.some(exists) || (exists(directory) && !workspaceEntry(root, directory)?.stat.isDirectory()) ||
             (bundleBefore == null && exists(BUNDLE_RECORDS)) || (registryBefore == null && exists(registry)) ||
             file(root, sourcePath) !== raw || file(root, BUNDLE_RECORDS) !== bundleBefore || file(root, registry) !== registryBefore) {
-            throw invalid('The bundle source or its destination changed. Use a new preview and an unused workflow directory.', 409);
+            throw invalid('The bundle source or its destinations changed. Use a new preview and unused workflow directories.', 409);
         }
     };
-    if (!Array.isArray(original.bundles) || !object(previous.workflows) || Object.hasOwn(previous.workflows, ref.id) ||
+    if (!Array.isArray(original.bundles) || !object(previous.workflows) || refs.some(ref => Object.hasOwn(previous.workflows, ref.id)) ||
         original.bundles.some(record => record.bundle_id === id ||
-            [...rows(record.required_components), ...rows(record.contributed_components)].some(item => item.kind === 'workflows' && item.id === ref.id)) ||
-        graph.nodes.some(node => node.id === `workflow:${ref.id}` && node.installed)) {
+            [...rows(record.required_components), ...rows(record.contributed_components)].some(item => item.kind === 'workflows' && selected.has(item.id))) ||
+        graph.nodes.some(node => node.kind === 'Workflows' && selected.has(node.key) && node.installed)) {
         throw invalid('The bundle or core workflow is already registered. This operation does not adopt or replace existing components.');
     }
     check();
@@ -388,57 +389,68 @@ async function stageCoreBundle(root, graph, request, cli, reviewedAt) {
         if (await cli(staged, ['--version']) !== 'specify 1.4.1') throw invalid('The host must run released Spec Kit 1.4.1.');
         const args = ['bundle', 'install', process.platform === 'win32' ? '.\\bundle.yml' : './bundle.yml', '--offline'];
         await cli(staged, args);
-        await cli(staged, ['workflow', 'disable', ref.id]);
-        const definition = file(staged, path);
+        for (const ref of refs) await cli(staged, ['workflow', 'disable', ref.id]);
         const records = JSON.parse(file(staged, BUNDLE_RECORDS) ?? 'null');
         const registered = JSON.parse(file(staged, registry) ?? 'null');
         const record = records?.bundles?.find(row => row.bundle_id === id);
-        const installed = registered?.workflows?.[ref.id];
         const scan = relative => readdirSync(join(staged, relative)).sort();
-        const expected = { kind: 'workflows', id: ref.id, version: ref.version };
+        const expected = refs.map(ref => ({ kind: 'workflows', id: ref.id, version: ref.version }));
         const time = new Date(reviewedAt).toISOString();
         const bundleTime = time.replace(/\.\d{3}Z$/, 'Z');
-        const wantedRecord = { bundle_id: id, version, installed_at: bundleTime, contributed_components: [expected],
-            required_components: [expected], installed_versions: { [`workflows:${ref.id}`]: ref.version } };
-        if (definition == null || createHash('sha256').update(definition).digest('hex') !== core[1] ||
-            !installed || installed.enabled !== false || installed.version !== ref.version ||
-            !Array.isArray(records?.bundles) || !record ||
-            typeof installed.source !== 'string' || installed.source.replaceAll('\\', '/').split('/').slice(-4).join('/') !== `core_pack/workflows/${ref.id}/workflow.yml` ||
-            !isDeepStrictEqual({ ...registered, workflows: Object.fromEntries(Object.entries(registered.workflows).filter(([key]) => key !== ref.id)) }, previous) ||
+        const wantedRecord = { bundle_id: id, version, installed_at: bundleTime, contributed_components: expected,
+            required_components: expected, installed_versions: Object.fromEntries(refs.map(ref => [`workflows:${ref.id}`, ref.version])) };
+        if (!Array.isArray(records?.bundles) || !record || !object(registered?.workflows) ||
+            !isDeepStrictEqual({ ...registered, workflows: Object.fromEntries(Object.entries(registered.workflows).filter(([key]) => !selected.has(key))) }, previous) ||
             !isDeepStrictEqual({ ...record, installed_at: bundleTime }, wantedRecord) ||
             !isDeepStrictEqual({ ...records, updated_at: bundleTime, bundles: records.bundles.filter(row => row !== record) },
                 { ...original, updated_at: bundleTime }) ||
             !isDeepStrictEqual(scan('.'), ['.specify', 'bundle.yml']) ||
             !isDeepStrictEqual(scan('.specify').filter(name => name !== '.workflow-install.lock'), ['bundle-records.json', 'init-options.json', 'workflows']) ||
-            !isDeepStrictEqual(scan(directory), [ref.id, 'workflow-registry.json'].sort()) ||
-            !isDeepStrictEqual(scan(workflowDir), ['workflow.yml'])) {
-            throw invalid('Spec Kit did not stage only the pinned core workflow and expected registry changes.');
+            !isDeepStrictEqual(scan(directory), [...selected, 'workflow-registry.json'].sort())) {
+            throw invalid('Spec Kit did not stage only the pinned core workflows and expected registry changes.');
         }
-        const workflow = load(definition, { schema: JSON_SCHEMA });
-        const installedExpected = { name: workflow.workflow.name, version: ref.version, description: workflow.workflow.description,
-            source: installed.source, installed_at: installed.installed_at, updated_at: installed.updated_at, enabled: false };
-        if (!isDeepStrictEqual(installed, installedExpected)) throw invalid('Spec Kit returned unexpected workflow registry fields.');
-        const nextRegistry = { ...previous, workflows: { ...previous.workflows, [ref.id]: { ...installedExpected,
-            source: `specify-core:1.4.1/${ref.id}`, installed_at: time, updated_at: time } } };
+        const nextRegistry = { ...previous, workflows: { ...previous.workflows } };
+        const definitions = refs.map((ref, index) => {
+            const workflowDir = workflowDirs[index];
+            const path = `${workflowDir}/workflow.yml`;
+            const definition = file(staged, path);
+            const installed = registered.workflows[ref.id];
+            if (definition == null || createHash('sha256').update(definition).digest('hex') !== coreBundleWorkflows.get(ref.id)[1] ||
+                typeof installed?.source !== 'string' ||
+                installed.source.replaceAll('\\', '/').split('/').slice(-4).join('/') !== `core_pack/workflows/${ref.id}/workflow.yml` ||
+                !isDeepStrictEqual(scan(workflowDir), ['workflow.yml'])) {
+                throw invalid(`Spec Kit did not stage the expected pinned ${ref.id} definition.`);
+            }
+            const workflow = load(definition, { schema: JSON_SCHEMA });
+            const installedExpected = { name: workflow.workflow.name, version: ref.version, description: workflow.workflow.description,
+                source: installed.source, installed_at: installed.installed_at, updated_at: installed.updated_at, enabled: false };
+            if (!isDeepStrictEqual(installed, installedExpected)) throw invalid('Spec Kit returned unexpected workflow registry fields.');
+            nextRegistry.workflows[ref.id] = { ...installedExpected,
+                source: `specify-core:1.4.1/${ref.id}`, installed_at: time, updated_at: time };
+            return { path, definition, workflow };
+        });
         const nextBundle = { ...original, updated_at: bundleTime, bundles: [...original.bundles, wantedRecord] };
         const documents = [
-            { path, before: null, after: definition },
+            ...definitions.map(({ path, definition }) => ({ path, before: null, after: definition })),
             { path: registry, before: registryBefore, after: json(nextRegistry) },
             { path: BUNDLE_RECORDS, before: bundleBefore, after: json(nextBundle) },
         ];
-        return { sourcePath, raw, id, version, ref, documents, overrides: [[path, workflow], [registry, nextRegistry], [BUNDLE_RECORDS, nextBundle]],
+        return { sourcePath, raw, id, version, refs, documents,
+            overrides: [...definitions.map(({ path, workflow }) => [path, workflow]), [registry, nextRegistry], [BUNDLE_RECORDS, nextBundle]],
             apply() {
                 check();
                 const created = [];
                 try {
                     if (!exists(directory)) { mkdirSync(join(root, directory)); created.push(directory); }
-                    mkdirSync(join(root, workflowDir));
-                    created.push(workflowDir);
+                    for (const workflowDir of workflowDirs) {
+                        mkdirSync(join(root, workflowDir));
+                        created.push(workflowDir);
+                    }
                     writeReviewedDocuments(root, documents);
                 } catch (error) {
-                            for (const dir of created.reverse()) {
-                                if (workspaceEntry(root, dir)?.stat.isDirectory() && !readdirSync(join(root, dir)).length) rmdirSync(join(root, dir));
-                            }
+                    for (const dir of created.reverse()) {
+                        if (workspaceEntry(root, dir)?.stat.isDirectory() && !readdirSync(join(root, dir)).length) rmdirSync(join(root, dir));
+                    }
                     throw error;
                 }
             },
@@ -1091,8 +1103,8 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             documentChanges = staged.documents;
             paths = documentChanges.map(change => change.path);
             for (const [path, content] of staged.overrides) overrides.set(path, content);
-            title = `Install ${staged.id} ${staged.version} with ${staged.ref.id} disabled`;
-            notes = ['Spec Kit prepared one core workflow offline in a temporary project. Confirmation only saves the displayed files; the workflow stays disabled and does not run.'];
+            title = `Install ${staged.id} ${staged.version} with ${staged.refs.map(ref => ref.id).join(', ')} disabled`;
+            notes = ['Spec Kit staged the pinned core workflows offline. Confirmation saves only the displayed files; the installed workflows stay disabled and do not run.'];
             execute = staged.apply;
         } else if (['bundle-install-record', 'bundle-update-record'].includes(operation)) {
             if (before.findings.some(item => item.path === BUNDLE_RECORDS || item.code === 'malformed-bundle') || !workspaceEntry(root, '.specify')?.stat.isDirectory()) {

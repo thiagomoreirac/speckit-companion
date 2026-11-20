@@ -829,7 +829,7 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
 
     function coreBundleForm() {
         form('Install a core workflow bundle', [
-            paragraph('Choose a local bundle pinned to one workflow shipped with Spec Kit 1.4.1. The workflow is installed disabled. No other components are installed or replaced.'),
+            paragraph('Choose a local bundle pinned only to workflows shipped with Spec Kit 1.4.1. They are installed disabled. No existing component is replaced.'),
             scalarField('Path to bundle.yml', input('source', { required: true, maxlength: 300, placeholder: 'packages/my-bundle/bundle.yml' })),
         ], values => ({ operation: 'bundle-install-core-workflow', ...values }));
     }
