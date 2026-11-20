@@ -1,5 +1,6 @@
 import { selectState, setupStatesSelect } from '/states-select.mjs';
 import { setupWorkflow } from '/workflow.js';
+import { staticDrawings } from '/diagram-preview.js';
 
 const params = new URLSearchParams(location.search);
 const token = params.get('token') ?? '';
@@ -43,6 +44,7 @@ const state = {
     filter: 'active',
     query: '',
     tab: null,
+    evidencePicks: new Map(),
     detailRequest: 0,
     workflow: null,
     install: { dismissed: false, open: false },
@@ -148,8 +150,9 @@ async function copyText(text) {
     }
 }
 
-function copyButton(text, label = 'Copy') {
+function copyButton(text, label = 'Copy', attrs = {}) {
     const button = el('button', {
+        ...attrs,
         class: 'btn btn-chip',
         type: 'button',
         onclick: async () => { button.textContent = await copyText(text) ? 'Copied' : 'Copy failed'; },
@@ -471,6 +474,11 @@ function tabsFor(detail) {
     for (const step of ['plan', 'tasks']) {
         if (!detail.documents.some(d => d.type === step)) tabs.push({ id: `missing:${step}`, label: STEP_LABELS[step], missing: true });
     }
+    for (const phase of new Set((detail.evidence ?? []).map(item => item.phase))) {
+        const label = detail.documents.some(doc => doc.label === phase) ? `${phase} evidence` : phase;
+        tabs.push({ id: `evidence:${phase}`, label, count: String(detail.evidence.filter(item => item.phase === phase).length) });
+    }
+    if (detail.assignments) tabs.push({ id: 'assignments', label: 'Agent assignments' });
     tabs.push({ id: 'activity', label: 'Activity', count: detail.history.length ? String(detail.history.length) : null });
     return tabs;
 }
@@ -500,8 +508,182 @@ function restoreStates(picked) {
     });
 }
 
+const previewTags = new Set(('div span p h1 h2 h3 h4 h5 h6 figure figcaption ' +
+    'ul ol li dl dt dd table caption thead tbody tfoot tr th td blockquote pre code strong em b i small hr br details summary').split(' '));
+const previewOmissions = new Set('head title script style template noscript iframe object embed svg math canvas'.split(' '));
+
+function prototypePreview(text, wireflow) {
+    // Template contents are inert; only fresh elements and text ever reach the panel.
+    const template = document.createElement('template');
+    template.innerHTML = text;
+    let remaining = 1200, limited = false, hasContent = false;
+    const actions = [], targets = new Map(), statusTarget = '[data-preview-status]';
+    const simpleId = /^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/;
+    function register(key, element) {
+        targets.set(key, targets.has(key) ? null : element);
+    }
+    function rebuild(source, parent, depth) {
+        for (const child of source.childNodes) {
+            if (remaining-- <= 0 || depth > 24) { limited = true; break; }
+            if (child.nodeType === Node.TEXT_NODE) {
+                if (child.nodeValue.trim()) hasContent = true;
+                parent.append(document.createTextNode(child.nodeValue));
+            } else if (child.nodeType === Node.ELEMENT_NODE && child.namespaceURI === 'http://www.w3.org/1999/xhtml' &&
+                !previewOmissions.has(child.localName)) {
+                if (previewTags.has(child.localName)) {
+                    const element = document.createElement(child.localName);
+                    parent.append(element);
+                    if (wireflow) {
+                        if (simpleId.test(child.id)) register(`#${child.id}`, element);
+                        if (child.hasAttribute('data-preview-status')) register(statusTarget, element);
+                    }
+                    rebuild(child, element, depth + 1);
+                } else if (wireflow && child.localName === 'button' && child.hasAttribute('data-preview-action')) {
+                    const placeholder = document.createElement('span');
+                    parent.append(placeholder);
+                    rebuild(child, placeholder, depth + 1);
+                    if (!child.disabled) actions.push({ placeholder, selector: child.getAttribute('data-preview-target') || statusTarget,
+                        message: child.getAttribute('data-preview-label') });
+                } else {
+                    rebuild(child, parent, depth + 1);
+                }
+            }
+        }
+    }
+    const preview = el('div', { class: 'sb-prototype-preview', role: 'region', 'aria-label': 'Structural preview', tabindex: 0 });
+    rebuild(template.content, preview, 0);
+    let interactive = false;
+    for (const { placeholder, selector, message } of actions) {
+        const target = targets.get(selector);
+        const label = placeholder.textContent.trim();
+        if (!target || !label || target.contains(placeholder) || placeholder.contains(target)) continue;
+        const button = el('button', { type: 'button', class: 'btn btn-quiet', onclick: () => {
+            if (preview.contains(target)) target.textContent = message || label;
+        } }, label);
+        placeholder.replaceWith(button);
+        target.setAttribute('aria-live', 'polite');
+        interactive = true;
+    }
+    if (!hasContent) return [el('p', {}, limited ? 'The preview exceeded the display limit. See the source below.' :
+        'This export has no static text to preview. Repository scripts are not executed.'), el('pre', { tabindex: 0 }, text)];
+    return [el('p', { class: 'run-meta' }, interactive
+        ? 'Try the preview buttons to see their declared feedback. Repository scripts, styles, links and forms are not active.'
+        : 'Structural preview. Repository scripts, styles, links and form controls are not active.'),
+        limited ? el('p', {}, 'The preview is limited. See the full source below.') : null,
+        preview, el('details', {}, el('summary', {}, 'HTML source'), el('pre', { tabindex: 0 }, text))];
+}
+
+function modelPreview({ entities, relationships }, source) {
+    return el('div', { class: 'sb-model-preview' },
+        el('h5', {}, 'Relationships'),
+        relationships.length ? el('ul', { class: 'sb-model-relations' }, relationships.map(relation => el('li', {},
+            el('div', { class: 'sb-model-edge' },
+                el('span', {}, el('strong', {}, relation.from), ' ', el('code', {}, relation.left)),
+                el('span', { class: 'sb-model-connector', 'data-identifying': String(relation.identifying), 'aria-hidden': 'true' }),
+                el('span', {}, el('code', {}, relation.right), ' ', el('strong', {}, relation.to))),
+            el('p', { class: 'run-meta' }, `${relation.label} · ${relation.identifying ? 'Identifying' : 'Non-identifying'}`))))
+            : el('p', {}, 'No relationships are declared in this export.'),
+        el('h5', {}, 'Entities'),
+        entities.map(entity => el('details', {},
+            el('summary', {}, `${entity.name} (${entity.attributes.length})`),
+            entity.attributes.length ? el('table', { 'aria-label': `${entity.name} fields` },
+                el('thead', {}, el('tr', {}, ['Field', 'Type', 'Key', 'Note'].map(label => el('th', { scope: 'col' }, label)))),
+                el('tbody', {}, entity.attributes.map(field => el('tr', {},
+                    el('th', { scope: 'row' }, field.name), el('td', {}, el('code', {}, field.type)),
+                    el('td', {}, field.keys || '—'), el('td', {}, field.note || '—')))))
+                : el('p', {}, 'No fields are declared for this entity.'))),
+        el('details', {}, el('summary', {}, 'Mermaid source'), el('pre', { tabindex: 0 }, source)));
+}
+
+function renderEvidence(item) {
+    const src = item.format === 'svg' ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(item.text)}` : item.image;
+    if (src) return [el('img', { class: 'workflow-drawing', src, alt: item.label })];
+    if (item.model) return [modelPreview(item.model, item.text)];
+    if (item.sequence) {
+        const { participants, messages } = item.sequence;
+        const names = new Map(participants.map(({ id, label }) => [id, label]));
+        return [
+            el('h5', {}, 'Message sequence'),
+            el('ol', { class: 'sb-sequence', 'aria-label': 'Messages in sequence order' }, messages.map(({ from, to, label, dashed }) =>
+                el('li', {},
+                    el('div', { class: 'sb-sequence-route' },
+                        el('strong', {}, names.get(from)),
+                        el('span', { class: 'sb-sequence-arrow', 'data-dashed': String(dashed), 'aria-hidden': 'true' }),
+                        el('span', { class: 'sr-only' }, ' sends to '),
+                        el('strong', {}, names.get(to))),
+                    el('p', {}, label, ' ', el('span', { class: 'run-meta' }, dashed ? '(dashed arrow)' : '(solid arrow)'))))),
+            el('details', {}, el('summary', {}, 'Mermaid source'), el('pre', { tabindex: 0 }, item.text)),
+        ];
+    }
+    if (/\.html?$/i.test(item.path)) {
+        const drawings = item.phase === 'Architecture' || item.providers?.includes('illustrate') ? staticDrawings(item.text) : [];
+        if (drawings.length) return [
+            el('p', { class: 'run-meta' }, 'Static diagram preview. Repository styles and interactions are not active.'),
+            ...drawings.map(({ title, description, url }) => el('figure', { class: 'sb-diagram-preview' },
+                el('img', { class: 'workflow-drawing', src: url, alt: title || item.label }),
+                description ? el('figcaption', {}, description) : null)),
+            el('details', {}, el('summary', {}, 'HTML source'), el('pre', { tabindex: 0 }, item.text)),
+        ];
+        return prototypePreview(item.text, item.path.endsWith('/preview/wireflow.html')).filter(Boolean);
+    }
+    return [/\.mmd$/i.test(item.path) ? el('p', { class: 'run-meta' }, 'A structured preview is not available for this Mermaid source.') : null,
+        el('pre', { tabindex: 0 }, item.text)].filter(Boolean);
+}
+
 function renderPanel(detail, tabId) {
     if (tabId === 'activity') return renderActivity(detail);
+    if (tabId === 'assignments') {
+        const { path, error, assignments, imports, importError, editableAgents, exists, unassignedTasks } = detail.assignments;
+        return el('section', { class: 'sb-feature-evidence' }, el('h3', {}, 'Agent assignments'),
+            el('p', {}, exists === false ? (unassignedTasks?.length ? `No assignments recorded yet. A confirmed assignment creates ${path}.` :
+                'No assignments recorded. Adding one requires an unassigned task and an eligible Claude Code profile.') :
+                `Recorded in ${path}. An assignment does not mean the agent ran.`),
+            unassignedTasks?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
+                onclick: () => workflowView.addAssignment(detail.spec.id, unassignedTasks, editableAgents) }, 'Assign a task…') : null,
+            importError ? el('p', { role: 'status' }, importError) : null,
+            error ? el('p', { role: 'alert' }, error) : el('ul', { class: 'run-lines' }, assignments.map(row =>
+                el('li', {}, el('strong', {}, `${row.task} · ${row.agent}`), row.taskExists ? null : el('p', {}, 'Task no longer appears in Tasks.'),
+                    row.reason ? el('p', {}, row.reason) : null,
+                    row.import ? el('p', {}, `HVE Core · ${row.import.harness} · ${row.import.path} · ${row.import.verified ? 'APM lock hash matches' : 'APM file listed; hash not verified'}`) : null,
+                    row.taskExists && editableAgents?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
+                        onclick: () => workflowView.editAssignment(detail.spec.id, row.task, editableAgents, row) }, `Edit ${row.task} assignment…`) : null))),
+            imports?.length ? el('details', {}, el('summary', {}, `HVE Core imports (${imports.length})`),
+                el('p', {}, 'From the APM lockfile. A matching hash verifies the deployed file, not execution or harness compatibility.'),
+                el('ul', { class: 'run-lines' }, imports.map(agent => el('li', {}, el('div', {},
+                    el('strong', {}, `${agent.name} · ${agent.harness}`), el('p', { class: 'run-meta' }, agent.path)),
+                    el('span', { class: 'run-meta' }, !agent.available ? 'File unavailable' : !agent.verified ? 'Hash not verified' :
+                        agent.assignable ? 'Verified · assignable' : 'Verified · inspect only'))))) : null);
+    }
+    if (tabId.startsWith('evidence:')) {
+        const phase = tabId.slice(9);
+        const entries = detail.evidence.filter(item => item.phase === phase);
+        const content = el('div', { 'aria-live': 'polite' });
+        let revision = 0;
+        const load = async entry => {
+            const attempt = ++revision;
+            content.replaceChildren(el('p', {}, 'Reading evidence…'));
+            try {
+                const item = await api(`/api/spec/evidence?id=${encodeURIComponent(detail.spec.id)}&path=${encodeURIComponent(entry.path)}`);
+                if (attempt !== revision) return;
+                content.replaceChildren(el('h4', {}, item.label), el('p', { class: 'run-meta' },
+                    [entry.providers.length && `Declared by ${entry.providers.join(', ')}`, item.path].filter(Boolean).join(' · ')),
+                    ...renderEvidence(item));
+            } catch (error) {
+                if (attempt === revision) content.replaceChildren(el('p', { role: 'alert' }, error.message));
+            }
+        };
+        const selected = entries.find(item => item.path === state.evidencePicks.get(phase)) ?? entries[0];
+        const picker = el('select', { id: 'spec-evidence-picker', class: 'search', 'aria-label': `${phase} artifact`, onchange: event => {
+            const entry = entries.find(item => item.path === event.target.value);
+            if (!entry) return;
+            state.evidencePicks.set(phase, entry.path);
+            void load(entry);
+        } }, entries.map(item => el('option', { value: item.path, selected: item === selected }, item.label)));
+        if (selected) void load(selected);
+        return el('section', { class: 'sb-feature-evidence' }, el('h3', {}, phase),
+            el('p', {}, 'Feature evidence, separate from recorded pipeline progress.'),
+            picker, content);
+    }
     if (tabId === 'overview') {
         const dossier = el('div');
         dossier.innerHTML = detail.overviewHtml;
@@ -509,12 +691,46 @@ function renderPanel(detail, tabId) {
     }
     if (tabId.startsWith('missing:')) {
         const step = tabId.slice(8);
-        return el('div', { class: 'doc-missing' }, `No ${step}.md yet. `, step === 'plan' ? 'Run plan to write it.' : 'Run tasks to write it.');
+        return el('div', {}, renderDocumentHooks(detail, step), el('div', { class: 'doc-missing' },
+            `No ${step}.md yet. `, step === 'plan' ? 'Run plan to write it.' : 'Run tasks to write it.'));
     }
     const doc = detail.documents.find(d => `doc:${d.type}` === tabId);
     const body = el('div', { id: 'markdown-content', dataset: { doc: doc?.type ?? '' } });
     body.innerHTML = doc?.html ?? '';
-    return viewerScope(body);
+    const showTab = (name, id, preferred) => el('button', { type: 'button', class: 'btn btn-quiet', onclick: () => {
+        if (preferred) state.evidencePicks.set(preferred.phase, preferred.path);
+        state.tab = id;
+        renderDetail();
+        els.detail.querySelector('[aria-selected="true"]')?.focus();
+    } }, name);
+    const figma = detail.figmaSections?.includes(doc?.type);
+    const assignments = doc?.type === 'tasks' && detail.assignments;
+    const importHve = doc?.type === 'tasks' && detail.canImportHve;
+    const related = doc?.type === 'data-model' ? ['Data model'] : doc?.type === 'plan' ? ['Architecture', 'Data model', 'Wireframes', 'Prototypes', 'Decisions'] : [];
+    if (figma) related.push('Design context');
+    const links = new Map(related.filter(phase => detail.evidence.some(item => item.phase === phase)).map(phase => [phase, null]));
+    for (const item of detail.evidence) {
+        if (item.documents.includes(doc?.type) && !links.get(item.phase)) links.set(item.phase, item);
+    }
+    return el('div', {}, renderDocumentHooks(detail, doc?.type),
+        figma || assignments || importHve || links.size ? el('div', { class: 'sb-feature-evidence' },
+            figma ? el('p', {}, 'This document contains an embedded Figma section. Its presence does not record a passed verification.') : null,
+            assignments ? showTab('See agent assignments', 'assignments') : null,
+            importHve ? el('button', { type: 'button', class: 'btn btn-quiet',
+                onclick: () => workflowView.importHve(detail.spec.id) }, 'Preview HVE Core import…') : null,
+            [...links].map(([phase, preferred]) => showTab(`See ${phase.toLowerCase()} evidence`, `evidence:${phase}`, preferred))) : null,
+        viewerScope(body));
+}
+
+function renderDocumentHooks(detail, type) {
+    if (!['spec', 'plan', 'tasks'].includes(type)) return null;
+    if (detail.documentHooks?.error) return el('p', { role: 'status' }, detail.documentHooks.error);
+    const hooks = detail.documentHooks?.[type];
+    if (!hooks?.length) return null;
+    return el('details', { class: 'sb-feature-evidence' }, el('summary', {}, `Extension hooks (${hooks.length})`),
+        el('p', {}, 'Current project configuration only. These hooks are not recorded run results.'),
+        el('ul', {}, hooks.map(hook => el('li', {}, `${hook.when === 'before' ? 'Before' : 'After'} · ${hook.extension} · `,
+            el('code', {}, hook.command), ` · ${!hook.enabled ? 'Disabled' : hook.optional ? 'Optional' : 'Required'}`))));
 }
 
 function historyLine(entry) {
@@ -543,6 +759,7 @@ function renderDetail() {
         return;
     }
     const { spec } = detail;
+    const evidenceFocus = document.activeElement?.id === 'spec-evidence-picker';
     document.body.dataset.hasSpecContext = spec.hasContext ? 'true' : 'false';
     const tabs = tabsFor(detail);
     if (!tabs.some(t => t.id === state.tab)) {
@@ -562,6 +779,8 @@ function renderDetail() {
             spec.workflow ? el('span', { class: 'pill tier-muted', title: 'Workflow' }, spec.workflow) : null,
             spec.pendingReviews ? el('span', { class: 'pill tier-review', title: 'Review comments not applied yet' }, `${spec.pendingReviews} review ${spec.pendingReviews === 1 ? 'note' : 'notes'}`) : null,
             spec.lastActivity ? el('span', { class: 'pill tier-muted', title: spec.lastActivity }, `active ${relativeTime(spec.lastActivity)}`) : null));
+    if (spec.workflow && workflowView.hasWorkflow(spec.workflow)) head.append(el('button', { type: 'button', class: 'btn',
+        onclick: () => workflowView.openRun(spec.workflow, spec.id) }, 'Open workflow runs'));
 
     const tabBar = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Documents' }, tabs.map(tab => el('button', {
         class: 'tab',
@@ -582,6 +801,7 @@ function renderDetail() {
         el('div', { class: 'panel', role: 'tabpanel' }, renderPanel(detail, state.tab))));
     restoreStates(picked);
     els.detail.scrollTop = scrollTop;
+    if (evidenceFocus) $('spec-evidence-picker')?.focus({ preventScroll: true });
 }
 
 async function loadDetail() {
@@ -617,6 +837,7 @@ function select(id, { pushView = false, fromServer = false } = {}) {
     if (state.selected !== id) {
         state.selected = id;
         state.tab = null;
+        state.evidencePicks.clear();
         els.detail.scrollTop = 0;
     }
     renderBoard();
@@ -662,6 +883,7 @@ function applySnapshot(snapshot) {
     if (state.snapshot && state.snapshot.root !== snapshot.root) {
         state.selected = null;
         state.detail = null;
+        state.evidencePicks.clear();
         state.shown = null;
         state.detailRequest++;
         state.query = '';
@@ -696,6 +918,7 @@ function connect() {
         els.liveLabel.textContent = 'Reconnecting';
     });
     source.addEventListener('snapshot', (event) => applySnapshot(JSON.parse(event.data)));
+    source.addEventListener('spec-detail', () => void loadDetail());
     source.addEventListener('focus', (event) => {
         const { selected } = JSON.parse(event.data);
         if (selected) {
@@ -810,7 +1033,7 @@ els.newSpec.addEventListener('submit', async (event) => {
 });
 
 setupStatesSelect();
-const workflowView = setupWorkflow({ el, api, reportSend, openFeature(id) {
+const workflowView = setupWorkflow({ el, api, reportSend, copyButton, renderEvidence, openFeature(id) {
     workflowView.show('specs');
     setFilter('all');
     select(id, { pushView: true });

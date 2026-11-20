@@ -4,7 +4,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { realpathSync, statSync, watch } from 'node:fs';
+import { lstatSync, realpathSync, statSync, watch } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshot, findSpec, readSpecDetail, recordLive, resolveSpecDirs } from './specs-core.mjs';
@@ -14,7 +14,9 @@ import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { validateRepositoryRoot, validateRoot } from './workspace.mjs';
 import { pickFolder } from './folder-picker.mjs';
 import { createWorkflowActions } from './workflow-actions.mjs';
+import { canOfferApmImport } from './workflow-apm.mjs';
 import { inspectWorkflowArtifact, NATIVE_GENERATED_FILES, workspaceEntry } from './workflow-inventory.mjs';
+import { embeddedFigmaSections, featureAssignments, featureEvidence, readFeatureEvidence, specDocumentHooks } from './feature-evidence.mjs';
 
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = {
@@ -22,6 +24,8 @@ const ASSETS = {
     '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
     '/workflow.js': ['workflow.js', 'text/javascript; charset=utf-8'],
+    '/workflow-runs.js': ['workflow-runs.js', 'text/javascript; charset=utf-8'],
+    '/diagram-preview.js': ['diagram-preview.js', 'text/javascript; charset=utf-8'],
     '/workflow.css': ['workflow.css', 'text/css; charset=utf-8'],
     '/viewer.css': ['../vendor/viewer.css', 'text/css; charset=utf-8'],
     '/states-select.mjs': ['../vendor/states-select.mjs', 'text/javascript; charset=utf-8'],
@@ -90,6 +94,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         watchers: new Set(),
         closed: false,
         timer: null,
+        detailDirty: false,
         runs: new Map(),
         pendingSpecify: null,
         runTimer: null,
@@ -172,13 +177,14 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     }
 
     /** Read the folders again; a scan nobody asked for (a file event) reaches the page only when it changed something. */
-    function rescan({ asked = true } = {}) {
+    function rescan({ asked = true, detailChanged = false } = {}) {
         state.snapshot = buildSnapshot(state.root, state.specDirs);
         reviewRuns();
         if (reconcile()) return state.snapshot;
         const next = snapshot();
         const key = JSON.stringify({ ...next, generatedAt: null });
         if (asked || key !== state.sentKey) emit('snapshot', next);
+        else if (detailChanged) emit('spec-detail', {});
         state.sentKey = key;
         return state.snapshot;
     }
@@ -344,6 +350,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     function applyRoot(nextRoot, nextDirs = resolveSpecDirs(nextRoot), nextSnapshot = buildSnapshot(nextRoot, nextDirs)) {
         state.rootRevision++;
         clearTimeout(state.timer);
+        state.detailDirty = false;
         clearTimeout(state.runTimer);
         for (const watcher of state.watchers) watcher.close();
         state.watchers.clear();
@@ -415,12 +422,19 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (state.closed) return;
         clearTimeout(state.timer);
         state.timer = setTimeout(() => {
+            const detailChanged = state.detailDirty;
+            state.detailDirty = false;
             try {
-                rescan({ asked: false });
+                rescan({ asked: false, detailChanged });
             } catch (error) {
                 log(`[speckit-canvas] rescan failed: ${error.message}`);
             }
         }, DEBOUNCE_MS);
+    }
+
+    function scheduleDetailRescan() {
+        state.detailDirty = true;
+        scheduleRescan();
     }
 
     function hold(path, options, listener) {
@@ -484,7 +498,12 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     }
 
     function startWatching() {
-        for (const dir of state.specDirs) watchTree(dir, scheduleRescan);
+        for (const dir of state.specDirs) watchTree(dir, scheduleDetailRescan);
+        watchTree('docs/adr', scheduleDetailRescan, true);
+        for (const path of ['.claude/agents', '.github/agents']) watchTree(path, scheduleDetailRescan, true);
+        watchTree('.', file => {
+            if (file == null || /^(apm\.ya?ml|apm\.lock\.yaml|apm_modules|\.apm(?:rc|-local)?)$/.test(String(file))) scheduleDetailRescan();
+        }, true, false);
         const workflowChanged = () => {
             state.workflowRevision++;
             scheduleRescan();
@@ -587,7 +606,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         context: () => ({ root: state.root, specs: state.snapshot.specs.map(present), specDirs: state.specDirs, revision: state.rootRevision,
             busy: state.busy || state.runs.size > 0 || Boolean(state.pendingSpecify) || state.retries.size > 0 }),
         now, cli: workflowCli, github: workflowGitHub, runStorage: workflowRunStorage, fetchSource: workflowFetch, changed: () => rescan(),
-        runPreview(node, command, { feature, artifact, intent, workflow }) {
+        runPreview(node, command, { feature, artifact, intent, workflow, fidelity }) {
             const inputNote = artifact ? `\n\nSelected input artifact: ${artifact}` : '';
             const proposalOnly = command.id === 'constitution' || node.kind === 'Extensions' && node.approval === 'confirm';
             const draftPrompt = instruction => `Draft a proposal for ${command.name}. Read ${instruction} as reference only; do not invoke its command or follow its write steps.${feature ? `\nFeature: ${feature}` : ''}${intent ? `\nUser intent: ${intent}` : ''}${inputNote}\n\nShow the proposed changes without applying them. Do not write files, accept or archive records, or mutate external systems; any application requires a separate human review.`;
@@ -628,6 +647,26 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             const instruction = pathsToTry.find(path => workspaceEntry(state.root, path)?.stat.isFile());
             if (!instruction) throw new Error('No registered invocation or local command body was found.');
             const spelling = instruction.endsWith('/SKILL.md') ? instruction.split('/').at(-2) : command.id;
+            if (fidelity) {
+                if (!/^specs\/[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(feature)) {
+                    throw Object.assign(new Error('Preview 1.3.0 requires a standard feature directory under specs/.'), { status: 400 });
+                }
+                const required = [`${feature}/spec.md`, `${feature}/uc.md`, '.specify/extensions/preview/templates/preview/wireflow.html'];
+                const absent = required.find(path => !workspaceEntry(state.root, path, { rejectSymlinks: true })?.stat.isFile());
+                if (absent) throw Object.assign(new Error(`Preview requires ${absent}.`), { status: 400 });
+                const output = `${feature}/preview/wireflow.html`;
+                const parent = lstatSync(join(state.root, feature, 'preview'), { throwIfNoEntry: false });
+                const target = parent?.isDirectory() ? lstatSync(join(state.root, output), { throwIfNoEntry: false }) : null;
+                if (parent && !parent.isDirectory() || target && !target.isFile()) {
+                    throw Object.assign(new Error('Preview output must be a regular file in the selected feature, not a link.'), { status: 400 });
+                }
+                const invocation = `/${spelling} ${fidelity}${intent ? ` ${intent}` : ''}`;
+                const prompt = `${invocation}\n\nUse the Spec Kit instructions at ${instruction}. For this invocation set SPECIFY_FEATURE to ${JSON.stringify(feature.split('/').at(-1))}. Verify it resolves to ${feature} before writing. Write only ${output}; do not change other files or external systems.`;
+                return { invocation, title: command.name, paths: [output], instruction, args: ['prompt', feature, command.id, prompt],
+                    readPaths: [...required, ...['plan.md', 'research.md', 'data-model.md', 'quickstart.md'].map(name => `${feature}/${name}`),
+                        '.specify/memory/constitution.md'],
+                    notes: [`Preview uses ${feature} at ${fidelity} fidelity. Inspect any generated HTML as source or use a static export in the canvas.`] };
+            }
             const invocation = `/${spelling}${feature ? ` ${feature}` : ''}${intent ? ` ${intent}` : ''}`;
             const prompt = proposalOnly ? draftPrompt(instruction) :
                 `${invocation}\n\nUse the Spec Kit instructions at ${instruction}. This dispatch does not authorize external writes. Present any proposed external change for separate review.${inputNote}`;
@@ -665,12 +704,20 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'GET' && pathname === '/api/workflow/artifact') return sendJson(res, 200,
             inspectWorkflowArtifact(state.root, workflow.snapshot(), url.searchParams.get('id'), url.searchParams.get('path')));
         if (req.method === 'GET' && pathname === '/api/workflow/config') return sendJson(res, 200, workflow.inspectConfig(url.searchParams.get('id'), url.searchParams.get('path')));
+        if (req.method === 'GET' && pathname === '/api/spec/evidence') {
+            const spec = requireSpec(url.searchParams.get('id'));
+            return sendJson(res, 200, readFeatureEvidence(state.root, spec.id, url.searchParams.get('path')));
+        }
 
         if (req.method === 'GET' && pathname === '/api/spec') {
             const spec = requireSpec(url.searchParams.get('id'));
             const set = commandSetFor(state.root, spec.workflow);
             const detail = readSpecDetail(state.root, spec.id);
-            return sendJson(res, 200, { ...detail, spec: present(detail.spec), commandSet: set, commands: availableCommands(set), commandHint: commandPattern(state.root, set) });
+            return sendJson(res, 200, { ...detail, spec: present(detail.spec), evidence: featureEvidence(state.root, spec.id),
+                documentHooks: specDocumentHooks(state.root), figmaSections: embeddedFigmaSections(state.root, spec.id),
+                assignments: featureAssignments(state.root, spec.id, detail.taskList.map(task => task.id)),
+                canImportHve: canOfferApmImport(state.root, workspaceEntry),
+                commandSet: set, commands: availableCommands(set), commandHint: commandPattern(state.root, set) });
         }
 
         if (req.method === 'GET' && pathname === '/api/events') {

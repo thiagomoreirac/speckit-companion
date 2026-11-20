@@ -6,7 +6,7 @@ import { load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 import { AUTOMATIC_HOOKS, PHASES, INTEGRATIONS, INTEGRATION_LINKS, MANAGEMENT, lifecycleNodes, hookStage, scopeProblem, validScope, validateGraph } from './workflow-model.mjs';
 import { resolveCommand } from './prompts.mjs';
 import { hookFixtures } from './workflow-hook-fixture.mjs';
-import { composeReviewOverlay, isReviewArtifactPath, reviewGates, reviewOverlayPath } from './workflow-review-run.mjs';
+import { composeReviewOverlay, isReviewArtifactPath, isolatedReviewFlow, reviewOverlayPath } from './workflow-review-run.mjs';
 import { issueLabelStep } from './workflow-github.mjs';
 import { guidedReview } from './workflow-guided-run.mjs';
 import { sourceFile, validPinnedUrl, validPinnedArchiveUrl, validPinnedCatalogUrl, validPinnedWorkflowId } from './workflow-remote.mjs';
@@ -54,6 +54,17 @@ const WORKFLOW_OVERLAYS = '.specify/workflows/overlays';
 const OVERLAY_OPERATIONS = ['insert_after', 'insert_before', 'replace', 'remove'];
 const validOverlayId = value => safeId(value) && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value) && value !== 'overlays';
 const RUN_STATES = new Set(['created', 'running', 'paused', 'completed', 'failed', 'aborted']);
+const STEP_STATES = new Set([...RUN_STATES, 'skipped', 'pending']);
+const runStepId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:[\]-]{1,160}$/.test(value);
+function nativeStepResult([id, result]) {
+    const gate = result.type === 'gate' || (result.type == null && object(result.output) && Object.hasOwn(result.output, 'on_reject'));
+    const choice = gate && typeof result.output?.choice === 'string' ? result.output.choice.toLowerCase() : null;
+    const path = result.output?.show_file;
+    return { id, status: result.status, gate,
+        ...(['approve', 'reject', 'abort'].includes(choice) ? { verdict: choice } : {}),
+        ...(gate && (isReviewArtifactPath(path) ||
+            (typeof path === 'string' && path.length <= 420 && /\.(?:mmd|html?|svg|png)$/i.test(path))) ? { evidenceCandidate: path } : {}) };
+}
 const BUNDLE_COMPONENT_TYPES = new Map([['presets', 'preset'], ['extensions', 'extension'], ['workflows', 'workflow'], ['steps', 'step-package']]);
 const BUILTIN_STEP_TYPES = new Set(['command', 'prompt', 'gate', 'shell', 'github', 'workflow', 'init', 'if', 'switch', 'while', 'do-while', 'fan-out', 'fan-in', 'slot']);
 const nestedSteps = step => [
@@ -325,7 +336,7 @@ const defaultNode = (id, name, kind, source, extras = {}) => ({
     effect: 'read-only', approval: 'none', authority: 'Runtime inventory', artifacts: [], commands: [], ...extras,
 });
 
-export function readWorkflow(root, specs = [], specDirs = [], overrides = new Map()) {
+export function readWorkflow(root, specs = [], specDirs = [], overrides = new Map(), listEvidence) {
     const findings = [], nodes = lifecycleNodes(), edges = [], inputs = new Map();
     const read = (path, format = 'yaml') => readInput(root, path, format, findings, overrides, inputs);
     const exists = path => Boolean(workspaceEntry(root, path)?.stat.isFile());
@@ -478,6 +489,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             outputs: unique([...member.outputs, ...strings(declared?.writes)]),
             requires: unique([...(member.requires ?? []), ...strings(declared?.requires).map(dependency => dependency.includes(':') ? dependency : `extension:${dependency}`)]),
             artifacts, commands, hooks: [], configs: list(manifest?.provides?.config).filter(item => safeId(item?.name)).map(item => ({ name: item.name, template: item.template, path: `${base}/${item.name}` })),
+            previewFidelity: key === 'preview' && meta?.version === '1.3.0' && commands.some(command => command.id === 'speckit.preview'),
             declaredHooks: entries(manifest?.hooks).flatMap(([event, rows]) => safeId(event) ? list(rows).filter(row => safeId(row?.command)).map(row => ({ event, command: row.command, optional: row.optional !== false, priority: Number.isInteger(row.priority) ? row.priority : 10 })) : []),
         });
         nodes.push(node);
@@ -768,18 +780,23 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                 composeReviewOverlay(config, key, declared[0][1]) : null;
             const replaced = new Set(replacement ? declared[0][1].edits.map(edit => edit.replace) : []);
             const reviewDefinition = replacement ?? config;
-            const review = reviewGates(reviewDefinition, key);
+            const review = isolatedReviewFlow(reviewDefinition, key);
             if (review) {
                 node.effect = 'read-only';
                 node.approval = 'confirm';
-                node.reviewGates = review;
+                node.reviewGates = review.gates;
+                if (review.startInputs.length) node.reviewStartInputs = review.startInputs;
+                if (review.branching) node.reviewBranching = true;
                 node.reviewDefinition = reviewDefinition;
                 node.reviewOverlay = replacement ? reviewOverlayPath(key) : null;
                 node.reviewDefinitionStamp = createHash('sha256').update(JSON.stringify(reviewDefinition)).digest('hex');
             }
             const guided = guidedReview(config, key);
             if (guided) {
-                node.guidedReview = guided;
+                node.guidedReview = guided.checkpoints;
+                node.guidedFlow = guided;
+                if (guided.startInputs.length) node.guidedStartInputs = guided.startInputs;
+                if (guided.branching) node.guidedBranching = true;
                 node.guidedDefinitionStamp = createHash('sha256').update(JSON.stringify(config)).digest('hex');
             }
             let stepCount = 0;
@@ -824,8 +841,13 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                         outputs: Object.keys(object(step.outputs) ? step.outputs : {}),
                         approval: stepType === 'gate' || stepType === 'github' ? 'confirm' : 'manual',
                         effect: stepType === 'github' ? 'external-write' : stepType === 'gate' ? 'read-only' : 'unknown',
-                        commands: command ? [{ id: command, name: command }] : [], artifacts: unique([stepSource, file]), note: step.message,
+                        commands: command ? [{ id: command, name: command }] : [], artifacts: unique([stepSource, file, reviewArtifact]), note: step.message,
                         stepType: safeId(stepType) ? stepType : null, reviewArtifact, workflowOwner: id,
+                        fanOutConcurrency: stepType === 'fan-out'
+                            ? (step.max_concurrency === undefined ? 1 : Number.isSafeInteger(step.max_concurrency) && step.max_concurrency > 0 ? step.max_concurrency : null) : null,
+                        joinSteps: stepType === 'fan-in' ? strings(step.wait_for).filter(safeId).slice(0, 64) : [],
+                        gateRejection: stepType === 'gate' && ['abort', 'skip', 'retry'].includes(step.on_reject ?? 'abort') ? step.on_reject ?? 'abort' : null,
+                        integration: safeId(step.integration) ? step.integration : null, agent: safeId(step.agent) ? step.agent : null,
                         issueLabelChange: depth === 0 ? issueLabelStep(step) : null,
                     });
                     nodes.push(stepNode);
@@ -835,7 +857,10 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
                         active: node.active, effect: stepNode.effect, approval: stepNode.approval,
                     });
                     const child = step.workflow ?? step.input?.workflow;
-                    if (safeId(child)) addEdge('call', id, `workflow:${child}`, step.id, { active: node.active });
+                    if (safeId(child)) {
+                        stepNode.subworkflow = `workflow:${child}`;
+                        addEdge('call', id, stepNode.subworkflow, step.id, { active: node.active });
+                    }
                     if (stepType === 'github') {
                         node.effect = 'external-write';
                         node.approval = 'confirm';
@@ -859,6 +884,14 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             const run = JSON.parse(text);
             const owner = stage(`workflow:${run?.installed_workflow_id ?? run?.workflow_id}`);
             if (!owner || run.run_id !== runId || !RUN_STATES.has(run.status) || !Number.isFinite(Date.parse(run.updated_at))) continue;
+            const step = runStepId(run.current_step_id) ? run.current_step_id : null;
+            const results = entries(run.step_results).filter(([key, result]) => runStepId(key) && STEP_STATES.has(result?.status));
+            const current = results.find(([id]) => id === step);
+            const checkpoint = current ? nativeStepResult(current) : null;
+            (owner.nativeRuns ??= []).push({ id: runId, status: run.status, updatedAt: run.updated_at, step,
+                gateWaiting: run.status === 'paused' && Boolean(checkpoint?.gate),
+                checkpoint, steps: results.slice(0, 192).map(nativeStepResult), omittedSteps: Math.max(0, results.length - 192),
+            });
             if (owner.lastRun && Date.parse(owner.lastRun) >= Date.parse(run.updated_at)) continue;
             owner.lastRun = run.updated_at;
             owner.lastRunStatus = run.status;
@@ -867,6 +900,10 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         } catch {
             warning('unreadable-run', 'advisory', `Spec Kit run ${runId} has an unreadable state record. Reload after the runtime finishes writing.`);
         }
+    }
+    for (const owner of nodes.filter(item => item.nativeRuns)) {
+        owner.nativeRuns.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id));
+        owner.nativeRuns = owner.nativeRuns.slice(0, 20);
     }
     const workflowKeys = nodes.filter(node => node.kind === 'Workflows').map(node => node.key);
     for (const key of unique([...dirs(WORKFLOW_OVERLAYS), ...workflowKeys])) {
@@ -1146,6 +1183,32 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     }
     const featureArtifacts = new Map(nodes.filter(node => node.id.startsWith('feature:'))
         .flatMap(node => node.artifacts.map(path => [path, node.id])));
+    const featureIds = new Set(specs.map(spec => spec.id));
+    const evidenceByFeature = new Map();
+    function findRecordedEvidence(path) {
+        const feature = isReviewArtifactPath(path) && featureArtifacts.get(path);
+        if (feature) return { feature, path };
+        if (!listEvidence) return null;
+        const parts = path.split('/');
+        for (let depth = parts.length - 1; depth > 0; depth--) {
+            const id = parts.slice(0, depth).join('/');
+            if (!featureIds.has(id)) continue;
+            if (!evidenceByFeature.has(id)) evidenceByFeature.set(id, new Set(listEvidence(root, id).map(item => item.path)));
+            return evidenceByFeature.get(id).has(path) ? { feature: `feature:${id}`, path, featureArtifact: true } : null;
+        }
+        return null;
+    }
+    for (const owner of nodes.filter(item => item.nativeRuns)) {
+        for (const run of owner.nativeRuns) {
+            for (const result of [run.checkpoint, ...run.steps]) {
+                if (!result?.evidenceCandidate) continue;
+                const path = result.evidenceCandidate;
+                delete result.evidenceCandidate;
+                const evidence = findRecordedEvidence(path);
+                if (evidence) result.evidence = evidence;
+            }
+        }
+    }
     for (const node of nodes.filter(item => item.reviewArtifact)) {
         const path = node.reviewArtifact;
         const feature = featureArtifacts.get(path);
@@ -1189,6 +1252,23 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
         && decision.approval?.method === 'canvas-confirmation' && typeof decision.approval.at === 'string' && Number.isFinite(Date.parse(decision.approval.at))) : [];
     if (policy && (policy.version !== 1 || !Array.isArray(policy.decisions) || decisions.length !== policy.decisions.length)) {
         warning('malformed-policy', 'blocked', `${POLICY_PATH} contains invalid decisions.`);
+    }
+    if (policy?.version === 1 && policy.runAnnotations !== undefined) {
+        const annotations = policy.runAnnotations;
+        if (!object(annotations) || Object.keys(annotations).length > MAX_DIR) {
+            warning('malformed-run-annotations', 'advisory', `${POLICY_PATH}: runAnnotations must map workflow step IDs to display purposes.`);
+        } else {
+            for (const [id, purpose] of Object.entries(annotations)) {
+                const step = stage(id);
+                if (step?.kind !== 'Workflow steps' || !['acceptance', 'validation'].includes(purpose) ||
+                    (purpose === 'acceptance' && step.stepType !== 'gate') || (purpose === 'validation' && step.stepType === 'gate')) {
+                    warning('unmatched-run-annotation', 'advisory', 'A run annotation does not match an installed step of the appropriate type.',
+                        step?.workflowOwner ? [step.id, step.workflowOwner] : []);
+                    continue;
+                }
+                step.runPurpose = purpose;
+            }
+        }
     }
     if (policy) nodes.push(defaultNode('policy:workflow', 'Workflow ownership decisions', 'Versions and sources', POLICY_PATH, { artifacts: [POLICY_PATH], approval: 'confirm' }));
     for (const decision of decisions) {

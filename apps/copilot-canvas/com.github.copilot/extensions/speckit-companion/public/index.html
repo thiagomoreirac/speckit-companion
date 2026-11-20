@@ -26,6 +26,7 @@
 
     <nav class="workflow-nav" aria-label="Companion views">
         <button type="button" class="btn btn-quiet" id="workflow-tab" aria-controls="workflow-view" aria-pressed="false">Workflow</button>
+        <button type="button" class="btn btn-quiet" id="runs-tab" aria-controls="workflow-runs" aria-pressed="false">Workflow &amp; runs</button>
         <button type="button" class="btn btn-quiet" id="management-tab" aria-controls="workflow-view" aria-pressed="false">Spec Kit Management</button>
         <button type="button" class="btn btn-quiet" id="specs-tab" aria-controls="layout" aria-pressed="true">Specs &amp; runs</button>
         <button type="button" class="btn btn-quiet" id="workflow-repository" aria-controls="repository-form" aria-expanded="false" hidden>Repository</button>
@@ -100,14 +101,18 @@
             </section>
             <aside class="workflow-inspector" id="workflow-inspector" aria-label="Workflow inspector" tabindex="-1"></aside>
         </div>
-        <dialog class="workflow-dialog" id="workflow-dialog" aria-labelledby="workflow-dialog-title">
-            <div class="workflow-dialog-inner">
-                <h2 id="workflow-dialog-title"></h2>
-                <p id="workflow-dialog-error" role="alert"></p>
-                <div id="workflow-dialog-body"></div>
-            </div>
-        </dialog>
     </main>
+
+    <!-- A run is evidence, not its definition. Put waiting decisions above the step map; use the existing two-column workspace layout and theme. -->
+    <p id="run-surface-notice" class="workflow-notice run-surface-notice" role="status"></p>
+    <main class="workflow run-workspace" id="workflow-runs" hidden aria-label="Workflow and runs"></main>
+    <dialog class="workflow-dialog" id="workflow-dialog" aria-labelledby="workflow-dialog-title">
+        <div class="workflow-dialog-inner">
+            <h2 id="workflow-dialog-title"></h2>
+            <p id="workflow-dialog-error" role="alert"></p>
+            <div id="workflow-dialog-body"></div>
+        </div>
+    </dialog>
 
     <div class="layout" id="layout" data-view="board">
         <aside class="board" aria-label="Specs">

@@ -50,6 +50,7 @@ export const INTEGRATIONS = [
     extension('wireframe', 'Wireframe', 'Visual review', 'design', 'github.com/TortoiseWolfe/spec-kit-extension-wireframe', 'Reviewed visual artifacts', ['spec.md'], ['Reviewed SVG wireframes'], { approval: 'confirm' }),
     extension('illustrate', 'Illustrate', 'Technical diagrams', 'design', 'github.com/samykabu/sanduq', 'General diagrams', ['Technical and product descriptions'], ['General diagrams']),
     extension('data-model-diagram', 'Data Model Diagram', 'Schema visualization', 'plan', 'github.com/benizzio/spec-kit-data-model-diagram', 'Model diagrams', ['data-model.md'], ['Model diagrams']),
+    extension('agent-assign', 'Agent Assign', 'Task routing', 'tasks', 'github.com/xymelon/spec-kit-agent-assign', 'Task-to-agent assignments', ['tasks.md', 'Claude Code agent profiles'], ['**/agent-assignments.yml'], { mode: 'manual', dispatchHandoff: 'Review assignments in the feature’s Tasks tab. Agent Assign commands run in Claude Code, not through the Copilot canvas.' }),
     extension('ghp', 'GHP', 'Human-gated story lifecycle', 'sync', 'github.com/praveenlavu/spec-kit-ghp', 'GitHub Project/Issue writer', ['Approved stories'], ['GitHub Projects / Issues'], { effect: 'external-write', approval: 'confirm' }),
     extension('project', 'GitHub Project Lifecycle Sync', 'Project synchronization', 'sync', 'github.com/samykabu/sanduq', 'GitHub Project/Issue writer', ['Feature and task state'], ['GitHub Projects / Issues'], { effect: 'external-write', approval: 'confirm', mode: 'manual' }),
     extension('docguard', 'DocGuard', 'Documentation assurance', 'verify', 'github.com/raccioly/docguard', 'Documentation drift enforcement', ['Specs, docs and advisory findings'], ['Consistency enforcement report']),
@@ -189,7 +190,9 @@ export function validateGraph(nodes, edges, initial = [], decisions = []) {
     for (const node of nodes) {
         if (node.health) issue(node.health.code, 'blocked', node.health.message, [node.id]);
         for (const dependency of node.requires ?? []) {
-            if (!byId.get(dependency)?.active || byId.get(dependency)?.health) issue('missing-dependency', node.active ? 'blocked' : 'advisory', `${node.name} needs ${byId.get(dependency)?.name ?? dependency}.`, [node.id, dependency],
+            const prerequisite = byId.get(dependency);
+            const installedWorkflow = node.kind === 'Bundles' && prerequisite?.kind === 'Workflows' && prerequisite.installed;
+            if ((!prerequisite?.active && !installedWorkflow) || prerequisite?.health) issue('missing-dependency', node.active ? 'blocked' : 'advisory', `${node.name} needs ${prerequisite?.name ?? dependency}.`, [node.id, dependency],
                 edges.filter(edge => edge.kind === 'dependency' && edge.target === node.id && edge.source === dependency).map(edge => edge.id));
         }
         if (!node.active || node.kind !== 'Extensions') continue;

@@ -6,7 +6,8 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 
 ### Added
 
-- **Explore and manage the Spec Kit workflow.** Inspect hooks, review pinned releases, and preview package changes or agent commands from the graph or text view.
+- **Operate the Spec Kit workflow.** Inspect hooks, preview package changes, browse diagrams, choose run inputs, and review checkpoints from **Workflow & runs**.
+- **Review an HVE Core import from Tasks.** Preview the pinned Copilot reviewer and its APM files before importing them into a project without APM.
 
 ### Fixed
 

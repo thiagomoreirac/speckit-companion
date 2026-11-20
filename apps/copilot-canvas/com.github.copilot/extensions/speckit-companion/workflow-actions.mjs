@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
@@ -17,6 +17,9 @@ import { ROADMAP_CONFIG, ROADMAP_PATH, changeRoadmapStatus } from './workflow-ro
 import { addWireframeSignoff, requirePassingWireframeReport, standardWireframeName } from './workflow-wireframe.mjs';
 import { stageAdrAcceptance } from './workflow-adr.mjs';
 import { PRODUCT_CONFIG, planProductApply, planProductArchive } from './workflow-product.mjs';
+import { featureEvidence, planAgentAssignment } from './feature-evidence.mjs';
+import { requireFreshApmImport, stageApmImport } from './workflow-apm.mjs';
+import { listTasks } from './spec-rules.mjs';
 
 const PACKAGES = {
     Extensions: ['extension', '.specify/extensions', '.registry', 'extensions', 'extension.yml'],
@@ -25,6 +28,11 @@ const PACKAGES = {
     'Workflow steps': ['step', '.specify/workflows/steps', 'step-registry.json', 'steps', 'step.yml'],
 };
 const BUNDLE_TYPES = { extensions: 'extension', presets: 'preset', workflows: 'workflow', steps: 'step-package' };
+const coreBundleWorkflows = new Map([
+    ['assess', ['1.0.0', '0009e93c843ee9d9690475d9397f0b33c6dc6d2006116288d2ee58ccdff121a8']],
+    ['bugfix', ['1.0.1', '14ed57a99f108912bf367c39c3d7547d0b6c81c07319f692556f07dd3330e513']],
+    ['speckit', ['1.0.2', 'dc0409237d62f267b2d496022cbafadb1fcebe2c1335127fead51dbcd5acbd84']],
+]);
 const configSize = 128 * 1024;
 const markdownSize = 24 * 1024;
 const invalid = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -174,8 +182,8 @@ function writeConfig(root, path, text, base, { exclusiveCreate = false } = {}) {
             if (!workspaceEntry(root, dir)?.stat.isDirectory()) throw invalid(`Cannot write to ${dir}.`);
         }
     }
-    const directory = workspaceEntry(root, relative);
-    if (!directory?.stat.isDirectory()) throw invalid(`Cannot write to ${relative}.`);
+    const directory = relative ? workspaceEntry(root, relative) : { target: root, stat: lstatSync(root, { throwIfNoEntry: false }) };
+    if (!directory?.stat?.isDirectory()) throw invalid(`Cannot write to ${relative || 'the project root'}.`);
     const target = join(directory.target, basename);
     const stat = lstatSync(target, { throwIfNoEntry: false });
     if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw invalid(`Cannot replace ${path}.`);
@@ -331,6 +339,113 @@ async function stageBundleRecord(root, graph, request, base, cli, reviewedAt, re
     } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
 }
 
+async function stageCoreBundle(root, graph, request, cli, reviewedAt) {
+    if (!/^1\.4\.1(?:\.dev0)?$/.test(graph.runtime.version ?? '')) {
+        throw invalid('Offline core workflow bundle installation requires Spec Kit 1.4.1.');
+    }
+    const sourcePath = str(request.source, 'the repository-relative path to bundle.yml', 300);
+    const raw = file(root, sourcePath);
+    if (sourcePath.split('/').at(-1) !== 'bundle.yml' || raw == null) throw invalid('Choose an accessible local bundle.yml.');
+    const manifest = load(raw, { schema: JSON_SCHEMA });
+    const { id, version } = manifest?.bundle ?? {};
+    const refs = manifest?.provides?.workflows;
+    const ref = Array.isArray(refs) && refs.length === 1 ? refs[0] : null;
+    const core = coreBundleWorkflows.get(ref?.id);
+    if (request.remoteUrl !== undefined || request.catalogId !== undefined || !safeId(id) || typeof version !== 'string' ||
+        !core || ref.version !== core[0] || Object.keys(ref).some(key => !['id', 'version'].includes(key)) ||
+        Object.entries(manifest.provides).some(([kind, list]) => kind !== 'workflows' && (!Array.isArray(list) || list.length))) {
+        throw invalid('Choose a flat local bundle pinned to exactly one core workflow from Spec Kit 1.4.1, with no component source.');
+    }
+    const directory = '.specify/workflows';
+    const registry = `${directory}/workflow-registry.json`;
+    const workflowDir = `${directory}/${ref.id}`;
+    const path = `${workflowDir}/workflow.yml`;
+    const bundleBefore = file(root, BUNDLE_RECORDS), registryBefore = file(root, registry);
+    const original = bundleBefore == null ? { schema_version: '1.0', bundles: [] } : JSON.parse(bundleBefore);
+    const previous = registryBefore == null ? { schema_version: '1.0', workflows: {} } : JSON.parse(registryBefore);
+    const exists = relative => lstatSync(join(root, relative), { throwIfNoEntry: false });
+    const check = () => {
+        if (exists(workflowDir) || (exists(directory) && !workspaceEntry(root, directory)?.stat.isDirectory()) ||
+            (bundleBefore == null && exists(BUNDLE_RECORDS)) || (registryBefore == null && exists(registry)) ||
+            file(root, sourcePath) !== raw || file(root, BUNDLE_RECORDS) !== bundleBefore || file(root, registry) !== registryBefore) {
+            throw invalid('The bundle source or its destination changed. Use a new preview and an unused workflow directory.', 409);
+        }
+    };
+    if (!Array.isArray(original.bundles) || !object(previous.workflows) || Object.hasOwn(previous.workflows, ref.id) ||
+        original.bundles.some(record => record.bundle_id === id ||
+            [...rows(record.required_components), ...rows(record.contributed_components)].some(item => item.kind === 'workflows' && item.id === ref.id)) ||
+        graph.nodes.some(node => node.id === `workflow:${ref.id}` && node.installed)) {
+        throw invalid('The bundle or core workflow is already registered. This operation does not adopt or replace existing components.');
+    }
+    check();
+    const staged = mkdtempSync(join(tmpdir(), 'canvas-core-bundle-'));
+    try {
+        writeTemporaryProject(staged, new Map([
+            ['.specify/init-options.json', json({ speckit_version: '1.4.1' })], ['bundle.yml', raw],
+            ...(bundleBefore == null ? [] : [[BUNDLE_RECORDS, bundleBefore]]),
+            ...(registryBefore == null ? [] : [[registry, registryBefore]]),
+        ]));
+        if (await cli(staged, ['--version']) !== 'specify 1.4.1') throw invalid('The host must run released Spec Kit 1.4.1.');
+        const args = ['bundle', 'install', process.platform === 'win32' ? '.\\bundle.yml' : './bundle.yml', '--offline'];
+        await cli(staged, args);
+        await cli(staged, ['workflow', 'disable', ref.id]);
+        const definition = file(staged, path);
+        const records = JSON.parse(file(staged, BUNDLE_RECORDS) ?? 'null');
+        const registered = JSON.parse(file(staged, registry) ?? 'null');
+        const record = records?.bundles?.find(row => row.bundle_id === id);
+        const installed = registered?.workflows?.[ref.id];
+        const scan = relative => readdirSync(join(staged, relative)).sort();
+        const expected = { kind: 'workflows', id: ref.id, version: ref.version };
+        const time = new Date(reviewedAt).toISOString();
+        const bundleTime = time.replace(/\.\d{3}Z$/, 'Z');
+        const wantedRecord = { bundle_id: id, version, installed_at: bundleTime, contributed_components: [expected],
+            required_components: [expected], installed_versions: { [`workflows:${ref.id}`]: ref.version } };
+        if (definition == null || createHash('sha256').update(definition).digest('hex') !== core[1] ||
+            !installed || installed.enabled !== false || installed.version !== ref.version ||
+            !Array.isArray(records?.bundles) || !record ||
+            typeof installed.source !== 'string' || installed.source.replaceAll('\\', '/').split('/').slice(-4).join('/') !== `core_pack/workflows/${ref.id}/workflow.yml` ||
+            !isDeepStrictEqual({ ...registered, workflows: Object.fromEntries(Object.entries(registered.workflows).filter(([key]) => key !== ref.id)) }, previous) ||
+            !isDeepStrictEqual({ ...record, installed_at: bundleTime }, wantedRecord) ||
+            !isDeepStrictEqual({ ...records, updated_at: bundleTime, bundles: records.bundles.filter(row => row !== record) },
+                { ...original, updated_at: bundleTime }) ||
+            !isDeepStrictEqual(scan('.'), ['.specify', 'bundle.yml']) ||
+            !isDeepStrictEqual(scan('.specify').filter(name => name !== '.workflow-install.lock'), ['bundle-records.json', 'init-options.json', 'workflows']) ||
+            !isDeepStrictEqual(scan(directory), [ref.id, 'workflow-registry.json'].sort()) ||
+            !isDeepStrictEqual(scan(workflowDir), ['workflow.yml'])) {
+            throw invalid('Spec Kit did not stage only the pinned core workflow and expected registry changes.');
+        }
+        const workflow = load(definition, { schema: JSON_SCHEMA });
+        const installedExpected = { name: workflow.workflow.name, version: ref.version, description: workflow.workflow.description,
+            source: installed.source, installed_at: installed.installed_at, updated_at: installed.updated_at, enabled: false };
+        if (!isDeepStrictEqual(installed, installedExpected)) throw invalid('Spec Kit returned unexpected workflow registry fields.');
+        const nextRegistry = { ...previous, workflows: { ...previous.workflows, [ref.id]: { ...installedExpected,
+            source: `specify-core:1.4.1/${ref.id}`, installed_at: time, updated_at: time } } };
+        const nextBundle = { ...original, updated_at: bundleTime, bundles: [...original.bundles, wantedRecord] };
+        const documents = [
+            { path, before: null, after: definition },
+            { path: registry, before: registryBefore, after: json(nextRegistry) },
+            { path: BUNDLE_RECORDS, before: bundleBefore, after: json(nextBundle) },
+        ];
+        return { sourcePath, raw, id, version, ref, documents, overrides: [[path, workflow], [registry, nextRegistry], [BUNDLE_RECORDS, nextBundle]],
+            apply() {
+                check();
+                const created = [];
+                try {
+                    if (!exists(directory)) { mkdirSync(join(root, directory)); created.push(directory); }
+                    mkdirSync(join(root, workflowDir));
+                    created.push(workflowDir);
+                    writeReviewedDocuments(root, documents);
+                } catch (error) {
+                            for (const dir of created.reverse()) {
+                                if (workspaceEntry(root, dir)?.stat.isDirectory() && !readdirSync(join(root, dir)).length) rmdirSync(join(root, dir));
+                            }
+                    throw error;
+                }
+            },
+        };
+    } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+}
+
 async function stageBundleWorkflowRemoval(root, bundle, workflow, base, next, cli) {
     const registryBase = file(root, workflow.registry);
     const definition = file(root, workflow.path);
@@ -382,6 +497,7 @@ function stageRun({ node, request, specs, before, runPreview }) {
     if (hold) throw invalid(hold, 409);
     const cmd = node?.commands.find(item => item.id === request.command);
     if (!node?.active || !cmd || node.healthStatus === 'blocked') throw invalid('Select a ready command in the inspector.');
+    if (node.dispatchHandoff) throw invalid(node.dispatchHandoff);
     if (node.effect === 'external-write') throw invalid('Do not dispatch an external writer to the agent. Use “Review GitHub change” for supported GitHub operations.');
     if (node.effect === 'unknown') throw invalid('This command has no verified effect boundary.');
     if (node.kind !== 'Lifecycle' && node.kind !== 'Extensions') throw invalid('Manage this item through its registered lifecycle or extension.');
@@ -393,10 +509,16 @@ function stageRun({ node, request, specs, before, runPreview }) {
     }
     const needsFeature = node.kind === 'Lifecycle' && !['specify', 'constitution'].includes(cmd.id);
     if (needsFeature && !feature) throw invalid('Select a feature before previewing this command.');
+    const previewFidelity = node.previewFidelity && cmd.id === 'speckit.preview';
+    if (previewFidelity && (!feature || !['low', 'mid', 'high'].includes(request.fidelity))) {
+        throw invalid('Select a feature and a preview fidelity.');
+    }
+    if (previewFidelity && artifact) throw invalid('Preview reads its required artifacts from the selected feature.');
     const intent = ['specify', 'constitution'].includes(cmd.id) ? str(request.intent, 'an intent', 4000) :
         request.intent ? str(request.intent, 'an intent', 4000) : '';
     const stage = node.stage ?? node.id;
-    const detail = runPreview(node, cmd, { feature, artifact, intent, workflow: request.workflow });
+    const detail = runPreview(node, cmd, { feature, artifact, intent, workflow: request.workflow,
+        fidelity: previewFidelity ? request.fidelity : null });
     const triggered = before.edges.filter(edge => edge.active && (edge.kind === 'native-hook' ||
         (edge.kind === 'hook' && (edge.source === stage || edge.target === stage)) ||
         (edge.kind === 'embedded-hook' && edge.commandKey === detail.companionStep)));
@@ -424,7 +546,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
     let applying = false;
     const snapshot = () => {
         const { root, specs, specDirs } = context();
-        const { graph } = readWorkflow(root, specs, specDirs);
+        const { graph } = readWorkflow(root, specs, specDirs, undefined, featureEvidence);
         graph.commandDispatchHold = commandDispatchHold(graph);
         for (const node of graph.nodes.filter(item => item.kind === 'Workflows')) {
             node.canRunReview = Boolean(runStorage && node.active && node.reviewGates && (!node.hasProjectOverlay || node.reviewOverlay) && node.healthStatus !== 'blocked');
@@ -434,11 +556,12 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             delete node.reviewDefinitionStamp;
             delete node.reviewDefinition;
             delete node.guidedDefinitionStamp;
+            delete node.guidedFlow;
         }
         return graph;
     };
 
-    async function plan(request, probe, reviewedAt) {
+    async function plan(request, probe, reviewedAt, reviewedApmStage) {
         const { root, specs, specDirs, revision } = context();
         const read = overrides => readWorkflow(root, specs, specDirs, overrides);
         const current = read();
@@ -449,7 +572,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
         const overrides = new Map();
         let execute, invocation, title, sourceStamp, sourcePath;
         let paths = [], notes = [], affected = [], triggered = [], readPaths = [];
-        let documentChange, documentChanges, productChange, productArchive, externalChange, reviewChange, guidedChange, packageDefinition, localEvidence, validatePackage;
+        let documentChange, documentChanges, productChange, productArchive, externalChange, reviewChange, guidedChange, packageDefinition, localEvidence, validatePackage, apmStage;
         const managed = PACKAGES[node?.kind ?? request.kind];
         const hookEdit = (operation === 'hook-add' || operation === 'hook-mute-all' || ['hook-toggle', 'hook-remove', 'hook-up', 'hook-down', 'hook-behavior'].includes(operation));
 
@@ -457,12 +580,65 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             const detail = stageRun({ node, request, specs, before, runPreview });
             ({ invocation, title, affected, triggered } = detail);
             paths = detail.paths;
-            readPaths = [request.artifact, detail.instruction].filter(Boolean);
+            readPaths = [...new Set([request.artifact, detail.instruction, ...(detail.readPaths ?? [])].filter(Boolean))];
             notes = ['This approves dispatch only. The agent reports what it wrote; any external write needs separate approval.', ...(detail.notes ?? [])];
             execute = () => run(detail);
+        } else if (operation === 'agent-apm-import') {
+            const feature = specs.find(spec => spec.id === request.feature);
+            if (!feature || node?.id !== `feature:${feature.id}`) throw invalid('Select an inventoried feature.');
+            requireFreshApmImport(root, workspaceEntry);
+            apmStage = reviewedApmStage ?? await stageApmImport(workspaceEntry);
+            documentChanges = apmStage.documents;
+            paths = documentChanges.map(doc => doc.path);
+            sourceStamp = createHash('sha256').update(JSON.stringify(documentChanges)).digest('hex');
+            affected = [node];
+            title = 'Import the HVE Core functional code reviewer';
+            notes = [`APM staged one Copilot profile from microsoft/hve-core at ${apmStage.commit}. This import belongs to the project, not just this feature.`,
+                'Confirmation copies the three reviewed files only. No package cache, settings, hooks, or services are installed. This Copilot profile is inspect-only in Agent Assign; no agent is run.'];
+            execute = () => {
+                requireFreshApmImport(root, workspaceEntry);
+                const created = [];
+                try {
+                    for (const dir of ['.github', '.github/agents']) {
+                        if (!workspaceEntry(root, dir, { rejectSymlinks: true })) {
+                            mkdirSync(join(root, dir));
+                            created.push(dir);
+                        }
+                    }
+                    writeReviewedDocuments(root, documentChanges);
+                } catch (error) {
+                    for (const dir of created.reverse()) {
+                        try { rmdirSync(join(root, dir)); }
+                        catch (cleanup) {
+                            if (!['ENOENT', 'ENOTEMPTY'].includes(cleanup.code)) throw cleanup;
+                        }
+                    }
+                    throw error;
+                }
+            };
+        } else if (['agent-assignment-add', 'agent-assignment-edit'].includes(operation)) {
+            const feature = specs.find(spec => spec.id === request.feature);
+            if (!feature || node?.id !== `feature:${feature.id}`) throw invalid('Select an inventoried feature.');
+            const task = str(request.task, 'a task ID', 32);
+            const agent = str(request.agent, 'an agent name', 128);
+            const reason = str(request.reason, 'an assignment reason', 240);
+            const tasksPath = `${feature.id}/tasks.md`, tasks = file(root, tasksPath);
+            const edit = planAgentAssignment(root, feature.id, task, agent, reason, listTasks(tasks ?? '').map(item => item.id),
+                operation === 'agent-assignment-add');
+            title = `Assign ${task} to ${edit.agent.name}`;
+            documentChange = { path: edit.path, before: edit.before, after: edit.after };
+            paths = [edit.path];
+            readPaths = [tasksPath, ...edit.readPaths];
+            sourceStamp = createHash('sha256').update(JSON.stringify([edit.stamp, tasks])).digest('hex');
+            notes = [`Uses the APM-verified Claude Code profile at ${edit.agent.path}.`,
+                edit.before === null ? 'Creates only the assignment metadata. No agent is installed, validated, or run.' :
+                    'Only the assignment metadata changes. The YAML is reformatted; no agent is installed, validated, or run.'];
+            execute = () => writeConfig(root, edit.path, edit.after, edit.before, { exclusiveCreate: true });
         } else if (operation === 'workflow-review-configure') {
             const gate = node?.reviewGates?.find(item => item.id === request.gate);
-            if (node?.kind !== 'Workflows' || !node.installed || !gate) throw invalid('Select a literal gate in an installed review workflow.');
+            if (node?.kind !== 'Workflows' || !node.installed || !gate || node.reviewBranching) {
+                throw invalid('Canvas gate overrides require an installed review workflow without branches.');
+            }
             if (node.hasProjectOverlay && !node.reviewOverlay) throw invalid('Disable or remove other enabled overlays before configuring a literal review gate.');
             const isolated = reviewRuns.observe(root, node);
             if (isolated?.error || isolated?.status === 'paused' || ['paused', 'running'].includes(node.lastRunStatus)) {
@@ -540,9 +716,10 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 ...(!removing ? ['The YAML is reserialized.'] : [])];
             execute = () => writeConfig(root, path, text, base);
         } else if (['workflow-review-start', 'workflow-review-resume'].includes(operation)) {
-            if (node?.kind !== 'Workflows' || !node.reviewGates) throw invalid('Select an installed workflow made up of literal review gates.');
+            if (node?.kind !== 'Workflows' || !node.reviewGates) throw invalid('Select an installed workflow with supported review gates and branches.');
             const prepared = await reviewRuns.prepare(root, node, request, node.reviewDefinition, cli, probe);
             ({ execute, invocation, review: reviewChange, stamp: sourceStamp } = prepared);
+            sourceStamp = [sourceStamp, node.reviewDefinitionStamp];
             affected = [node];
             readPaths = [node.source, ...(node.reviewOverlay ? [node.reviewOverlay] : [])];
             if (reviewChange.artifactPath) {
@@ -550,21 +727,24 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 reviewChange.artifact = artifact;
                 readPaths.push(artifact.path);
                 sourceStamp = [sourceStamp, artifact.digest];
-                execute = () => prepared.execute(() => {
-                    if (readGateArtifact(root, before, artifact.path).digest !== artifact.digest) {
-                        throw invalid('The review evidence changed while recording the gate. Open a new preview.', 409);
-                    }
+                execute = () => prepared.execute({
+                    artifact,
+                    verifyEvidence() {
+                        if (readGateArtifact(root, before, artifact.path).digest !== artifact.digest) {
+                            throw invalid('The review evidence changed while recording the gate. Open a new preview.', 409);
+                        }
+                    },
                 });
             }
             title = operation === 'workflow-review-start' ? `Start review workflow: ${node.name}` : `Record gate decision: ${reviewChange.gate}`;
-            notes = ['Spec Kit runs the reviewed gate-only definition in a temporary project. Only supported literal gate replacements are included; no repository plugins, hooks, or agent commands run. The checkpoint stays with this canvas session.'];
+            notes = ['Spec Kit runs the reviewed gates and any supported branches in a temporary project. No repository plugins, hooks, or agent commands run. The checkpoint and selected inputs stay with this canvas session.'];
         } else if (['guided-start', 'guided-stop', 'guided-verdict', 'guided-label'].includes(operation)) {
             const stop = operation === 'guided-stop';
             const start = operation === 'guided-start';
             const verdict = operation === 'guided-verdict';
             const label = operation === 'guided-label';
             if (node?.kind !== 'Workflows' || (!stop && !canGuide(before, node))) {
-                throw invalid('Select an enabled workflow with literal gates and an issue label immediately after a gate, without overlays or other blockers.');
+                throw invalid('Select an enabled workflow with supported review steps and a literal issue label immediately after a gate, without overlays or other blockers.');
             }
             if (verdict && !['approve', 'reject'].includes(request.verdict)) throw invalid('Choose approve or reject.');
             const prepared = guidedRuns.prepare(root, node, request);
@@ -573,8 +753,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             if (!stop && (base == null || createHash('sha256').update(JSON.stringify(load(base, { schema: JSON_SCHEMA }))).digest('hex') !== node.guidedDefinitionStamp)) {
                 throw invalid('The installed definition changed. Open a new preview.', 409);
             }
-            const status = stop || (verdict && request.verdict === 'reject') ? 'aborted' :
-                verdict && change ? 'write' : start || prepared.hasNext ? 'review' : 'completed';
+            const { status, nextStep } = prepared;
             affected = [node];
             readPaths = [node.source];
             const evidence = !stop && gate.artifact ? readGateArtifact(root, before, gate.artifact) : null;
@@ -588,18 +767,21 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 external = await github.prepare(change);
                 externalChange = external.change;
             }
-            sourceStamp = [prepared.stamp, evidence?.digest, external?.stamp];
-            guidedChange = { status, steps: node.guidedReview?.flatMap(pair => pair.write ? [pair.gate.id, pair.write] : [pair.gate.id]) ?? [], runId: request.runId };
-            if (verdict) reviewChange = { gate: gate.id, message: gate.message, verdict: request.verdict, rejection: 'abort',
-                runId: request.runId, artifact: evidence };
+            sourceStamp = [prepared.stamp, node.guidedDefinitionStamp, evidence?.digest, external?.stamp];
+            guidedChange = { status, nextStep, steps: node.guidedBranching ? [] :
+                node.guidedReview?.flatMap(pair => pair.write ? [pair.gate.id, pair.write] : [pair.gate.id]) ?? [], runId: request.runId };
+            if (verdict || (start && prepared.startInputs.length)) reviewChange = {
+                gate: gate.id, message: gate.message, verdict: verdict ? request.verdict : null, rejection: gate.rejection,
+                runId: request.runId, artifact: evidence, startInputs: prepared.startInputs,
+            };
             title = start ? `Start guided run: ${node.name}` : stop ? `End guided run: ${node.name}` :
                 verdict ? `Record gate decision: ${gate.id}` : 'Review guided issue label change';
             notes = ['The canvas checkpoints this sequence independently of Spec Kit CLI runs. It does not execute workflow code or invoke repository hooks.'];
             if (label) notes.push('Confirm one GitHub API write for the exact target below. GitHub does not provide an atomic compare-and-set. If the result is uncertain, inspect the issue; the guided run will not retry.');
             else notes.push('This confirmation only records canvas state. It does not authorize or send a GitHub change.');
-            if (stop || verdict && request.verdict === 'reject') notes.push('Ending the run does not undo GitHub changes already confirmed.');
+            if (status === 'aborted') notes.push('Ending the run does not undo GitHub changes already confirmed.');
             execute = () => prepared.execute({
-                status, evidence: evidence?.digest ?? null, write: external && (() => external.execute()),
+                evidence, write: external && (() => external.execute()),
                 verify() {
                     if (!stop && (base == null || file(root, node.source) !== base)) {
                         throw invalid('The installed definition changed. Open a new preview.', 409);
@@ -796,7 +978,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 owner: str(request.owner, 'the accountable owner', 140), rationale: str(request.rationale, 'a rationale', 800),
                 approval: { method: 'canvas-confirmation', at: new Date(now()).toISOString() } };
             const previous = before.decisions.filter(item => !([primary.key, secondary.key].includes(item.primary) && [primary.key, secondary.key].includes(item.secondary)));
-            const next = { version: 1, decisions: [...previous, decision] };
+            const next = { ...current.policy, version: 1, decisions: [...previous, decision] };
             overrides.set(POLICY_PATH, next);
             paths = [POLICY_PATH];
             affected = [primary, secondary];
@@ -895,6 +1077,20 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             const base = file(root, HOOK_PATH);
             execute = () => writeConfig(root, HOOK_PATH, yaml(next), base);
             notes = ['This updates Spec Kit lifecycle configuration, not generated command or skill files. Spec Kit’s optional prompt is not canvas approval. The YAML is reserialized.'];
+        } else if (operation === 'bundle-install-core-workflow') {
+            if (before.findings.some(item => item.path === BUNDLE_RECORDS || item.code === 'malformed-bundle') || !workspaceEntry(root, '.specify')?.stat.isDirectory()) {
+                throw invalid('Select an initialized project with valid bundle records.');
+            }
+            const staged = await stageCoreBundle(root, before, request, cli, reviewedAt);
+            sourcePath = staged.sourcePath;
+            sourceStamp = [staged.raw, staged.documents];
+            readPaths = [sourcePath];
+            documentChanges = staged.documents;
+            paths = documentChanges.map(change => change.path);
+            for (const [path, content] of staged.overrides) overrides.set(path, content);
+            title = `Install ${staged.id} ${staged.version} with ${staged.ref.id} disabled`;
+            notes = ['Spec Kit prepared one core workflow offline in a temporary project. Confirmation only saves the displayed files; the workflow stays disabled and does not run.'];
+            execute = staged.apply;
         } else if (['bundle-install-record', 'bundle-update-record'].includes(operation)) {
             if (before.findings.some(item => item.path === BUNDLE_RECORDS || item.code === 'malformed-bundle') || !workspaceEntry(root, '.specify')?.stat.isDirectory()) {
                 throw invalid('Select an initialized project with valid bundle records.');
@@ -1410,7 +1606,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
         }
         const stamps = createHash('sha256').update(JSON.stringify(signatureInputs)).digest('hex');
         return {
-            revision, root, stamps, execute, allowed: newBlockers.length === 0,
+            revision, root, stamps, execute, apmStage, allowed: newBlockers.length === 0,
             preview: { title, invocation, diff, notes, paths: [...new Set(paths.filter(Boolean))], readPaths,
                 artifacts: [...new Set([...changedNodes.flatMap(item => item.outputs), ...changedEdges.flatMap(item => item.writes ?? []),
                     ...(documentChange ? [documentChange.path] : []), ...(documentChanges ?? productChange?.documents ?? []).map(item => item.path)])],
@@ -1512,7 +1708,8 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             for (const [id, entry] of pending) if (issuedAt - entry.issuedAt > 5 * 60_000 || entry.revision !== proposal.revision) pending.delete(id);
             if (pending.size >= 24) pending.delete(pending.keys().next().value);
             const id = proposal.allowed ? randomUUID() : null;
-            if (id) pending.set(id, { request, revision: proposal.revision, root: proposal.root, stamps: proposal.stamps, reviewedAt, issuedAt });
+            if (id) pending.set(id, { request, revision: proposal.revision, root: proposal.root, stamps: proposal.stamps,
+                apmStage: proposal.apmStage, reviewedAt, issuedAt });
             return { id, ...proposal.preview };
         },
         async apply(id) {
@@ -1522,7 +1719,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             if (!pendingChange || now() - pendingChange.issuedAt > 5 * 60_000) throw invalid('Preview this operation again before confirming.', 409);
             applying = true;
             try {
-                const proposal = await plan(pendingChange.request, false, pendingChange.reviewedAt);
+                const proposal = await plan(pendingChange.request, false, pendingChange.reviewedAt, pendingChange.apmStage);
                 const active = context();
                 if (!proposal.allowed || proposal.stamps !== pendingChange.stamps || proposal.root !== pendingChange.root ||
                     proposal.revision !== pendingChange.revision || active.revision !== proposal.revision || active.busy) {

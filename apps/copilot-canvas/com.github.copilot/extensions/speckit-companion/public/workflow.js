@@ -1,3 +1,5 @@
+import { renderWorkflowRuns } from '/workflow-runs.js';
+
 const statusNames = { valid: 'Valid', advisory: 'Advisory', confirm: 'Needs confirmation', blocked: 'Blocked' };
 const badge = status => statusNames[status] ?? status;
 const human = value => String(value ?? 'Not recorded').replaceAll('-', ' ');
@@ -43,13 +45,15 @@ function dependencyPath(graph, id) {
     return seen;
 }
 
-export function setupWorkflow({ el, api, reportSend, openFeature }) {
+export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence, openFeature }) {
     const $ = id => document.getElementById(id);
     const canvas = $('workflow-view'), layout = $('layout'), graphSvg = $('workflow-svg'), viewport = $('workflow-viewport');
     const inspector = $('workflow-inspector'), inventory = $('workflow-inventory'), filter = $('workflow-filter');
     const dialog = $('workflow-dialog'), dialogBody = $('workflow-dialog-body'), errorBox = $('workflow-dialog-error');
     const repository = $('repository-form'), repositoryToggle = $('workflow-repository');
-    const tabs = { workflow: $('workflow-tab'), management: $('management-tab'), specs: $('specs-tab') };
+    const runs = $('workflow-runs');
+    const tabs = { workflow: $('workflow-tab'), management: $('management-tab'), specs: $('specs-tab'), runs: $('runs-tab') };
+    const runSelection = { workflow: null, run: null, feature: null };
     const state = { graph: null, snapshot: null, selected: null, view: 'specs', changedView: false, text: false,
         management: 'Extensions', filter: '', world: { width: 1240, height: 610 }, camera: null, request: 0, workflowDirty: false };
 
@@ -57,7 +61,10 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
     const actions = (...buttons) => el('div', { class: 'workflow-actions' }, buttons);
     const heading = label => el('h3', { text: label });
     const paragraph = text => el('p', { text });
-    const notice = text => { $('workflow-notice').textContent = text; };
+    const notice = text => {
+        const runSurface = state.view === 'runs' || state.view === 'specs';
+        $(runSurface ? 'run-surface-notice' : 'workflow-notice').textContent = text;
+    };
     const nodeById = id => state.graph?.nodes.find(item => item.id === id);
     const nodeName = id => nodeById(id)?.name ?? id;
     const edgeName = edge => `${nodeName(edge.source)} → ${nodeName(edge.target)}`;
@@ -83,10 +90,14 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
 
     function show(view, manual = true) {
         state.changedView ||= manual;
-        if (state.view !== view && dialog.open) dialog.close();
+        if (state.view !== view) {
+            if (dialog.open) dialog.close();
+            $('run-surface-notice').textContent = '';
+        }
         state.view = view;
         layout.hidden = view !== 'specs';
-        canvas.hidden = view === 'specs';
+        canvas.hidden = view === 'specs' || view === 'runs';
+        runs.hidden = view !== 'runs';
         $('new-spec-toggle').hidden = view !== 'specs';
         if (view !== 'specs') {
             $('new-spec').hidden = true;
@@ -96,6 +107,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         repository.hidden = view !== 'specs' && repositoryToggle.getAttribute('aria-expanded') !== 'true';
         for (const [key, tab] of Object.entries(tabs)) tab.setAttribute('aria-pressed', String(view === key));
         if (view === 'specs') return;
+        if (view === 'runs' && !state.graph) runs.replaceChildren(el('p', { role: 'status' }, 'Reading workflow runs…'));
         $('workflow-title').textContent = view === 'management' ? 'Spec Kit Management' : 'Spec Kit lifecycle';
         if (state.graph) render();
         if (!state.graph || state.workflowDirty) void reload({ quiet: Boolean(state.graph) });
@@ -115,6 +127,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
             if (request === state.request) {
                 state.workflowDirty = true;
                 notice(`Could not read the workflow: ${error.message}`);
+                if (state.view === 'runs') runs.replaceChildren(el('p', { role: 'alert' }, error.message), button('Retry', () => void reload()));
             }
         }
     }
@@ -128,6 +141,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
             ++state.request;
             state.selected = null;
             state.graph = null;
+            Object.assign(runSelection, { workflow: null, run: null, feature: null });
             state.camera = null;
             if (dialog.open) dialog.close();
         }
@@ -163,6 +177,25 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
     function render() {
         const { graph, view } = state;
         if (!graph || view === 'specs') return;
+        if (view === 'runs') {
+            renderWorkflowRuns({
+                root: runs, graph, selection: runSelection, el, button, copyButton, render, openFeature,
+                refresh: () => void reload(),
+                openWorkflow: id => {
+                    state.management = 'Workflows';
+                    state.selected = id;
+                    show('management');
+                },
+                handleDecision: (node, kind) => {
+                    if (kind === 'guided-write') guidedLabelForm(node, availableGitHubWriters());
+                    else reviewGateForm(node, kind === 'guided-review');
+                },
+                allowGuidedWrite: availableGitHubWriters().length > 0,
+                start: startReview,
+                inspectEvidence: artifact,
+            });
+            return;
+        }
         const all = [['', 'Lifecycle & participants'], ['Lifecycle', 'Lifecycle'], ['Workflow inputs', 'Workflow inputs'], ...graph.management.map(name => [name, name])];
         const options = view === 'management' ? graph.management.map(name => [name, name]) : all;
         filter.replaceChildren(...selectOptions(options));
@@ -197,7 +230,8 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         }
         if ($('workflow-path').checked) render();
         else renderInspector();
-        inspector.focus({ preventScroll: true });
+        if (state.view === 'runs') $('run-details-heading')?.focus({ preventScroll: true });
+        else if (state.view !== 'specs') inspector.focus({ preventScroll: true });
         if (window.matchMedia('(max-width: 760px)').matches) inspector.scrollIntoView({ block: 'nearest' });
     }
 
@@ -226,7 +260,9 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                    state.management === 'Workflows' ? button('Register pinned GitHub workflow…', () => remoteWorkflowForm()) : null) : null,
             management && state.management === 'Catalogs' ? actions(button('Register discovery catalog…', () => catalogForm())) : null,
             management && state.management === 'Bundles' ? actions(button('Register local bundle…', () => bundleForm()),
-                button('Register pinned GitHub bundle…', () => bundleForm(null, true))) : null,
+                button('Register pinned GitHub bundle…', () => bundleForm(null, true)),
+                /^1\.4\.1(?:\.dev0)?$/.test(state.graph.runtime.version ?? '') ?
+                    button('Install core workflow bundle…', () => coreBundleForm()) : null) : null,
             management && state.management === 'Hooks' && !state.graph.runtime.nativeEventOverrideSupported
                 ? paragraph('Suppressing all native events from the canvas requires a recorded Spec Kit 1.4.1 Copilot or Claude integration. Lifecycle hook controls are separate.') : null,
             management && state.management === 'Versions and sources' ? actions(button('Record ownership decision…', () => ownershipForm())) : null,
@@ -411,20 +447,19 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         const hasHooks = node.hooks?.length;
         const installed = node.installed;
         const origin = typeof node.origin === 'object' && node.origin ? [node.origin.kind, node.origin.catalog, node.origin.url].filter(Boolean).join(' · ') : node.origin;
-        const githubWriters = state.graph.nodes.filter(item => ['extension:ghp', 'extension:project'].includes(item.id) &&
-            item.active && item.healthStatus !== 'blocked' &&
-            !state.graph.decisions.some(decision => decision.secondary === item.key && decision.strategy === 'primary'));
+        const githubWriters = availableGitHubWriters();
         const workflowOwner = node.workflowOwner && nodeById(node.workflowOwner);
         const canReviewLabel = node.active && node.issueLabelChange && workflowOwner?.active && !workflowOwner.guidedReview && !workflowOwner.hasProjectOverlay &&
             !state.graph.findings.some(item => item.severity === 'blocked' && item.code !== 'unapproved-external-step' &&
                 (item.nodeIds.includes(workflowOwner.id) || item.nodeIds.includes(node.id)));
         const commands = node.commands.map(command => el('li', {},
-            ['Lifecycle', 'Extensions'].includes(node.kind) ? button(`Preview ${command.name}…`, () => runForm(node, command),
+            ['Lifecycle', 'Extensions'].includes(node.kind) && !node.dispatchHandoff ? button(`Preview ${command.name}…`, () => runForm(node, command),
                 { disabled: Boolean(state.graph.commandDispatchHold) || !node.active || node.healthStatus === 'blocked' || ['unknown', 'external-write'].includes(node.effect) }) : command.name,
             el('div', {}, el('code', { text: command.invocation ?? command.id })), command.aliases?.length ? `Aliases: ${command.aliases.join(', ')}` : null));
         const selectedPhase = state.graph.phases.find(([key]) => key === node.phase)?.[1];
         const decisions = state.graph.decisions.filter(decision => [decision.primary, decision.secondary].includes(node.key));
         inspector.replaceChildren(el('h2', { text: node.name }), paragraph(`${node.category} · ${human(node.state)}`), health(node.healthStatus),
+            ...(node.dispatchHandoff ? [paragraph(node.dispatchHandoff)] : []),
             facts([['Phase', selectedPhase], ['Source', node.source], ['Origin', origin], ['Version', version], ['Requires Spec Kit', node.requirement], ['Priority', node.priority],
                 ['Prerequisites', codeList([...(node.prerequisites ?? []), ...(node.requires ?? []).map(nodeName)])],
                 ['Authority', node.authority], ['Automation', node.mode], ['Effect', human(node.effect)], ['Approval', human(node.approval)], ['Inputs', codeList(node.inputs)],
@@ -460,21 +495,19 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 node.canDisableOverlay ? button('Disable overlay…', () => direct('overlay-disable', node.id)) : null,
                 node.canEnableOverlay ? button('Enable review overlay…', () => direct('overlay-enable', node.id)) : null,
                 node.kind === 'Workflow overlays' ? button('Remove overlay…', () => direct('overlay-remove', node.id)) : null,
-                node.canRunReview && !node.isolatedRun?.error && node.isolatedRun?.status !== 'paused' ? button('Start isolated review…', () => direct('workflow-review-start', node.id)) : null,
+                node.canRunReview && !node.isolatedRun?.error && node.isolatedRun?.status !== 'paused' ? button('Start isolated review…', () => startReview(node)) : null,
                 node.canRunReview && node.isolatedRun?.resumable ? button('Decide current gate…', () => reviewGateForm(node)) : null,
                 node.canRunGuided && !node.guidedRun?.error && (!node.guidedRun || ['aborted', 'completed'].includes(node.guidedRun.status)) ?
-                    button('Start guided run…', () => direct('guided-start', node.id)) : null,
+                    button('Start guided run…', () => startReview(node, 'guided')) : null,
                 node.canRunGuided && node.guidedRun?.matched && node.guidedRun.status === 'review' ?
                     button('Decide guided gate…', () => reviewGateForm(node, true)) : null,
                 node.canRunGuided && node.guidedRun?.matched && node.guidedRun.status === 'write' && githubWriters.length ?
-                    button('Review guided issue label…', () => form('Review the guided issue label', [
-                        scalarField('GitHub integration', select('writer', githubWriters.map(item => [item.id, item.name]))),
-                    ], values => ({ operation: 'guided-label', id: node.id, runId: node.guidedRun.id, ...values }))) : null,
+                    button('Review guided issue label…', () => guidedLabelForm(node, githubWriters)) : null,
                 ['review', 'write'].includes(node.guidedRun?.status) ? button('End guided run…', () => {
                     openDialog('Preparing preview');
                     void preview({ operation: 'guided-stop', id: node.id, runId: node.guidedRun.id });
                 }) : null,
-                ...(node.reviewGates ?? []).map(gate => button(`Configure ${gate.id} gate…`, () => reviewGateConfigForm(node, gate), {
+                ...(node.reviewBranching ? [] : node.reviewGates ?? []).map(gate => button(`Configure ${gate.id} gate…`, () => reviewGateConfigForm(node, gate), {
                     disabled: Boolean(node.hasProjectOverlay && !node.reviewOverlay || node.isolatedRun?.error ||
                         node.isolatedRun?.status === 'paused' || ['paused', 'running'].includes(node.lastRunStatus)),
                 })),
@@ -540,7 +573,7 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     inspector.append(paragraph('Enable one eligible GitHub integration to preview the issue label.'));
                 }
             }
-            else if (!node.canRunReview) inspector.append(paragraph('The canvas runs only isolated literal review gates. For workflows that mix effects, use the individual lifecycle or integration actions to preview and approve each supported change.'));
+            else if (!node.canRunReview) inspector.append(paragraph('Isolated review supports literal gates and simple branches. For workflows that mix effects, use the lifecycle or integration actions to preview and approve each supported change.'));
             else if (node.isolatedRun?.error) inspector.append(paragraph(node.isolatedRun.error));
             else if (node.isolatedRun?.status === 'paused' && !node.isolatedRun.resumable) inspector.append(paragraph('The definition changed after this run paused. Restore the reviewed definition before recording a verdict.'));
         }
@@ -581,6 +614,30 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         } }, fields, actions(submit, button('Cancel', () => dialog.close())));
         dialogBody.append(element);
         element.querySelector('input, select, textarea')?.focus();
+    }
+
+    function startReview(node, kind = 'isolated') {
+        const guided = kind === 'guided';
+        const operation = guided ? 'guided-start' : 'workflow-review-start';
+        const fields = guided ? node.guidedStartInputs : node.reviewStartInputs;
+        if (!fields?.length) return direct(operation, node.id);
+        form(`Choose workflow inputs: ${node.name}`, [
+            paragraph('Choose the route for this run. The preview shows the first checkpoint before you confirm.'),
+            ...fields.map(field => {
+                const control = select(field.name, [
+                    ...(field.default === null ? [['', 'Choose a value']] : []),
+                    ...field.options.map(value => [value, value]),
+                ]);
+                control.required = true;
+                control.value = field.default ?? '';
+                if (field.description) {
+                    const description = `review-input-${field.name}-help`;
+                    control.setAttribute('aria-describedby', description);
+                    return el('div', {}, scalarField(field.name, control), el('p', { id: description }, field.description));
+                }
+                return scalarField(field.name, control);
+            }),
+        ], inputs => ({ operation, id: node.id, inputs }));
     }
 
     function packageForm(node, operation, kind = node?.kind) {
@@ -680,6 +737,18 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         return ({ review: 'Waiting for gate verdict', write: 'Waiting for GitHub approval', uncertain: 'GitHub result unknown' })[status] ?? human(status);
     }
 
+    function availableGitHubWriters() {
+        return state.graph.nodes.filter(item => ['extension:ghp', 'extension:project'].includes(item.id) &&
+            item.active && item.healthStatus !== 'blocked' &&
+            !state.graph.decisions.some(decision => decision.secondary === item.key && decision.strategy === 'primary'));
+    }
+
+    function guidedLabelForm(node, writers) {
+        form('Review the guided issue label', [
+            scalarField('GitHub integration', select('writer', writers.map(item => [item.id, item.name]))),
+        ], values => ({ operation: 'guided-label', id: node.id, runId: node.guidedRun.id, gate: node.guidedRun.step, ...values }));
+    }
+
     function reviewGateForm(node, guided = false) {
         const run = guided ? node.guidedRun : node.isolatedRun;
         const gates = guided ? node.guidedReview.map(pair => pair.gate) : node.reviewGates;
@@ -727,6 +796,26 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
             values => ({ operation: 'workflow-review-configure', id: node.id, gate: gate.id, ...values }));
     }
 
+    function editAssignment(feature, task, agents, previous) {
+        assignmentForm(feature, task, agents, previous);
+    }
+
+    function addAssignment(feature, tasks, agents) {
+        assignmentForm(feature, null, agents, null, tasks);
+    }
+
+    function assignmentForm(feature, task, agents, previous, tasks = []) {
+        const agent = select('agent', agents.map(item => [item.name, `${item.name} · Claude Code`]));
+        if (agents.some(item => item.name === previous?.agent)) agent.value = previous.agent;
+        const reason = input('reason', { required: true, maxlength: 240 });
+        reason.value = previous?.reason ?? '';
+        form(task ? `Edit assignment for ${task}` : 'Assign a task', [
+            paragraph('Choose an APM-verified HVE Core profile already deployed in this project. This updates metadata without running the agent.'),
+            task ? null : scalarField('Task', select('task', tasks.map(id => [id, id]))),
+            scalarField('Agent', agent), scalarField('Reason', reason),
+        ], values => ({ operation: task ? 'agent-assignment-edit' : 'agent-assignment-add', id: `feature:${feature}`, feature, task, ...values }));
+    }
+
     function bundleForm(node, remote = false) {
         form(node ? `Refresh ${node.name}` : remote ? 'Register a pinned GitHub bundle' : 'Register a local bundle', [
             paragraph('Use a flat bundle.yml pinned to components already installed independently. No packages are installed or replaced.'),
@@ -735,6 +824,13 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                 scalarField('Expected SHA-256', input('sha256', { required: true, minlength: 64, maxlength: 64, pattern: '[a-fA-F0-9]{64}' })),
             ] : [scalarField('Path to bundle.yml', input('source', { required: true, maxlength: 300, placeholder: 'packages/my-bundle/bundle.yml' }))]),
         ], values => ({ operation: node ? 'bundle-update-record' : 'bundle-install-record', id: node?.id, ...values }));
+    }
+
+    function coreBundleForm() {
+        form('Install a core workflow bundle', [
+            paragraph('Choose a local bundle pinned to one workflow shipped with Spec Kit 1.4.1. The workflow is installed disabled. No other components are installed or replaced.'),
+            scalarField('Path to bundle.yml', input('source', { required: true, maxlength: 300, placeholder: 'packages/my-bundle/bundle.yml' })),
+        ], values => ({ operation: 'bundle-install-core-workflow', ...values }));
     }
 
     function githubForm(node) {
@@ -806,8 +902,9 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
 
     function runForm(node, command) {
         const isSpec = node.kind === 'Lifecycle' && command.id === 'specify';
+        const previewFidelity = node.previewFidelity && command.id === 'speckit.preview';
         const features = state.graph.nodes.filter(item => item.id.startsWith('feature:')).map(item => [item.key, `${item.name} (${item.key})`]);
-        const needsFeature = node.kind === 'Lifecycle' && !['constitution', 'specify'].includes(command.id);
+        const needsFeature = previewFidelity || node.kind === 'Lifecycle' && !['constitution', 'specify'].includes(command.id);
         const field = select('feature', [['', needsFeature ? 'Select a feature' : 'No feature'], ...features]);
         field.required = needsFeature;
         const artifact = select('artifact', []);
@@ -822,8 +919,10 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         form(command.name, [
             isSpec ? scalarField('Workflow', select('workflow', choices.length ? choices : [['speckit', 'Spec Kit']])) : null,
             !isSpec && command.id !== 'constitution' ? scalarField('Feature', field) : null,
-            !isSpec && command.id !== 'constitution' ? scalarField('Input artifact', artifact) : null,
-            scalarField(isSpec ? 'What should this feature accomplish?' : command.id === 'constitution' ? 'What principles should the constitution express?' : 'Additional intent (optional)',
+            previewFidelity ? scalarField('Fidelity', select('fidelity', [['low', 'Low'], ['mid', 'Mid'], ['high', 'High']])) : null,
+            !previewFidelity && !isSpec && command.id !== 'constitution' ? scalarField('Input artifact', artifact) : null,
+            scalarField(isSpec ? 'What should this feature accomplish?' : command.id === 'constitution' ? 'What principles should the constitution express?' :
+                previewFidelity ? 'Design focus (optional)' : 'Additional intent (optional)',
                 textarea('intent', { required: needsIntent, maxlength: 4000 })),
         ], values => ({ operation: 'run', id: node.id, command: command.id, ...values }));
     }
@@ -845,8 +944,13 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
     }
 
     const params = (id, path) => new URLSearchParams({ id, path });
-    const artifact = (node, path) => readDialog(path, () => api(`/api/workflow/artifact?${params(node.id, path)}`),
-        result => dialogBody.replaceChildren(el('pre', { text: result.text, tabindex: 0 }), actions(button('Close', () => dialog.close()))));
+    const artifact = (node, path, recorded) => readDialog(path, () => recorded?.featureArtifact
+        ? api(`/api/spec/evidence?${params(node.key, path)}`)
+        : api(`/api/workflow/artifact?${params(node.id, path)}`),
+        result => dialogBody.replaceChildren(
+            ...(recorded ? [paragraph('Current repository copy of the file referenced in the run record. It may have changed since that checkpoint.')] : []),
+            ...(recorded?.featureArtifact ? renderEvidence(result) : [el('pre', { text: result.text, tabindex: 0 })]),
+            actions(button('Close', () => dialog.close()))));
 
     function templateForm(node) {
         void readDialog('Read template override', () => api(`/api/workflow/config?${params(node.id, node.templateOverride)}`), result => {
@@ -988,8 +1092,10 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     heading('Reviewed source definition'), el('pre', { text: result.packageDefinition.after, tabindex: 0 }),
                 ] : []),
                 ...(result.guidedChange ? [heading('Guided run'), facts([
-                    ['Run', result.guidedChange.runId], ['Step order', codeList(result.guidedChange.steps)],
+                    ['Run', result.guidedChange.runId],
+                    ['Step order', result.guidedChange.steps.length ? codeList(result.guidedChange.steps) : null],
                     ['After confirmation', guidedStatus(result.guidedChange.status)],
+                    ['Next checkpoint', result.guidedChange.nextStep],
                 ])] : []),
                 ...(result.externalChange ? [heading('GitHub change'), facts([
                     ['GitHub CLI account', result.externalChange.account],
@@ -997,9 +1103,14 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
                     ['Project', result.externalChange.project ? `${result.externalChange.projectTitle} · ${result.externalChange.project}` : null],
                     ['Field', result.externalChange.field], ['Current value', result.externalChange.before], ['New value', result.externalChange.after],
                 ])] : []),
-                ...(result.reviewChange ? [heading('Review gate'), paragraph(result.reviewChange.message), facts([
+                ...(result.reviewChange?.startInputs?.length ? [heading('Run inputs'),
+                    facts(result.reviewChange.startInputs.map(({ name, value }) => [name, value]))] : []),
+                ...(result.reviewChange ? [heading(result.reviewChange.gate ? 'Review gate' : 'Run outcome'),
+                    result.reviewChange.message ? paragraph(result.reviewChange.message) : null, facts([
                     ['Run', result.reviewChange.runId], ['Step', result.reviewChange.gate],
                     ['Verdict', result.reviewChange.verdict], ['On rejection', result.reviewChange.rejection],
+                    ['Expected after confirmation', result.reviewChange.nextGate ? `Pause at ${result.reviewChange.nextGate}` :
+                        result.reviewChange.expected === 'aborted' ? 'Abort the run' : result.reviewChange.expected === 'completed' ? 'Complete the run' : null],
                 ]),
                 ...(result.reviewChange.artifact ? [heading('Review evidence'),
                     facts([['Source', result.reviewChange.artifact.path], ['SHA-256', result.reviewChange.artifact.digest]]),
@@ -1094,5 +1205,18 @@ export function setupWorkflow({ el, api, reportSend, openFeature }) {
         state.camera = null;
         render();
     });
-    return { show, update };
+    return {
+        show, update, editAssignment, addAssignment,
+        importHve(feature) {
+            openDialog('Preparing HVE Core import');
+            void preview({ operation: 'agent-apm-import', id: `feature:${feature}`, feature });
+        },
+        hasWorkflow(key) {
+            return Boolean(state.graph?.nodes.some(node => node.kind === 'Workflows' && node.key === key && node.installed));
+        },
+        openRun(key, feature) {
+            Object.assign(runSelection, { workflow: `workflow:${key}`, run: null, feature });
+            show('runs');
+        },
+    };
 }

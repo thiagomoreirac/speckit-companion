@@ -43,6 +43,21 @@ function installRoadmap(f) {
     return ledger;
 }
 
+function installAgentAssign(f, feature) {
+    const path = `${feature}/agent-assignments.yml`;
+    const profile = '.claude/agents/hve-review.md';
+    const content = '---\nname: hve-review\ndescription: Review task evidence\n---\n# Review';
+    const assignment = { agents_scanned: [], assignments: { T001: { agent: 'default' }, T002: { agent: 'default', reason: 'Unchanged' } } };
+    f.put(path, assignment);
+    f.install('agent-assign', { manifest: { extension: { version: '1.1.0' } } });
+    f.registry['agent-assign'].version = '1.1.0';
+    f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+    f.put(profile, content);
+    f.put('apm.lock.yaml', { dependencies: [{ repo_url: 'microsoft/hve-core', deployed_files: [profile],
+        deployed_file_hashes: { [profile]: `sha256:${createHash('sha256').update(content).digest('hex')}` } }] });
+    return { path, profile, content, assignment };
+}
+
 const hook = (extension, options = {}) => ({ extension, command: `speckit.${extension}.run`, optional: true, enabled: true, ...options });
 const guidedDefinition = artifact => ({
     workflow: { id: 'guided', name: 'Guided publish', version: '1.0.0' },
@@ -118,14 +133,259 @@ async function serve(t, root, options = {}) {
     return { api, url: server.url, focus: server.focus };
 }
 
+function routingFixture(t) {
+    const f = fixture(t);
+    const id = 'workflow:routed-review';
+    const path = '.specify/workflows/routed-review/workflow.yml';
+    const evidence = 'specs/001-exports/spec.md';
+    const gate = (id, verdict_input) => ({ id, type: 'gate', message: `Review ${id}.`, verdict_input, show_file: evidence });
+    const definition = {
+        workflow: { id: 'routed-review', name: 'Routed review', version: '1.0.0' },
+        inputs: {
+            track: { type: 'string', required: true, description: 'Select the review track.', enum: ['standard', 'extended'] },
+            detail: { type: 'string', enum: ['brief', 'full'], default: 'brief' },
+            standard_verdict: { type: 'string' },
+            extended_verdict: { type: 'string' },
+            final_verdict: { type: 'string' },
+        },
+        steps: [
+            { id: 'route', type: 'if', condition: "{{ inputs.track == 'extended' }}",
+                then: [gate('extended', 'extended_verdict')], else: [gate('standard', 'standard_verdict')] },
+            { id: 'check-detail', type: 'if', condition: "{{ inputs.detail == 'full' }}", then: [gate('final', 'final_verdict')] },
+        ],
+    };
+    f.put('.specify/workflows/workflow-registry.json', { workflows: { 'routed-review': { enabled: true } } });
+    f.put(path, definition);
+    f.put(evidence, '# Feature Specification: Export board\n\nReview the export handoff.');
+    return { f, id, path, definition, evidence };
+}
+
 describe('graph from a Spec Kit repository', () => {
+    it('projects native checkpoints without exposing run inputs or outputs and inventories only linked feature evidence', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const proof = `${feature}/preview/wireflow.html`;
+        f.put(`${feature}/spec.md`, '# Export\n\n[Decision](../../docs/adr/001-export.md)\n\n<!-- speckit-figma:section phase=spec -->\n## Figma Design Context\nA design decision.');
+        f.put(`${feature}/plan.md`, '# Plan\n\n```\n<!-- speckit-figma:section phase=plan -->\n```');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        const modelPath = `${feature}/data-model-diagram.mmd`;
+        f.put(modelPath, ['erDiagram', '    Export {', '        UUID_string id PK',
+            '        Job_nullable job FK "becomes the review input"', '    }', '    Export ||--o{ Record : contains',
+            '    Record }|..o| Job : "tracks progress"'].join('\r\n'));
+        const sequencePath = `${feature}/diagrams/sequence.mmd`;
+        f.put(sequencePath, 'sequenceDiagram\n    actor A as Requester\n    A->>B: Read\n    B-->>A: Ready');
+        f.put(proof, '<script>throw new Error("never run")</script>');
+        f.put('docs/adr/001-export.md', '# Accepted decision');
+        f.put('docs/adr/002-other.md', '# Unrelated decision');
+        f.put(`${feature}/quality/report.md`, '# Quality evidence');
+        f.install('reporter', { manifest: { 'x-companion': { specViews: [
+            { phase: 'Quality review', path: 'quality/report.md', documents: ['spec', 'tasks', 'not-a-document'] },
+            { phase: 'Not allowed', path: '../../docs/adr/002-other.md', documents: ['spec'] },
+        ] } } });
+        f.hooks({ after_tasks: [hook('reporter', { enabled: false })] });
+        const agent = '.github/agents/technical-reviewer.agent.md', text = '---\nname: technical-reviewer\n---\n# Review';
+        f.put(agent, text);
+        f.put('apm.lock.yaml', { dependencies: [{ repo_url: 'microsoft/hve-core', deployed_files: [agent],
+            deployed_file_hashes: { [agent]: `sha256:${createHash('sha256').update(text).digest('hex')}` } }] });
+        f.put(`${feature}/agent-assignments.yml`, { assignments: { T001: { agent: 'technical-reviewer' }, T009: { agent: 'default' } } });
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { review: { enabled: true } } });
+        f.put('.specify/workflows/review/workflow.yml', { workflow: { id: 'review', name: 'Release review', version: '1.0.0' },
+            steps: [{ id: 'review', type: 'gate', message: 'Inspect the release.' }] });
+        for (const [id, status, date] of [['old-run', 'completed', '2026-01-01'], ['waiting', 'paused', '2026-01-02']]) {
+            f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'review', status, updated_at: `${date}T00:00:00Z`,
+                current_step_id: 'review', inputs: { token: 'private-test-input' },
+                step_results: { review: { status, output: { on_reject: 'abort', choice: status === 'completed' ? 'Approve' : null,
+                    show_file: status === 'completed' ? `${feature}/spec.md` : 'docs/adr/private-test-unlinked.md', token: 'private-test-output' } },
+                    unrelated: { type: 'command', status: 'completed', output: { show_file: `${feature}/spec.md` } },
+                    prototype: { type: 'gate', status: 'completed', output: { show_file: proof } },
+                    private: { type: 'gate', status: 'completed', output: { show_file: `${feature}/drafts/private-test-unlinked.html` } } } });
+        }
+        f.put(`${feature}/drafts/private-test-unlinked.html`, '<p>Not in the evidence inventory</p>');
+        const { api } = await serve(t, f.root);
+        const graph = await api('/workflow');
+        const workflow = graph.nodes.find(node => node.id === 'workflow:review');
+        assert.deepEqual(workflow.nativeRuns.map(run => [run.id, run.status]), [['waiting', 'paused'], ['old-run', 'completed']]);
+        assert.deepEqual(workflow.nativeRuns[0].steps, [{ id: 'review', status: 'paused', gate: true },
+            { id: 'unrelated', status: 'completed', gate: false },
+            { id: 'prototype', status: 'completed', gate: true, evidence: { feature: `feature:${feature}`, path: proof, featureArtifact: true } },
+            { id: 'private', status: 'completed', gate: true }]);
+        assert.equal(workflow.nativeRuns[0].gateWaiting, true);
+        assert.equal(workflow.nativeRuns[1].steps[0].verdict, 'approve');
+        assert.deepEqual(workflow.nativeRuns[1].steps[0].evidence, { feature: `feature:${feature}`, path: `${feature}/spec.md` });
+        assert.doesNotMatch(JSON.stringify(graph), /private-test-(?:input|output|unlinked)/);
+        const spec = await api(`/spec?id=${feature}`);
+        assert.deepEqual(spec.figmaSections, ['spec']);
+        assert.deepEqual(spec.documentHooks.tasks, [{ when: 'after', extension: 'reporter', command: 'speckit.reporter.run', enabled: false, optional: true }]);
+        assert.deepEqual(new Set(spec.evidence.map(item => item.phase)), new Set(['Architecture', 'Data model', 'Prototypes', 'Decisions', 'Quality review']));
+        assert.deepEqual(spec.evidence.find(item => item.phase === 'Quality review').documents, ['spec', 'tasks']);
+        assert.deepEqual(spec.evidence.find(item => item.phase === 'Decisions').documents, ['spec']);
+        assert.deepEqual(spec.assignments.assignments.map(row => [row.task, row.taskExists, row.import?.verified]), [['T001', true, true], ['T009', false, undefined]]);
+        assert.match((await api(`/spec/evidence?id=${feature}&path=${proof}`)).text, /<script>/);
+        const { model } = await api(`/spec/evidence?id=${feature}&path=${modelPath}`);
+        assert.deepEqual(model.entities[0].attributes[1], { type: 'Job_nullable', name: 'job', keys: 'FK', note: 'becomes the review input' });
+        assert.deepEqual(model.relationships, [
+            { from: 'Export', to: 'Record', left: '1', right: '0..*', identifying: true, label: 'contains' },
+            { from: 'Record', to: 'Job', left: '1..*', right: '0..1', identifying: false, label: 'tracks progress' },
+        ]);
+        assert.deepEqual((await api(`/spec/evidence?id=${feature}&path=${sequencePath}`)).sequence, {
+            participants: [{ id: 'A', role: 'actor', label: 'Requester' }, { id: 'B', label: 'B' }],
+            messages: [{ from: 'A', to: 'B', dashed: false, label: 'Read' }, { from: 'B', to: 'A', dashed: true, label: 'Ready' }],
+        });
+        for (const unsupported of [
+            'sequenceDiagram\nA->>B: First\nalt stop\nB-->>A: No\nend',
+            '%%{init: { "theme": "dark" }}%%\nsequenceDiagram\nA->>B: First',
+        ]) {
+            f.put(sequencePath, unsupported);
+            const evidence = await api(`/spec/evidence?id=${feature}&path=${sequencePath}`);
+            assert.equal(evidence.sequence, undefined);
+            assert.equal(evidence.text, unsupported);
+        }
+        f.put(modelPath, 'erDiagram\nExport {\n    UUID_string id PK'); // Do not display a partial model.
+        assert.equal((await api(`/spec/evidence?id=${feature}&path=${modelPath}`)).model, undefined);
+        f.put(agent, `${text} edited`);
+        assert.equal((await api(`/spec?id=${feature}`)).assignments.assignments[0].import.verified, false);
+        for (const path of ['docs/adr/002-other.md', 'apm.lock.yaml', `${feature}/../../docs/adr/002-other.md`]) {
+            await api(`/spec/evidence?id=${feature}&path=${encodeURIComponent(path)}`, undefined, 404);
+        }
+    });
+
+    it('updates one reviewed task assignment and rejects a changed APM deployment at confirmation', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n- [ ] T002 Record evidence\n');
+        const { path, profile, content, assignment } = installAgentAssign(f, feature);
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'agent-assignment-edit', id: `feature:${feature}`, feature, task: 'T001',
+            agent: 'hve-review', reason: 'Review the export evidence.' };
+        const before = await api(`/spec?id=${feature}`);
+        assert.deepEqual(before.assignments.editableAgents, [{ name: 'hve-review', path: profile }]);
+        const preview = await api('/workflow/preview', request);
+        assert.deepEqual(preview.paths, [path]);
+        assert.match(preview.documentChange.after, /agent: hve-review/);
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(assignment));
+        f.put(profile, `${content} changed`);
+        await api('/workflow/apply', { id: preview.id }, 400);
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(assignment));
+        f.put(profile, content);
+        const reviewed = await api('/workflow/preview', request);
+        await api('/workflow/apply', { id: reviewed.id });
+        const after = await api(`/spec?id=${feature}`);
+        assert.equal(after.assignments.assignments[0].agent, 'hve-review');
+        assert.equal(after.assignments.assignments[0].import.harness, 'Claude Code');
+        assert.equal(after.assignments.assignments[1].reason, 'Unchanged');
+        assert.equal(readFileSync(join(f.root, profile), 'utf8'), content);
+    });
+
+    it('creates a first task assignment only after reviewing it and does not replace a concurrent assignment', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        const { path, assignment } = installAgentAssign(f, feature);
+        rmSync(join(f.root, path));
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'agent-assignment-add', id: `feature:${feature}`, feature, task: 'T001',
+            agent: 'hve-review', reason: 'Review the export evidence.' };
+        const before = await api(`/spec?id=${feature}`);
+        assert.equal(before.assignments.exists, false);
+        assert.deepEqual(before.assignments.unassignedTasks, ['T001']);
+        assert.deepEqual(before.assignments.imports.map(({ harness, verified, assignable }) => [harness, verified, assignable]),
+            [['Claude Code', true, true]]);
+        const run = await api('/workflow/preview', { operation: 'run', id: 'extension:agent-assign', command: 'speckit.agent-assign.run' }, 400);
+        assert.match(run.error, /Agent Assign commands run in Claude Code/);
+        const preview = await api('/workflow/preview', request);
+        assert.equal(preview.documentChange.before, null);
+        assert.equal(existsSync(join(f.root, path)), false);
+        f.put(path, assignment);
+        await api('/workflow/apply', { id: preview.id }, 409);
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(assignment));
+        rmSync(join(f.root, path));
+        const reviewed = await api('/workflow/preview', request);
+        await api('/workflow/apply', { id: reviewed.id });
+        const after = await api(`/spec?id=${feature}`);
+        assert.equal(after.assignments.exists, true);
+        assert.deepEqual(after.assignments.unassignedTasks, []);
+        assert.equal(after.assignments.assignments[0].agent, 'hve-review');
+    });
+
+    it('shows Copilot-only imports before assignments without offering Claude Code dispatch', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const file = '.github/agents/reviewer.agent.md';
+        const content = '---\nname: reviewer\n---\n# Review';
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        f.put(file, content);
+        f.put('apm.lock.yaml', { dependencies: [{ repo_url: 'microsoft/hve-core', deployed_files: [file],
+            deployed_file_hashes: { [file]: `sha256:${createHash('sha256').update(content).digest('hex')}` } }] });
+        const { api } = await serve(t, f.root);
+        const { assignments } = await api(`/spec?id=${feature}`);
+        assert.equal(assignments.exists, false);
+        assert.deepEqual(assignments.imports, [{ name: 'reviewer', path: file, harness: 'Copilot', available: true, verified: true, assignable: false }]);
+        assert.deepEqual(assignments.unassignedTasks, []);
+        rmSync(join(f.root, file));
+        const missing = (await api(`/spec?id=${feature}`)).assignments.imports[0];
+        assert.equal(missing.available, false);
+        assert.equal(missing.verified, false);
+    });
+
+    it('does not stage an HVE import over an existing APM setup', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put('apm.yaml', 'name: existing-project\n');
+        const { api } = await serve(t, f.root);
+        assert.equal((await api(`/spec?id=${feature}`)).canImportHve, false);
+        const result = await api('/workflow/preview', { operation: 'agent-apm-import', id: `feature:${feature}`, feature }, 409);
+        assert.match(result.error, /existing APM setup.*apm\.yaml/);
+        assert.equal(readFileSync(join(f.root, 'apm.yaml'), 'utf8'), 'name: existing-project\n');
+        assert.equal(existsSync(join(f.root, 'apm.lock.yaml')), false);
+    });
+
+    it('imports only the reviewed pinned HVE files and refuses a concurrent profile', {
+        skip: process.env.SPECKIT_CANVAS_TEST_APM !== '1', timeout: 90_000,
+    }, async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const profile = '.github/agents/functional-code-review.agent.md';
+        const paths = ['apm.yml', 'apm.lock.yaml', profile];
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'agent-apm-import', id: `feature:${feature}`, feature };
+        const before = await api(`/spec?id=${feature}`);
+        assert.equal(before.assignments, null);
+        assert.equal(before.canImportHve, true);
+        const preview = await api('/workflow/preview', request);
+        assert.deepEqual(preview.paths, paths);
+        assert.deepEqual(preview.documentChanges.map(doc => [doc.path, doc.before]), paths.map(path => [path, null]));
+        assert.match(preview.documentChanges[1].after, /resolved_commit: e69486a5f809ede45c63c0a31358c12912bd5168/);
+        assert.ok(paths.every(path => !existsSync(join(f.root, path))));
+        f.put(profile, 'A concurrent profile');
+        await api('/workflow/apply', { id: preview.id }, 409);
+        assert.equal(readFileSync(join(f.root, profile), 'utf8'), 'A concurrent profile');
+        assert.equal(existsSync(join(f.root, 'apm.lock.yaml')), false);
+        rmSync(join(f.root, profile));
+        const confirmed = await api('/workflow/preview', request);
+        await api('/workflow/apply', { id: confirmed.id });
+        for (const { path, after } of confirmed.documentChanges) assert.equal(readFileSync(join(f.root, path), 'utf8'), after);
+        for (const path of ['apm_modules', '.apm-local', '.gitignore', '.github/hooks', '.github/mcp.json', `${feature}/agent-assignments.yml`]) {
+            assert.equal(existsSync(join(f.root, path)), false, path);
+        }
+        const detail = await api(`/spec?id=${feature}`);
+        assert.equal(detail.canImportHve, false);
+        assert.deepEqual(detail.assignments.imports.map(({ harness, verified, assignable }) => [harness, verified, assignable]),
+            [['Copilot', true, false]]);
+    });
+
     it('shows every requested participant with distinct roles, provenance and artifact lanes', t => {
         const { graph, install } = fixture(t);
         for (const id of ['intake', 'preview', 'wireframe', 'figma', 'figma-starter', 'illustrate', 'data-model-diagram']) install(id);
         const result = graph();
         const byId = new Map(result.nodes.map(node => [node.id, node]));
         for (const id of ['companion', 'pdac', 'pdac-product', 'charter', 'roadmap', 'spec-status', 'okr', 'prespec', 'adrkit', 'epic',
-            'ghp', 'project', 'figma-starter', 'figma', 'intake', 'preview', 'wireframe', 'illustrate', 'data-model-diagram', 'docguard']) {
+            'ghp', 'project', 'figma-starter', 'figma', 'intake', 'preview', 'wireframe', 'illustrate', 'data-model-diagram', 'agent-assign', 'docguard']) {
             const node = byId.get(`extension:${id}`);
             assert.ok(node.source && node.phase && node.authority && node.inputs.length && node.outputs.length, id);
             assert.ok(result.edges.some(edge => edge.target === node.id && edge.source === node.stage));
@@ -1345,6 +1605,90 @@ describe('workflow previews and confirmed changes', () => {
         assert.deepEqual(writes, [{ issue: 'issue-12', label: 'shipped' }, { issue: 'issue-13', label: 'released' }]);
     });
 
+    it('routes guided inputs and verdicts to nested checkpoints without authorizing the branch write', async t => {
+        const f = fixture(t);
+        f.install('ghp');
+        const evidence = 'specs/001-exports/spec.md';
+        const original = '# Feature Specification: Export board\n\nReview the release.';
+        f.put(evidence, original);
+        const definition = guidedDefinition(evidence);
+        const [review, label] = definition.steps;
+        const gate = (id, on_reject = 'abort') => ({ ...review, id, verdict_input: id, on_reject });
+        const branch = { id: 'release-path', type: 'if', condition: "{{ inputs.intake == 'approve' }}",
+            then: [review, label], else: [gate('rework')] };
+        const route = { id: 'choose-track', type: 'if', condition: "{{ inputs.track == 'with-label' }}",
+            then: [branch], else: [gate('manual')] };
+        Object.assign(definition.inputs, { track: { type: 'string', required: true, enum: ['with-label', 'review-only'] },
+            intake: { type: 'string' }, manual: { type: 'string' }, rework: { type: 'string' }, final: { type: 'string' } });
+        definition.steps = [gate('intake', 'skip'), route, gate('final')];
+        const source = '.specify/workflows/guided/workflow.yml';
+        f.put(source, definition);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { guided: { enabled: true } } });
+        const writes = [];
+        const issue = { id: 'issue-12', url: 'https://github.com/acme/app/issues/12', title: 'Release',
+            labels: { nodes: [], pageInfo: { hasNextPage: false } } };
+        const options = {
+            workflowRunStorage: fixture(t).root,
+            send: () => assert.fail('Unexpected agent dispatch'),
+            workflowCli: () => assert.fail('Unexpected native workflow execution'),
+            workflowGitHub: createGitHubChanges(async (_query, vars, mutation) => {
+                if (!mutation) return { viewer: { login: 'test-user' }, repository: { issue, label: { name: 'shipped', id: 'label' } } };
+                writes.push(vars);
+                return { addLabelsToLabelable: { labelable: { id: vars.issue, labels: { nodes: [{ id: vars.label }] } } } };
+            }),
+        };
+        let { api } = await serve(t, f.root, options);
+        const id = 'workflow:guided', writer = 'extension:ghp';
+        const node = graph => graph.nodes.find(item => item.id === id);
+        const preview = (operation, data, status) => api('/workflow/preview', { operation, id, ...data }, status);
+        const confirm = proposal => api('/workflow/apply', { id: proposal.id });
+        await preview('guided-start', {}, 400);
+        for (const [track, verdict, expectedStep] of [['review-only', 'approve', 'manual'],
+            ['with-label', 'reject', 'rework'], ['with-label', 'approve', review.id]]) {
+            const startInputs = [{ name: 'track', value: track }];
+            const start = await preview('guided-start', { inputs: { track } });
+            assert.equal(start.guidedChange.nextStep, 'intake');
+            assert.deepEqual(start.guidedChange.steps, []);
+            assert.deepEqual(start.reviewChange.startInputs, startInputs);
+            const runId = node((await confirm(start)).graph).guidedRun.id;
+            const decide = (gate, verdict = 'approve', status) => preview('guided-verdict', { runId, gate, verdict }, status);
+            const write = (gate = label.id, status) => preview('guided-label', { runId, writer, gate }, status);
+            await preview('guided-verdict', { runId, gate: 'intake', verdict, inputs: { track: 'with-label' } }, 400);
+            const selected = await decide('intake', verdict);
+            assert.equal(selected.guidedChange.nextStep, expectedStep);
+            await confirm(selected);
+            ({ api } = await serve(t, f.root, options));
+            const saved = node(await api('/workflow')).guidedRun;
+            assert.equal(saved.step, expectedStep);
+            assert.deepEqual(saved.startInputs, startInputs);
+            assert.deepEqual(saved.decisions.map(({ step, verdict, evidence }) => ({ step, verdict, evidence })), [
+                { step: 'intake', verdict, evidence: { path: evidence, digest: createHash('sha256').update(original).digest('hex') } },
+            ]);
+            await decide('intake', 'approve', 409);
+            await write(label.id, 409);
+            await api('/workflow/preview', { operation: 'workflow-issue-label', id: `${id}:${route.id}:${branch.id}:${label.id}`, writer }, 400);
+            const decision = await confirm(await decide(expectedStep));
+            assert.deepEqual(writes, []);
+            if (expectedStep === review.id) {
+                assert.equal(node(decision.graph).guidedRun.step, label.id);
+                await preview('guided-label', { runId, writer, gate: label.id, inputs: { track: 'with-label' } }, 400);
+                await write('wrong-step', 409);
+                const proposal = await write();
+                assert.equal(proposal.externalChange.target, issue.url);
+                assert.equal(proposal.guidedChange.nextStep, 'final');
+                assert.deepEqual(writes, []);
+                await confirm(proposal);
+            }
+            assert.equal(node(await api('/workflow')).guidedRun.step, 'final');
+            assert.equal((await confirm(await decide('final'))).guidedOutcome, 'completed');
+        }
+        assert.deepEqual(writes, [{ issue: 'issue-12', label: 'label' }]);
+        assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
+        f.put(source, { ...definition, steps: [definition.steps[0], { ...route, else: [label] }] });
+        assert.equal(node(await api('/workflow')).canRunGuided, false);
+        await preview('guided-start', {}, 400);
+    });
+
     it('previews new parallel-hook advisories without blocking a valid change', async t => {
         const f = fixture(t);
         f.install('git', { command: { name: 'speckit.git.validate' } });
@@ -2147,6 +2491,173 @@ describe('workflow previews and confirmed changes', () => {
         await reopened('/workflow/preview', { operation: 'workflow-review-start', id }, 400);
     });
 
+    it('previews verdict-dependent review gates and resumes the chosen branch with released Spec Kit', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 90_000,
+    }, async t => {
+        const f = fixture(t);
+        const storage = fixture(t).root;
+        const id = 'workflow:branched-review';
+        const path = '.specify/workflows/branched-review/workflow.yml';
+        const gate = (id, on_reject = 'abort') => ({ id, type: 'gate', message: `Review ${id}.`, verdict_input: id, on_reject });
+        const branch = { id: 'classify', type: 'if', condition: "{{ inputs.intake == 'approve' }}",
+            then: [{ id: 'confirm-ready', type: 'if', condition: true, then: [gate('ready')] }], else: [gate('rework')] };
+        const definition = {
+            workflow: { id: 'branched-review', name: 'Branched review', version: '1.0.0' },
+            inputs: Object.fromEntries(['intake', 'ready', 'rework', 'final'].map(name => [name, { type: 'string', required: false }])),
+            steps: [gate('intake', 'skip'), branch, gate('final')],
+        };
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { 'branched-review': { enabled: true } } });
+        f.put(path, definition);
+        const config = { workflowRunStorage: storage, send: () => assert.fail('Unexpected agent dispatch'),
+            workflowCli: (root, args, probe, options) => {
+                if (!probe) {
+                    assert.notEqual(root, f.root);
+                    assert.equal(existsSync(join(root, '.specify/workflows/steps')), false);
+                }
+                return callSpecKit(root, args, probe, options);
+            } };
+        f.put('.specify/workflows/steps/unused/step.yml', { step: { type_key: 'unused' } });
+        let { api } = await serve(t, f.root, config);
+        async function preview(params) { return api('/workflow/preview', { id, ...params }); }
+        async function confirm(proposal) { return (await api('/workflow/apply', { id: proposal.id })).workflowOutcome; }
+        for (const [verdict, expectedStep] of [['approve', 'ready'], ['reject', 'rework']]) {
+            const start = await preview({ operation: 'workflow-review-start' });
+            assert.equal(start.reviewChange.nextGate, 'intake');
+            const initial = await confirm(start);
+            assert.equal(initial.step, 'intake');
+            const resume = (gate, verdict) => preview({ operation: 'workflow-review-resume', runId: initial.id, gate, verdict });
+            const choice = await resume('intake', verdict);
+            assert.equal(choice.reviewChange.nextGate, expectedStep);
+            assert.equal((await confirm(choice)).step, expectedStep);
+            ({ api } = await serve(t, f.root, config));
+            const node = (await api('/workflow')).nodes.find(node => node.id === id);
+            assert.equal(node.isolatedRun.step, expectedStep);
+            assert.equal(node.isolatedRun.resumable, true);
+            assert.equal((await confirm(await resume(expectedStep, 'approve'))).step, 'final');
+            assert.equal((await confirm(await resume('final', 'approve'))).status, 'completed');
+        }
+        assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
+        await api('/workflow/preview', { operation: 'workflow-review-configure', id, gate: 'ready' }, 400);
+        for (const unsafeBranch of [
+            { ...branch, else: [{ id: 'unreviewed', type: 'prompt', prompt: 'Not a gate' }] },
+            { ...branch, condition: "{{ inputs.final == 'approve' }}" },
+            { ...branch, condition: "{{ inputs.intake == 'approve' or true }}" },
+            { ...branch, else: [gate('ready')] },
+        ]) {
+            f.put(path, { ...definition, steps: [definition.steps[0], unsafeBranch, definition.steps[2]] });
+            assert.equal((await api('/workflow')).nodes.find(node => node.id === id).canRunReview, false);
+            await api('/workflow/preview', { id, operation: 'workflow-review-start' }, 400);
+        }
+    });
+
+    it('installs only a reviewed disabled core workflow from an offline bundle', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 90_000,
+    }, async t => {
+        const f = fixture(t);
+        const source = 'bundles/assess/bundle.yml';
+        const definition = '.specify/workflows/assess/workflow.yml';
+        const registry = '.specify/workflows/workflow-registry.json';
+        const records = '.specify/bundle-records.json';
+        const other = { version: '2.0.0', enabled: false };
+        const baseline = { schema_version: '1.0', workflows: { other } };
+        f.put(registry, baseline);
+        f.put('.specify/workflows/other/workflow.yml', { workflow: { id: 'other', version: '2.0.0' },
+            steps: [{ id: 'review', type: 'gate', message: 'A separate workflow.' }] });
+        const manifest = { schema_version: '1.0',
+            bundle: { id: 'assess-review', name: 'Assessment review', version: '1.0.0', role: 'workflow',
+                description: 'One offline workflow', author: 'Fixture', license: 'MIT' },
+            requires: { speckit_version: '>=1.4.1' }, provides: { workflows: [{ id: 'assess', version: '1.0.0' }] } };
+        f.put(source, manifest);
+        const { api } = await serve(t, f.root);
+        const request = { operation: 'bundle-install-core-workflow', source };
+        const preview = await api('/workflow/preview', request);
+        assert.ok(preview.id, JSON.stringify(preview.findings));
+        assert.deepEqual(new Set(preview.paths), new Set([definition, registry, records]));
+        assert.equal(preview.diff.nodes.added.find(node => node.id === 'workflow:assess').state, 'disabled');
+        assert.equal(existsSync(join(f.root, definition)), false);
+        assert.equal(existsSync(join(f.root, records)), false);
+        f.put(source, { ...manifest, bundle: { ...manifest.bundle, description: 'Updated bundle' } });
+        await api('/workflow/apply', { id: preview.id }, 409);
+        assert.equal(existsSync(join(f.root, definition)), false);
+        const reviewed = await api('/workflow/preview', request);
+        const result = await api('/workflow/apply', { id: reviewed.id });
+        const node = result.graph.nodes.find(node => node.id === 'workflow:assess');
+        assert.equal(node.state, 'disabled');
+        assert.equal(node.origin, 'specify-core:1.4.1/assess');
+        const read = path => readFileSync(join(f.root, path), 'utf8');
+        for (const change of reviewed.documentChanges) assert.equal(read(change.path), change.after);
+        assert.deepEqual(JSON.parse(read(registry)).workflows.other, other);
+        assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
+        await api('/workflow/preview', request, 400);
+        f.put(source, { ...manifest, provides: { workflows: [{ id: 'bugfix', version: '1.0.1', source: './workflow.yml' }] } });
+        await api('/workflow/preview', request, 400);
+        for (const [id, version] of [['bugfix', '1.0.1'], ['speckit', '1.0.2']]) {
+            f.put(source, { ...manifest, bundle: { ...manifest.bundle, id: `${id}-only` }, provides: { workflows: [{ id, version }] } });
+            const prepared = await api('/workflow/preview', request);
+            assert.ok(prepared.id, JSON.stringify(prepared.findings));
+            const applied = await api('/workflow/apply', { id: prepared.id });
+            assert.equal(applied.graph.nodes.find(node => node.id === `workflow:${id}`).state, 'disabled');
+        }
+    });
+
+    it('binds declared routing choices to the exact isolated checkpoint with released Spec Kit', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 90_000,
+    }, async t => {
+        const { f, id, path, definition, evidence } = routingFixture(t);
+        const storage = fixture(t).root;
+        const executions = [];
+        const options = { workflowRunStorage: storage, send: () => assert.fail('Unexpected agent dispatch'),
+            workflowCli: (root, args, probe, flags) => {
+                if (!probe) {
+                    assert.notEqual(root, f.root);
+                    executions.push(args);
+                }
+                return callSpecKit(root, args, probe, flags);
+            } };
+        let { api } = await serve(t, f.root, options);
+        const start = (inputs, status) => api('/workflow/preview', { operation: 'workflow-review-start', id, inputs }, status);
+        const confirm = (proposal, status) => api('/workflow/apply', { id: proposal.id }, status);
+        for (const invalid of [{}, { track: 'unlisted' }, { track: 'standard', standard_verdict: 'approve' }]) await start(invalid, 400);
+        const stale = await start({ track: 'extended' });
+        assert.equal(stale.reviewChange.nextGate, 'extended');
+        assert.deepEqual(stale.reviewChange.startInputs, [{ name: 'track', value: 'extended' }, { name: 'detail', value: 'brief' }]);
+        assert.equal(stale.reviewChange.artifact.path, evidence);
+        f.put(path, { ...definition, inputs: { ...definition.inputs, detail: { ...definition.inputs.detail, default: 'full' } } });
+        await confirm(stale, 409);
+        assert.deepEqual(executions, []);
+        f.put(path, definition);
+        for (const [track, verdict, detail, next] of [['extended', 'approve', 'full', 'final'], ['standard', 'reject', 'brief', null]]) {
+            const proposal = await start({ track, detail });
+            const { workflowOutcome: result } = await confirm(proposal);
+            assert.equal(result.step, track);
+            const savedInputs = [{ name: 'track', value: track }, { name: 'detail', value: detail }];
+            ({ api } = await serve(t, f.root, options));
+            const node = (await api('/workflow')).nodes.find(node => node.id === id);
+            assert.deepEqual(node.isolatedRun.startInputs, savedInputs);
+            assert.equal(node.isolatedRun.resumable, true);
+            const resume = { operation: 'workflow-review-resume', id, runId: result.id, gate: track, verdict };
+            await api('/workflow/preview', { ...resume, inputs: { track: 'standard' } }, 400);
+            const decision = await api('/workflow/preview', resume);
+            assert.deepEqual(decision.reviewChange.startInputs, savedInputs);
+            assert.equal(decision.reviewChange.nextGate, next);
+            const { workflowOutcome: resumed } = await confirm(decision);
+            assert.equal(resumed.id, result.id);
+            assert.equal(resumed.status, next ? 'paused' : 'aborted');
+            f.put(evidence, '# Feature Specification: Export board\n\nThis copy changed after review.');
+            const recorded = (await api('/workflow')).nodes.find(node => node.id === id).isolatedRun.decisions;
+            assert.deepEqual(recorded.map(({ step, verdict, evidence }) => ({ step, verdict, evidence })), [
+                { step: track, verdict, evidence: { path: evidence, digest: decision.reviewChange.artifact.digest } },
+            ]);
+            if (next) {
+                const final = await api('/workflow/preview', { ...resume, gate: next });
+                assert.equal((await confirm(final)).workflowOutcome.status, 'completed');
+            }
+        }
+        assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
+        f.put(path, { ...definition, inputs: { ...definition.inputs, track: { type: 'string', required: true } } });
+        assert.equal((await api('/workflow')).nodes.find(node => node.id === id).canRunReview, false);
+    });
+
     it('reorders and removes hooks from the active Companion recipe without touching another anchor or generated files', { skip: !process.env.SPECKIT_CANVAS_TEST_CLI }, async t => {
         const f = fixture(t);
         const recipe = '.specify/companion/workflows/review.yml';
@@ -2362,9 +2873,477 @@ describe('workflow previews and confirmed changes', () => {
         await api('/run', { spec: 'specs/001-exports', command: 'tasks' });
         assert.equal(sent[1], '/speckit.tasks specs/001-exports');
     });
+
+    it('requires Preview inputs and prepares a fidelity-first dispatch for the chosen feature', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const output = `${feature}/preview/wireflow.html`;
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put('specs/002-other/spec.md', '# Not the selected feature');
+        f.install('preview', { manifest: { extension: { version: '1.3.0' } }, command: { name: 'speckit.preview' } });
+        f.registry.preview.version = '1.3.0';
+        f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+        f.put('.specify/extensions/preview/templates/preview/wireflow.html', '<main></main>');
+        const sent = [];
+        const { api } = await serve(t, f.root, { send: async prompt => { sent.push(prompt); return true; }, checkoutWriter: null });
+        const request = { operation: 'run', id: 'extension:preview', command: 'speckit.preview',
+            feature, fidelity: 'high', intent: 'Focus on empty states.' };
+        assert.match((await api('/workflow/preview', request, 400)).error, /requires .*uc\.md/);
+        f.put(`${feature}/uc.md`, '# Export use case');
+        await api('/workflow/preview', { ...request, fidelity: 'unsupported' }, 400);
+        const proposal = await api('/workflow/preview', request);
+        assert.equal(proposal.invocation, '/speckit.preview high Focus on empty states.');
+        assert.deepEqual(proposal.paths, [output]);
+        assert.ok(proposal.readPaths.includes(`${feature}/uc.md`));
+        assert.deepEqual(sent, []);
+        await api('/workflow/apply', { id: proposal.id });
+        assert.equal(sent.length, 1);
+        assert.match(sent[0], /set SPECIFY_FEATURE to "001-exports"/);
+        assert.equal(existsSync(join(f.root, output)), false);
+    });
 });
 
 describe('workflow in the browser', () => {
+    it('previews the core bundle files before installing the disabled workflow in Management', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
+    }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const source = 'bundles/assess/bundle.yml';
+        const definition = '.specify/workflows/assess/workflow.yml';
+        f.put(source, { schema_version: '1.0',
+            bundle: { id: 'assessment', name: 'Assessment', version: '1.0.0', role: 'workflow',
+                description: 'One offline workflow', author: 'Fixture', license: 'MIT' },
+            requires: { speckit_version: '>=1.4.1' }, provides: { workflows: [{ id: 'assess', version: '1.0.0' }] } });
+        const { url, api } = await serve(t, f.root);
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Spec Kit Management' }).click();
+        await page.getByLabel('Filter by category').selectOption('Bundles');
+        await page.getByRole('button', { name: 'Install core workflow bundle…' }).click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByLabel('Path to bundle.yml').fill(source);
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByRole('heading', { name: 'Install assessment 1.0.0 with assess disabled' }).waitFor();
+        await dialog.getByRole('heading', { name: definition, exact: true }).waitFor();
+        assert.equal(existsSync(join(f.root, definition)), false);
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByRole('table', { name: 'Participants' }).getByRole('button', { name: 'Inspect assessment', exact: true }).waitFor();
+        assert.equal((await api('/workflow')).nodes.find(node => node.id === 'workflow:assess').state, 'disabled');
+    });
+
+    it('collects isolated workflow inputs from Workflow & runs and records them on reload', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
+    }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const { f } = routingFixture(t);
+        const { url } = await serve(t, f.root, { workflowRunStorage: fixture(t).root });
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Start isolated review…' }).click();
+        const dialog = page.getByRole('dialog');
+        const track = dialog.getByLabel('track', { exact: true });
+        assert.equal(await track.inputValue(), '');
+        assert.equal(await dialog.getByLabel('detail', { exact: true }).inputValue(), 'brief');
+        await track.selectOption('extended');
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByRole('heading', { name: 'Run inputs', exact: true }).waitFor();
+        await dialog.getByText('Pause at extended', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByText('Isolated review run: paused.', { exact: true }).waitFor();
+        await page.reload();
+        const runs = page.getByRole('button', { name: 'Workflow & runs', exact: true });
+        if (await runs.getAttribute('aria-pressed') !== 'true') await runs.click();
+        await page.getByLabel('Run record', { exact: true }).selectOption('isolated');
+        await page.getByRole('heading', { name: 'Recorded start inputs' }).waitFor();
+        assert.match(await page.getByRole('heading', { name: 'Recorded start inputs' }).locator('..').innerText(), /track\s+extended\s+detail\s+brief/);
+        await page.getByRole('button', { name: 'Review verdict…' }).click();
+        await dialog.getByLabel('Verdict').selectOption('approve');
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByText('Complete the run', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByText('Isolated review run: completed.', { exact: true }).waitFor();
+        const decisions = page.getByRole('list', { name: 'Recorded gate decisions' });
+        await decisions.getByText('Approved', { exact: true }).waitFor();
+        assert.match(await decisions.innerText(), /specs\/001-exports\/spec\.md\s+SHA-256 [a-f0-9]{64}/);
+    });
+
+    it('shows ordered sequence evidence and falls back to source for a conditional sequence', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const artifact = `${feature}/diagrams/sequence.mmd`;
+        f.put(`${feature}/spec.md`, '# Feature Specification: Export board');
+        f.put(artifact, 'sequenceDiagram\nparticipant A as Requester\nparticipant B as Worker\nA->>B: Queue <b>export</b>\nB-->>A: Accepted');
+        const { url, focus } = await serve(t, f.root);
+        focus('001-exports');
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        await page.goto(url);
+        await page.getByRole('tab', { name: /^Architecture/ }).click();
+        const messages = page.getByRole('list', { name: 'Messages in sequence order' }).getByRole('listitem');
+        await messages.nth(1).waitFor();
+        assert.match(await messages.nth(0).innerText(), /Requester.*Worker.*Queue <b>export<\/b>/s);
+        assert.match(await messages.nth(1).innerText(), /Worker.*Requester.*Accepted.*dashed arrow/s);
+        assert.equal(await messages.locator('b').count(), 0);
+        f.put(artifact, 'sequenceDiagram\nA->>B: Queue\nalt accepted\nB-->>A: Accepted\nend');
+        await page.getByText('A structured preview is not available for this Mermaid source.').waitFor();
+        assert.equal(await messages.count(), 0);
+        await page.getByText(/alt accepted/).waitFor();
+    });
+
+    it('copies a native start command without starting a run or filling its inputs', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { review: { enabled: true }, retired: { enabled: false } } });
+        for (const id of ['review', 'retired']) f.put(`.specify/workflows/${id}/workflow.yml`, {
+            workflow: { id, name: id === 'review' ? 'Review release' : 'Retired review' },
+            inputs: { release: { type: 'string', required: true } },
+            steps: [{ id: 'check', type: 'gate', message: 'Inspect the release.' }],
+        });
+        const { url } = await serve(t, f.root);
+        const page = await browser.newPage();
+        page.setDefaultTimeout(10_000);
+        await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText: async text => { window.testCopied = text; } },
+        }));
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Review release', exact: true }).click();
+        await page.getByText(/^Declared inputs: release\./).waitFor();
+        await page.getByRole('button', { name: 'Copy start command' }).click();
+        await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow run review');
+        assert.equal(existsSync(join(f.root, '.specify/workflows/runs')), false);
+        await page.getByRole('button', { name: 'Retired review', exact: true }).click();
+        assert.equal(await page.getByRole('button', { name: 'Copy start command' }).count(), 0);
+    });
+
+    it('shows a static Illustrate drawing without loading active HTML or SVG resources', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Feature Specification: Export board');
+        f.put(`${feature}/diagrams/export.html`, `
+            <script>document.body.dataset.diagramRan = 'yes'</script>
+            <img src="/diagram-external-html">
+            <svg viewBox="0 0 640 200" onload="document.body.dataset.diagramRan = 'yes'">
+                <title>Export request path</title><desc>Request goes to the worker.</desc>
+                <defs><marker id="arrow" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 1 L7 4 L0 7"/></marker></defs>
+                <style>@import url('/diagram-external-css')</style>
+                <rect x="20" y="20" width="70" height="36" fill="#cabffd" />
+                <line x1="20" y1="70" x2="90" y2="70" stroke="black" marker-end="url(#arrow)"/>
+                <path d="M0 1 L7 4" fill="url(/diagram-external-paint#foo)"/>
+                <foreignObject><p>Not a drawing</p><svg viewBox="0 0 40 40"><circle r="10"/></svg></foreignObject>
+                <image href="/diagram-external-svg"/><animate attributeName="x" values="0;10"/>
+                <text x="20" y="40">Browser</text>
+            </svg>
+        `);
+        const { url, focus } = await serve(t, f.root);
+        focus('001-exports');
+        const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        const requests = [];
+        page.on('request', request => { if (request.url().includes('/diagram-external-')) requests.push(request.url()); });
+        await page.goto(url);
+        await page.getByRole('tab', { name: /^Architecture/ }).click();
+        const image = page.getByRole('img', { name: 'Export request path' });
+        await image.waitFor();
+        assert.deepEqual(await image.evaluate(async img => { await img.decode(); return [img.naturalWidth, img.naturalHeight]; }), [640, 200]);
+        const svg = decodeURIComponent((await image.getAttribute('src')).split(',')[1] ?? '');
+        assert.match(svg, /marker-end="url\(#arrow\)"/);
+        assert.match(svg, />Browser<\/text>/);
+        assert.doesNotMatch(svg, /diagram-external|onload|<foreignObject|<animate|<style/);
+        assert.equal(await page.locator('.sb-diagram-preview img').count(), 1);
+        await page.getByText('Request goes to the worker.', { exact: true }).waitFor();
+        await page.setViewportSize({ width: 420, height: 900 });
+        assert.ok((await image.boundingBox()).width <= 420);
+        await page.getByText('HTML source', { exact: true }).click();
+        await page.getByText(/<foreignObject>.*Not a drawing/).waitFor();
+        assert.equal(await page.evaluate(() => document.body.dataset.diagramRan), undefined);
+        assert.deepEqual(requests, []);
+    });
+
+    it('reviews an HVE import in Tasks and shows the verified profile after confirmation', {
+        skip: process.env.SPECKIT_CANVAS_TEST_APM !== '1', timeout: 120_000,
+    }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        f.put('specs/001-exports/spec.md', '# Feature Specification: Export board');
+        f.put('specs/001-exports/tasks.md', '# Tasks\n\n- [ ] T001 Build export\n');
+        const { url, focus } = await serve(t, f.root);
+        focus('001-exports');
+        const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
+        page.setDefaultTimeout(30_000);
+        await page.goto(url);
+        await page.getByRole('tab', { name: /^Tasks/ }).click();
+        await page.getByRole('button', { name: 'Preview HVE Core import…' }).click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByRole('heading', { name: 'Import the HVE Core functional code reviewer' }).waitFor();
+        assert.equal(existsSync(join(f.root, 'apm.lock.yaml')), false);
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByRole('button', { name: 'See agent assignments' }).click();
+        await page.getByText('HVE Core imports (1)', { exact: true }).click();
+        await page.getByText('Verified · inspect only', { exact: true }).waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Assign a task…' }).count(), 0);
+    });
+
+    it('separates native checkpoints from current steps and renders extension tabs without executing prototypes', { timeout: 45_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export\n\n## Figma Design Context\nReview this mockup.');
+        f.put(`${feature}/plan.md`, '# Plan\n\nReview the model before implementing.');
+        f.put(`${feature}/data-model-diagram.mmd`, `erDiagram
+            Export {
+                UUID_string id PK
+                Record_array records "exported records"
+            }
+            Export ||--o{ Record : "contains <strong>records</strong>"`);
+        f.put(`${feature}/historical-review.md`, '# Evidence referenced by the previous workflow definition.');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n- [ ] T003 Add an export check\n');
+        f.put(`${feature}/preview/wireflow.html`, `
+            <h2>Export prototype</h2>
+            <details onclick="document.body.dataset.prototypeRan = 'yes'"><summary>Empty state</summary><p>No exports yet.</p></details>
+            <table><caption>Export states</caption><tr><th>State</th><td>Ready</td></tr></table>
+            <a href="/prototype-fixture-link">Export example</a>
+            <img src="/prototype-fixture.png" alt="Untrusted image">
+            <link rel="stylesheet" href="/prototype-fixture.css">
+            <script>document.body.dataset.prototypeRan = "yes"</script>
+        `);
+        f.put(`${feature}/preview/export-details.html`, '<p>Initial export details</p>');
+        f.install('reporter', { manifest: { 'x-companion': { specViews: [
+            { phase: 'Prototypes', path: 'preview/wireflow.html', documents: ['tasks'] },
+        ] } } });
+        f.install('preview', { manifest: { extension: { version: '1.3.0' } }, command: { name: 'speckit.preview' } });
+        f.registry.preview.version = '1.3.0';
+        f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+        f.put(`${feature}/uc.md`, '# Export use case');
+        f.put('.specify/extensions/preview/templates/preview/wireflow.html', '<main></main>');
+        installAgentAssign(f, feature);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { review: { enabled: true } } });
+        f.put('.specify/workflows/review/workflow.yml', { workflow: { id: 'review', name: 'Release review', version: '1.0.0' },
+            steps: [{ id: 'check', type: 'fan-out', max_concurrency: 3, items: '[]', step: { id: 'item', type: 'prompt', agent: 'reviewer' } },
+                { id: 'gather', type: 'fan-in', wait_for: ['check'] },
+                { id: 'approve', type: 'gate', message: 'Inspect the release.', show_file: `${feature}/spec.md` }] });
+        f.put(POLICY_PATH, { version: 1, decisions: [], runAnnotations: {
+            'workflow:review:check:item': 'validation', 'workflow:review:approve': 'acceptance',
+        } });
+        f.put('.specify/workflows/runs/native-1/state.json', { run_id: 'native-1', workflow_id: 'review', status: 'paused', updated_at: '2026-01-02T00:00:00Z',
+            current_step_id: 'old-approval', step_results: { 'check[0]:item': { status: 'completed' },
+                'first-approval': { type: 'gate', status: 'completed', output: { choice: 'approve', show_file: `${feature}/data-model-diagram.mmd` } },
+                'first-rejection': { type: 'gate', status: 'completed', output: { choice: 'reject', on_reject: 'continue' } },
+                'old-approval': { type: 'gate', status: 'paused', output: { show_file: `${feature}/historical-review.md` } } } });
+        const { url, focus } = await serve(t, f.root);
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        const artifactRequests = [];
+        page.on('request', request => { if (request.url().includes('/prototype-fixture')) artifactRequests.push(request.url()); });
+        await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText: async text => { window.testCopied = text; } },
+        }));
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByText('Native gate needs input', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Inspect checkpoint' }).click();
+        await page.getByText('check[0]:item', { exact: true }).waitFor();
+        await page.getByText('Human review gate · Approved', { exact: true }).waitFor();
+        const rejected = page.getByRole('listitem').filter({ hasText: 'first-rejection' });
+        await rejected.getByText('Human review gate · Rejected', { exact: true }).waitFor();
+        await rejected.getByText('Completed', { exact: true }).waitFor();
+        await page.getByText('The diagram is the current definition, not a reconstruction of this historical run.').waitFor();
+        await page.getByText('Up to 3 items run in parallel.').waitFor();
+        await page.getByText('Collects results from check.').waitFor();
+        await page.getByText('Validation check', { exact: true }).waitFor();
+        await page.getByText('Acceptance gate', { exact: true }).waitFor();
+        assert.equal(await page.getByRole('button', { name: /^resume|review verdict/i }).count(), 0);
+        await page.getByRole('button', { name: 'Copy resume command', exact: true }).click();
+        await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow resume native-1');
+        const record = page.getByLabel('Run record', { exact: true });
+        await record.selectOption({ label: 'Current definition' });
+        assert.equal(await page.getByRole('button', { name: 'Copy resume command', exact: true }).count(), 0);
+        await record.selectOption('native:native-1');
+        await page.getByRole('listitem').filter({ hasText: 'old-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
+        await page.getByRole('dialog').getByText(/Evidence referenced by the previous workflow definition/).waitFor();
+        await page.getByRole('dialog').getByText(/may have changed since that checkpoint/).waitFor();
+        await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+        await page.getByRole('listitem').filter({ hasText: 'first-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
+        await page.getByRole('dialog').getByText('0..*', { exact: true }).waitFor();
+        await page.getByRole('dialog').getByText(/may have changed since that checkpoint/).waitFor();
+        await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+        await page.getByRole('button', { name: 'Read definition evidence…' }).click();
+        await page.getByRole('dialog').getByText(/Review this mockup/).waitFor();
+        await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+        for (const width of [420, 1080]) {
+            await page.setViewportSize({ width, height: 900 });
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        }
+        await page.getByRole('button', { name: 'Specs & runs', exact: true }).click();
+        focus(feature);
+        await page.getByRole('tab', { name: 'Spec', exact: true }).click();
+        await page.getByText(/contains an embedded Figma section/).waitFor();
+        await page.setViewportSize({ width: 420, height: 900 });
+        await page.getByRole('tab', { name: /^Plan/ }).click();
+        await page.getByRole('button', { name: 'See data model evidence' }).click();
+        const relation = page.locator('.sb-model-edge');
+        await relation.getByText('0..*', { exact: true }).waitFor();
+        await page.getByText('contains <strong>records</strong> · Identifying', { exact: true }).waitFor();
+        await page.getByText('Export (2)', { exact: true }).click();
+        await page.getByRole('table', { name: 'Export fields' }).getByRole('cell', { name: 'Record_array' }).waitFor();
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        await page.getByText('Mermaid source', { exact: true }).click();
+        await page.locator('.sb-model-preview pre').filter({ hasText: 'erDiagram' }).waitFor();
+        await page.getByRole('tab', { name: /^Tasks/ }).click();
+        await page.getByRole('button', { name: 'See agent assignments' }).click();
+        await page.getByText('HVE Core imports (1)', { exact: true }).click();
+        await page.getByText('Verified · assignable', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Edit T001 assignment…' }).click();
+        await page.getByRole('dialog').getByLabel('Reason').fill('Review the export.');
+        await page.getByRole('dialog').getByRole('button', { name: 'Preview', exact: true }).click();
+        await page.getByRole('dialog').getByRole('heading', { name: 'Assign T001 to hve-review' }).waitFor();
+        await page.getByRole('dialog').getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByText('T001 · hve-review', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Assign a task…' }).click();
+        await page.getByRole('dialog').getByLabel('Task', { exact: true }).selectOption('T003');
+        await page.getByRole('dialog').getByLabel('Reason').fill('Review the export check.');
+        await page.getByRole('dialog').getByRole('button', { name: 'Preview', exact: true }).click();
+        await page.getByRole('dialog').getByRole('heading', { name: 'Assign T003 to hve-review' }).waitFor();
+        await page.getByRole('dialog').getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByText('T003 · hve-review', { exact: true }).waitFor();
+        await page.getByRole('tab', { name: /^Prototypes/ }).click();
+        const prototype = page.getByLabel('Prototypes artifact');
+        await page.getByText('Initial export details', { exact: true }).waitFor();
+        await page.getByRole('tab', { name: /^Tasks/ }).click();
+        await page.getByRole('button', { name: 'See prototypes evidence' }).click();
+        const outline = page.getByRole('region', { name: 'Structural preview' });
+        await outline.getByRole('heading', { name: 'Export prototype', exact: true }).waitFor();
+        await outline.getByRole('table', { name: 'Export states' }).getByRole('cell', { name: 'Ready' }).waitFor();
+        await page.getByText('Empty state', { exact: true }).click();
+        await page.getByText('No exports yet.', { exact: true }).waitFor();
+        assert.equal(await page.getByRole('link', { name: 'Export example' }).count(), 0);
+        await page.getByText('HTML source', { exact: true }).click();
+        await page.getByText(/<script>document\.body\.dataset\.prototypeRan/).waitFor();
+        await page.getByText(/Declared by reporter/).waitFor();
+        assert.equal(await page.evaluate(() => document.body.dataset.prototypeRan), undefined);
+        assert.deepEqual(artifactRequests, []);
+        await prototype.focus();
+        f.put(`${feature}/preview/wireflow.html`, '<p>Updated export details in place</p>');
+        await page.getByText('Updated export details in place', { exact: true }).waitFor();
+        assert.equal(await prototype.inputValue(), `${feature}/preview/wireflow.html`);
+        assert.equal(await prototype.evaluate(node => document.activeElement === node), true);
+        await page.getByRole('button', { name: 'Spec Kit Management' }).click();
+        await page.getByLabel('Filter by category').selectOption('Extensions');
+        await page.getByRole('button', { name: 'Inspect Preview', exact: true }).click();
+        await page.getByRole('button', { name: 'Preview speckit.preview…', exact: true }).click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByLabel('Feature', { exact: true }).selectOption(feature);
+        await dialog.getByLabel('Fidelity', { exact: true }).selectOption('mid');
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByText('/speckit.preview mid', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: 'Approve & dispatch' }).waitFor();
+    });
+
+    it('replays declared wireflow feedback without executing repository interactions', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Feature Specification: Export board');
+        f.put(`${feature}/preview/wireflow.html`, `
+            <form action="/prototype-fixture-submit">
+                <button data-preview-action data-preview-label="Export queued" onclick="document.body.dataset.prototypeRan = 'yes'">Queue export</button>
+                <button data-preview-action data-preview-target="#export-validation" data-preview-label="&lt;b&gt;Missing name&lt;/b&gt;">Validate export</button>
+                <button data-preview-action data-preview-target="body">Outside target</button>
+                <button data-preview-action data-preview-target="#duplicate">Ambiguous target</button>
+            </form>
+            <p data-preview-status>Awaiting an action</p>
+            <p id="export-validation">No validation yet</p>
+            <p id="duplicate">First duplicate</p><p id="duplicate">Second duplicate</p>
+        `);
+        const { url, focus } = await serve(t, f.root);
+        focus('001-exports');
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        const requests = [];
+        page.on('request', request => { if (request.url().includes('/prototype-fixture-submit')) requests.push(request.url()); });
+        await page.goto(url);
+        await page.getByRole('tab', { name: /^Prototypes/ }).click();
+        const outline = page.getByRole('region', { name: 'Structural preview' });
+        await outline.getByRole('button', { name: 'Queue export' }).press('Enter');
+        await outline.getByText('Export queued', { exact: true }).waitFor();
+        await outline.getByRole('button', { name: 'Validate export' }).click();
+        await outline.getByText('<b>Missing name</b>', { exact: true }).waitFor();
+        assert.deepEqual(await outline.getByRole('button').allTextContents(), ['Queue export', 'Validate export']);
+        assert.equal(await page.evaluate(() => document.body.dataset.prototypeRan), undefined);
+        assert.deepEqual(requests, []);
+    });
+
     it('browses and previews pinned workflows and bundles from the catalog inspector', { timeout: 45_000 }, async t => {
         let browser;
         try {
@@ -2520,7 +3499,13 @@ describe('workflow in the browser', () => {
         f.hooks({ after_tasks: [hook('git', { command: 'speckit.git.validate' })] });
         f.put('specs/001-exports/spec.md', '# Feature Specification: Export board\n\n## User Stories\n\nExport this board.');
         f.put('.specify/workflows/workflow-registry.json', { workflows: { review: { enabled: true }, publish: { enabled: true }, guided: { enabled: true } } });
-        f.put('.specify/workflows/guided/workflow.yml', guidedDefinition('specs/001-exports/spec.md'));
+        const guided = guidedDefinition('specs/001-exports/spec.md');
+        guided.inputs.intake = { type: 'string' };
+        guided.steps = [
+            { id: 'intake', type: 'gate', message: 'Choose the release path.', verdict_input: 'intake', on_reject: 'skip' },
+            { id: 'release-path', type: 'if', condition: "{{ inputs.intake == 'approve' }}", then: guided.steps },
+        ];
+        f.put('.specify/workflows/guided/workflow.yml', guided);
         f.put('.specify/workflows/publish/workflow.yml', {
             workflow: { id: 'publish', name: 'Publish', version: '1.0.0' },
             steps: [{ id: 'label-release', type: 'github', operation: 'add-label', target: 'issue', repository: 'acme/app', number: 12, label: 'shipped' }],
@@ -2688,10 +3673,12 @@ describe('workflow in the browser', () => {
         assert.deepEqual(executions, []);
         await dialog.getByRole('button', { name: 'Confirm change' }).click();
         await page.getByText('Isolated review run: paused.', { exact: true }).waitFor();
-        await inspector.getByRole('button', { name: 'Decide current gate…' }).click();
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Review verdict…' }).click();
         await dialog.getByLabel('Verdict').selectOption('approve');
         await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
         await dialog.getByRole('heading', { name: 'Record gate decision: review' }).waitFor();
+        await dialog.getByText('Complete the run', { exact: true }).waitFor();
         await dialog.getByRole('heading', { name: 'Review evidence' }).waitFor();
         await dialog.getByText('# Feature Specification: Export board ## User Stories Export this board.', { exact: true }).waitFor();
         assert.deepEqual(executions, [['workflow', 'run', 'review', '--json']]);
@@ -2699,6 +3686,7 @@ describe('workflow in the browser', () => {
         await page.getByText('Isolated review run: completed.', { exact: true }).waitFor();
         assert.deepEqual(executions.at(-1), ['workflow', 'resume', 'review-1', '--json', '--input', 'verdict=approve']);
         assert.deepEqual(sent, []);
+        await page.getByRole('button', { name: 'Spec Kit Management' }).click();
         await page.getByLabel('Filter by category').selectOption('Workflow steps');
         await page.getByRole('table', { name: 'Participants' }).getByRole('button', { name: 'Inspect label-release', exact: true }).click();
         await inspector.getByRole('button', { name: 'Review issue label…' }).click();
@@ -2716,15 +3704,25 @@ describe('workflow in the browser', () => {
         await inspector.getByRole('button', { name: 'Decide guided gate…' }).click();
         await dialog.getByLabel('Verdict').selectOption('approve');
         await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByText('Next checkpoint', { exact: true }).waitFor();
+        await dialog.getByText('review', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Installed workflows' }).getByRole('button', { name: 'Guided publish', exact: true }).click();
+        await page.locator('#workflow-runs .run-step[data-current="true"]').getByText('review', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Review verdict…', exact: true }).click();
+        await dialog.getByLabel('Verdict').selectOption('approve');
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
         await dialog.getByRole('heading', { name: 'Review evidence' }).waitFor();
         await dialog.getByRole('button', { name: 'Confirm change' }).click();
-        await inspector.getByRole('button', { name: 'Review guided issue label…' }).click();
+        await page.getByRole('button', { name: 'Review GitHub change…', exact: true }).click();
         await dialog.getByLabel('GitHub integration').selectOption('extension:ghp');
         await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
         assert.equal(writes.length, 1, 'The guided verdict must not write to GitHub');
         await dialog.getByText('shipped', { exact: true }).waitFor();
         await dialog.getByRole('button', { name: 'Apply GitHub change' }).click();
         await page.getByText('Guided run: completed.', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Spec Kit Management' }).click();
         assert.deepEqual(writes.at(-1), { issue: 'issue-12', label: 'label' });
 
         await page.getByLabel('Filter by category').selectOption('Constitution and Charter');
@@ -2796,6 +3794,7 @@ describe('workflow in the browser', () => {
             version: '1.4.1', default_integration: 'claude', installed_integrations: ['claude', 'copilot'],
         });
         await page.getByRole('button', { name: 'Validate workflow' }).click();
+        await page.locator('#workflow-runtime').filter({ hasText: /claude integration/ }).waitFor();
         await graph.locator('[data-workflow-item="native-events:copilot"]').press('Enter');
         const secondaryWarning = inspector.getByText(/hook entries remain.*empty copilot override/);
         await secondaryWarning.waitFor();
