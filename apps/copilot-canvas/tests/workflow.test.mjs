@@ -190,7 +190,29 @@ describe('graph from a Spec Kit repository', () => {
         assert.doesNotMatch(JSON.stringify(graph), /private-item/);
     });
 
-    it('projects native checkpoints without exposing run inputs or outputs and inventories only linked feature evidence', async t => {
+    it('projects the saved question from a released native gate checkpoint', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
+    }, async t => {
+        const f = fixture(t);
+        const id = 'native-gate';
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { [id]: { enabled: true } } });
+        f.put(`.specify/workflows/${id}/workflow.yml`, {
+            schema_version: '1.0',
+            workflow: { id, version: '1.0.0', name: 'Native gate' },
+            steps: [{ id: 'check', type: 'gate', message: 'Accept the draft?\nReview the acceptance criteria first.',
+                options: ['Approve draft', 'Reject'], on_reject: 'abort' }],
+        });
+        await callSpecKit(f.root, ['workflow', 'run', id], false, { workflowOutcome: true });
+        const { api } = await serve(t, f.root);
+        const graph = await api('/workflow');
+        const [run] = graph.nodes.find(node => node.id === `workflow:${id}`).nativeRuns;
+        assert.equal(run.status, 'paused');
+        assert.equal(run.gateWaiting, true);
+        assert.deepEqual(run.question, { message: 'Accept the draft?\nReview the acceptance criteria first.',
+            options: ['Approve draft', 'Reject'], onReject: 'abort' });
+    });
+
+    it('projects native checkpoint metadata without exposing other run inputs or outputs and inventories only linked feature evidence', async t => {
         const f = fixture(t);
         const feature = 'specs/001-exports';
         const proof = `${feature}/preview/wireflow.html`;
@@ -224,7 +246,9 @@ describe('graph from a Spec Kit repository', () => {
             f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'review', status, updated_at: `${date}T00:00:00Z`,
                 current_step_id: 'review', inputs: { token: 'private-test-input' },
                 step_results: { review: { status, output: { on_reject: 'abort', choice: status === 'completed' ? 'Approve' : null,
-                    show_file: status === 'completed' ? `${feature}/spec.md` : 'docs/adr/private-test-unlinked.md', token: 'private-test-output' } },
+                    show_file: status === 'completed' ? `${feature}/spec.md` : 'docs/adr/private-test-unlinked.md', token: 'private-test-output',
+                    message: status === 'completed' ? 'private-test-completed' : 'private-test-oversize'.repeat(100),
+                    options: status === 'completed' ? ['private-test-completed'] : ['private-test-control\x1b'] } },
                     unrelated: { type: 'command', status: 'completed', output: { show_file: `${feature}/spec.md` } },
                     prototype: { type: 'gate', status: 'completed', output: { show_file: proof } },
                     private: { type: 'gate', status: 'completed', output: { show_file: `${feature}/drafts/private-test-unlinked.html` } } } });
@@ -239,9 +263,11 @@ describe('graph from a Spec Kit repository', () => {
             { id: 'prototype', status: 'completed', gate: true, evidence: { feature: `feature:${feature}`, path: proof, featureArtifact: true } },
             { id: 'private', status: 'completed', gate: true }]);
         assert.equal(workflow.nativeRuns[0].gateWaiting, true);
+        assert.deepEqual(workflow.nativeRuns[0].question, { message: null, options: null, onReject: 'abort' });
+        assert.equal(workflow.nativeRuns[1].question, undefined);
         assert.equal(workflow.nativeRuns[1].steps[0].verdict, 'approve');
         assert.deepEqual(workflow.nativeRuns[1].steps[0].evidence, { feature: `feature:${feature}`, path: `${feature}/spec.md` });
-        assert.doesNotMatch(JSON.stringify(graph), /private-test-(?:input|output|unlinked)/);
+        assert.doesNotMatch(JSON.stringify(graph), /private-test-(?:input|output|unlinked|completed|oversize|control)/);
         const spec = await api(`/spec?id=${feature}`);
         assert.deepEqual(spec.figmaSections, ['spec']);
         assert.deepEqual(spec.documentHooks.tasks, [{ when: 'after', extension: 'reporter', command: 'speckit.reporter.run', enabled: false, optional: true }]);
@@ -3448,7 +3474,8 @@ describe('workflow in the browser', () => {
                 'check[0]:item': { status: 'completed' },
                 'first-approval': { type: 'gate', status: 'completed', output: { choice: 'approve', show_file: `${feature}/data-model-diagram.mmd` } },
                 'first-rejection': { type: 'gate', status: 'completed', output: { choice: 'reject', on_reject: 'continue' } },
-                'old-approval': { type: 'gate', status: 'paused', output: { show_file: `${feature}/historical-review.md` } } } });
+                'old-approval': { type: 'gate', status: 'paused', output: { show_file: `${feature}/historical-review.md`,
+                    message: 'Accept the <strong>previous design</strong>?', options: ['Accept design', 'Reject'], on_reject: 'retry' } } } });
         for (let day = 3; day <= 22; day++) {
             const id = `completed-${day}`;
             f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'review', status: 'completed',
@@ -3469,6 +3496,11 @@ describe('workflow in the browser', () => {
         assert.equal(await records.inputValue(), 'native:native-1');
         assert.equal(await records.locator('option[value^="native:"]').count(), 20);
         assert.equal(await records.locator('option[value="native:completed-3"]').count(), 0);
+        await page.getByRole('heading', { name: 'Recorded decision' }).waitFor();
+        await page.getByText('Accept the <strong>previous design</strong>?', { exact: true }).waitFor();
+        assert.deepEqual(await page.getByRole('list', { name: 'Recorded choices' }).getByRole('listitem').allTextContents(),
+            ['Accept design', 'Reject']);
+        await page.getByText('Recorded behavior on rejection: retry.', { exact: true }).waitFor();
         await page.getByText('check[0]:item', { exact: true }).waitFor();
         await page.getByText('Fan-out expansion · 2 items · Recorded concurrency limit: 2', { exact: true }).waitFor();
         const items = page.getByRole('list', { name: 'Recorded items for old-check' });
@@ -3490,6 +3522,7 @@ describe('workflow in the browser', () => {
         await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
         assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow resume native-1');
         await records.selectOption({ label: 'Current definition' });
+        assert.equal(await page.getByRole('heading', { name: 'Recorded decision' }).count(), 0);
         assert.equal(await page.getByRole('button', { name: 'Copy resume command', exact: true }).count(), 0);
         await records.selectOption('native:native-1');
         await page.getByRole('listitem').filter({ hasText: 'old-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();

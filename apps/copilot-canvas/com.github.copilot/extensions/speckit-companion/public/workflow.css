@@ -109,6 +109,8 @@
 .run-picker .btn[aria-pressed="true"] { background: var(--background-color-muted, var(--border-color-default)); font-weight: 600; }
 .run-detail h3, .run-picker h3, .run-inbox h3 { margin: 0.25rem 0 0.65rem; }
 .run-detail label, .run-detail select { display: block; margin-block: 0.4rem; }
+.run-question { overflow-wrap: anywhere; }
+.run-question-message { white-space: pre-wrap; }
 .run-lines, .run-steps { padding: 0; margin: 0 0 1rem; list-style: none; }
 .run-lines li, .run-step-title { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.45rem 0.85rem; }
 .run-lines li { padding: 0.65rem 0; border-top: 1px solid var(--border-color-default, #6e7781); overflow-wrap: anywhere; }

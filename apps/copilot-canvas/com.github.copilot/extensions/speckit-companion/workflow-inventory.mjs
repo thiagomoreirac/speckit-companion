@@ -71,6 +71,16 @@ function nativeStepResult([id, result]) {
         ...(gate && (isReviewArtifactPath(path) ||
             (typeof path === 'string' && path.length <= 420 && /\.(?:mmd|html?|svg|png)$/i.test(path))) ? { evidenceCandidate: path } : {}) };
 }
+function nativeGateQuestion(output) {
+    if (!object(output)) return null;
+    const boundedText = (value, limit) => typeof value === 'string' && value.length <= limit && value.trim() &&
+        !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(value);
+    const message = boundedText(output.message, 1200) ? output.message : null;
+    const options = Array.isArray(output.options) && output.options.length > 0 && output.options.length <= 12 &&
+        output.options.every(option => boundedText(option, 80) && !/[\t\r\n]/.test(option)) ? output.options : null;
+    const onReject = ['abort', 'skip', 'retry'].includes(output.on_reject) ? output.on_reject : null;
+    return message || options || onReject ? { message, options, onReject } : null;
+}
 function nativeStepResults(results) {
     const steps = results.map(nativeStepResult);
     const groups = new Map(steps.filter(step => step.fanOut).map(step => [step.id, step.fanOut]));
@@ -908,8 +918,10 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             const results = entries(run.step_results).filter(([key, result]) => runStepId(key) && STEP_STATES.has(result?.status));
             const current = results.find(([id]) => id === step);
             const checkpoint = current ? nativeStepResult(current) : null;
+            const gateWaiting = run.status === 'paused' && checkpoint?.status === 'paused' && checkpoint.gate;
+            const question = gateWaiting ? nativeGateQuestion(current[1].output) : null;
             (owner.nativeRuns ??= []).push({ id: runId, status: run.status, updatedAt: run.updated_at, step,
-                gateWaiting: run.status === 'paused' && Boolean(checkpoint?.gate),
+                gateWaiting: Boolean(gateWaiting), ...(question ? { question } : {}),
                 checkpoint, steps: nativeStepResults(results.slice(0, 192)), omittedSteps: Math.max(0, results.length - 192),
             });
             if (owner.lastRun && Date.parse(owner.lastRun) >= Date.parse(run.updated_at)) continue;

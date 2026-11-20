@@ -73,6 +73,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
     const key = options.some(([id]) => id === selection.run) ? selection.run
         : selected.guidedRun ? 'guided' : selected.isolatedRun ? 'isolated' : options[1]?.[0] ?? 'definition';
     const native = nativeRuns.find(run => key === `native:${run.id}`);
+    const question = native?.question;
     const issue = graph.findings.filter(item => item.severity === 'blocked' &&
         item.nodeIds.some(id => id === selected.id || byId.get(id)?.workflowOwner === selected.id));
     const resumeCommand = native?.status === 'paused' && cliId.test(native.id)
@@ -189,6 +190,11 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         run?.error ? el('p', { role: 'alert' }, run.error) : null,
         native?.updatedAt ? el('p', { class: 'run-meta' }, 'Updated ', el('time', { datetime: native.updatedAt }, new Date(native.updatedAt).toLocaleString())) : null,
         native?.status === 'paused' ? p('This checkpoint belongs to a native Spec Kit run. Inspect it here; resume it through the runtime that owns it.') : null,
+        native?.gateWaiting ? el('section', { class: 'run-question' },
+            el('h4', {}, 'Recorded decision'),
+            question?.message ? el('p', { class: 'run-question-message', dir: 'auto' }, question.message) : p('Question text is not available in this view.'),
+            question?.options ? el('ul', { 'aria-label': 'Recorded choices' }, question.options.map(option => el('li', { dir: 'auto' }, option))) : null,
+            question?.onReject ? p(`Recorded behavior on rejection: ${question.onReject}.`) : null) : null,
         resumeCommand ? el('div', {},
             p('Run this from the repository root in an interactive terminal. Review any prompts there; the canvas does not supply a verdict or run the command.'),
             el('div', { class: 'workflow-actions' }, el('code', {}, resumeCommand),
