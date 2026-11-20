@@ -702,6 +702,8 @@ function renderPanel(detail, tabId) {
                     row.agentCheck ? el('p', {}, assignmentAgentChecks[row.agentCheck]) : null,
                     row.reason ? el('p', {}, row.reason) : null,
                     row.import ? el('p', {}, `HVE Core · ${row.import.harness} · ${row.import.path} · ${row.import.verified ? 'APM lock hash matches' : 'APM file listed; hash not verified'}`) : null,
+                    row.reviewBrief ? el('button', { type: 'button', class: 'btn btn-quiet',
+                        onclick: () => workflowView.reviewAssignment(detail.spec.id, row.task) }, `Review ${row.task} brief…`) : null,
                     row.taskExists && !row.taskAmbiguous && /^T\d+$/.test(row.task) && editableAgents?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
                         onclick: () => workflowView.editAssignment(detail.spec.id, row.task, editableAgents, row) }, `Edit ${row.task} assignment…`) : null))),
             validationCommand ? el('section', {},

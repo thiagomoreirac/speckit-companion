@@ -16,7 +16,7 @@ import { pickFolder } from './folder-picker.mjs';
 import { createWorkflowActions } from './workflow-actions.mjs';
 import { apmImportOptions } from './workflow-apm.mjs';
 import { inspectWorkflowArtifact, NATIVE_GENERATED_FILES, workspaceEntry } from './workflow-inventory.mjs';
-import { embeddedFigmaSections, featureAssignments, featureEvidence, readFeatureEvidence, specDocumentHooks } from './feature-evidence.mjs';
+import { embeddedFigmaSections, featureAssignments, featureEvidence, readAssignedReview, readFeatureEvidence, specDocumentHooks } from './feature-evidence.mjs';
 
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = {
@@ -713,6 +713,10 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'GET' && pathname === '/api/spec/evidence') {
             const spec = requireSpec(url.searchParams.get('id'));
             return sendJson(res, 200, readFeatureEvidence(state.root, spec.id, url.searchParams.get('path')));
+        }
+        if (req.method === 'GET' && pathname === '/api/spec/review-brief') {
+            const spec = requireSpec(url.searchParams.get('id'));
+            return sendJson(res, 200, readAssignedReview(state.root, spec.id, url.searchParams.get('task'), url.searchParams.get('evidence')));
         }
 
         if (req.method === 'GET' && pathname === '/api/spec') {

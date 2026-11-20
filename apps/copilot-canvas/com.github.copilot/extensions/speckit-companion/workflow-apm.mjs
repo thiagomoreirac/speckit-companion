@@ -53,6 +53,16 @@ function lockReceipt(target) {
     };
 }
 
+export function pinnedHveClaudeReviewer(lock, profile) {
+    if (digest(profile) !== profileDigest) return false;
+    return [['claude'], ['claude', 'copilot']].some(harnesses => isDeepStrictEqual(lock, lockReceipt({
+        profiles: harnesses.map(harness => {
+            const { directory, filename } = targets.get(harness);
+            return { harness, path: `${directory}/agents/${filename}` };
+        }),
+    })));
+}
+
 export function readApmExport(target, data) {
     if (!mapping(data) || !exactItems(Object.keys(data), ['format', 'lock', 'profile']) ||
         data.format !== exportFormat || !bounded(data.lock) || !bounded(data.profile)) {

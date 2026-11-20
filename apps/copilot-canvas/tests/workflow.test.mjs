@@ -3786,7 +3786,7 @@ describe('workflow in the browser', () => {
         assert.deepEqual(requests, []);
     });
 
-    it('imports both pinned HVE profiles in Tasks and assigns the Claude reviewer after a separate review', {
+    it('imports both pinned HVE profiles, assigns the Claude reviewer, and copies a single-task review brief', {
         skip: process.env.SPECKIT_CANVAS_TEST_APM !== '1', timeout: 180_000,
     }, async t => {
         let browser;
@@ -3806,7 +3806,12 @@ describe('workflow in the browser', () => {
         const manifest = 'name: existing-project\nversion: 1.0.0\ntargets:\n  - claude\n  - copilot\ndependencies:\n  apm: [] # Pending first dependency\n';
         f.put('apm.yml', manifest);
         f.put(`${feature}/spec.md`, '# Feature Specification: Export board');
-        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        const tasks = '# Tasks\n\n- [ ] T001 Build export\n- [ ] T002 Unrelated task\n';
+        const evidence = `${feature}/evidence/review.md`;
+        const evidenceText = '<img src="/review-external" onerror="throw Error()">\nReviewed contract.\n';
+        f.put(`${feature}/tasks.md`, tasks);
+        f.put(evidence, evidenceText);
+        f.put('outside.md', 'Outside the feature');
         f.install('agent-assign', { manifest: { extension: { version: '1.1.0' } } });
         f.registry['agent-assign'].version = '1.1.0';
         f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
@@ -3815,6 +3820,9 @@ describe('workflow in the browser', () => {
         focus('001-exports');
         const page = await browser.newPage({ viewport: { width: 900, height: 900 } });
         page.setDefaultTimeout(30_000);
+        await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText: async text => { globalThis.testClipboard = text; } },
+        }));
         await page.goto(url);
         await page.getByRole('tab', { name: /^Tasks/ }).click();
         const dualImport = page.getByRole('button', { name: 'Preview HVE Core import for Copilot and Claude Code…' });
@@ -3862,6 +3870,30 @@ describe('workflow in the browser', () => {
             [['Claude Code', true, true], ['Copilot', true, false]]);
         assert.equal(readFileSync(join(f.root, '.claude/settings.json'), 'utf8'), '{"unrelated":true}\n');
         assert.deepEqual(readFileSync(join(f.root, profile)), readFileSync(join(f.root, copilot)));
+        const briefPath = `/spec/review-brief?${new URLSearchParams({ id: feature, task: 'T001' })}`;
+        assert.match((await api(`${briefPath}&evidence=outside.md`, undefined, 409)).error, /listed Markdown/);
+        await page.getByRole('button', { name: 'Review T001 brief…' }).click();
+        await dialog.getByRole('heading', { name: 'Review T001 brief' }).waitFor();
+        const picker = dialog.getByLabel('Markdown evidence (optional)');
+        const copy = dialog.getByRole('button', { name: 'Copy review brief' });
+        const output = dialog.locator('pre');
+        await picker.selectOption(evidence);
+        assert.equal(await copy.count(), 0);
+        await dialog.getByRole('button', { name: 'Preview selected evidence' }).click();
+        await copy.click();
+        const brief = await output.textContent();
+        assert.equal(await page.evaluate(() => globalThis.testClipboard), brief);
+        assert.match(brief, /T001 \[ \] Build export/);
+        assert.match(brief, /Review the export changes/);
+        assert.doesNotMatch(brief, /Unrelated task|Outside the feature/);
+        assert.ok(brief.includes(createHash('sha256').update(evidenceText).digest('hex')));
+        assert.ok(brief.endsWith(evidenceText));
+        assert.equal(await dialog.locator('img[src="/review-external"]').count(), 0);
+        f.put(`${feature}/tasks.md`, `${tasks}- [ ] T001 Duplicate task\n`);
+        assert.match((await api(briefPath, undefined, 409)).error, /unambiguous/);
+        f.put(`${feature}/tasks.md`, tasks);
+        f.put(profile, readFileSync(join(f.root, profile), 'utf8') + '\nTampered');
+        assert.match((await api(briefPath, undefined, 409)).error, /does not match the pinned import/);
     });
 
     it('copies the installed Claude Code validation command without dispatching it', { timeout: 45_000 }, async t => {

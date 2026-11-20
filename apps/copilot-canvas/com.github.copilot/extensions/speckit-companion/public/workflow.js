@@ -961,6 +961,29 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
         }
     }
 
+    function reviewAssignment(feature, task, evidence = '') {
+        const query = new URLSearchParams({ id: feature, task, ...(evidence ? { evidence } : {}) });
+        void readDialog(`Review ${task} brief`, () => api(`/api/spec/review-brief?${query}`), result => {
+            const picker = select('review-evidence', [['', 'No evidence selected'], ...result.options.map(path => [path, path])]);
+            picker.value = result.evidence ?? '';
+            const output = el('pre', { text: result.text, tabindex: 0 });
+            const copy = copyButton(result.text, 'Copy review brief');
+            const update = button('Preview selected evidence', () => reviewAssignment(feature, task, picker.value), { disabled: true });
+            picker.addEventListener('change', () => {
+                const unchanged = picker.value === (result.evidence ?? '');
+                update.disabled = unchanged;
+                output.hidden = copy.hidden = !unchanged;
+                copy.disabled = !unchanged;
+            });
+            dialogBody.replaceChildren(
+                paragraph('Nothing is sent. Review this text before copying it into a separate Claude Code session. Companion does not gather a Git diff, launch the reviewer, or record a result.'),
+                facts([['Recipient profile', result.profile]]),
+                scalarField('Markdown evidence (optional)', picker), output,
+                actions(update, copy, button('Close', () => dialog.close())));
+            picker.focus();
+        });
+    }
+
     const params = (id, path) => new URLSearchParams({ id, path });
     const artifact = (node, path, reference, historical = false) => readDialog(path, () => reference?.featureArtifact
         ? api(`/api/spec/evidence?${params(reference.feature.slice('feature:'.length), path)}`)
@@ -1234,7 +1257,7 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
         render();
     });
     return {
-        show, update, editAssignment, addAssignment,
+        show, update, editAssignment, addAssignment, reviewAssignment,
         importHve(feature, harness) {
             openDialog('Preparing HVE Core import');
             void preview({ operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness });
