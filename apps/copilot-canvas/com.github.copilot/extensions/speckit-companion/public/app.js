@@ -670,10 +670,17 @@ function renderEvidence(item) {
         el('pre', { tabindex: 0 }, item.text)].filter(Boolean);
 }
 
+const assignmentAgentChecks = {
+    ambiguous: 'Multiple project Claude Code profiles declare this name.',
+    'not-found': 'No matching project Claude Code profile. User or plugin profiles are not checked.',
+    'missing-description': 'The project Claude Code profile has no description.',
+    found: 'Matching project Claude Code profile found.',
+};
+
 function renderPanel(detail, tabId) {
     if (tabId === 'activity') return renderActivity(detail);
     if (tabId === 'assignments') {
-        const { path, error, assignments, imports, importError, editableAgents, exists, unassignedTasks, validationCommand } = detail.assignments;
+        const { path, error, assignments, imports, importError, editableAgents, exists, unassignedTasks, validationCommand, checks } = detail.assignments;
         return el('section', { class: 'sb-feature-evidence' }, el('h3', {}, 'Agent assignments'),
             el('p', {}, exists === false ? (unassignedTasks?.length ? `No assignments recorded yet. A confirmed assignment creates ${path}.` :
                 'No assignments recorded. Adding one requires an unassigned task and an eligible Claude Code profile.') :
@@ -681,11 +688,21 @@ function renderPanel(detail, tabId) {
             unassignedTasks?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
                 onclick: () => workflowView.addAssignment(detail.spec.id, unassignedTasks, editableAgents) }, 'Assign a task…') : null,
             importError ? el('p', { role: 'status' }, importError) : null,
+            checks ? el('section', { 'aria-label': 'Local assignment checks' },
+                el('h4', {}, 'Local assignment checks'),
+                el('p', {}, checks.projectAgentsChecked ? 'Companion checks task IDs and project Claude Code profiles. It does not run the extension or an agent.' :
+                    'Companion checks task IDs. Project profiles are only checked with a supported Agent Assign installation and readable profiles.'),
+                !checks.scanRecorded ? el('p', {}, 'Agent scan metadata is missing or invalid. Repair it before editing assignments.') : null,
+                checks.error ? el('p', { role: 'status' }, checks.error) : null,
+                checks.invalidRows ? el('p', {}, `${checks.invalidRows} assignment entries have an invalid task ID or agent name.`) : null,
+                checks.omittedRows ? el('p', {}, `${checks.omittedRows} additional assignment entries are outside this view and were not checked.`) : null) : null,
             error ? el('p', { role: 'alert' }, error) : el('ul', { class: 'run-lines' }, assignments.map(row =>
                 el('li', {}, el('strong', {}, `${row.task} · ${row.agent}`), row.taskExists ? null : el('p', {}, 'Task no longer appears in Tasks.'),
+                    row.taskAmbiguous ? el('p', {}, 'Task ID appears more than once in Tasks.') : null,
+                    row.agentCheck ? el('p', {}, assignmentAgentChecks[row.agentCheck]) : null,
                     row.reason ? el('p', {}, row.reason) : null,
                     row.import ? el('p', {}, `HVE Core · ${row.import.harness} · ${row.import.path} · ${row.import.verified ? 'APM lock hash matches' : 'APM file listed; hash not verified'}`) : null,
-                    row.taskExists && editableAgents?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
+                    row.taskExists && !row.taskAmbiguous && /^T\d+$/.test(row.task) && editableAgents?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
                         onclick: () => workflowView.editAssignment(detail.spec.id, row.task, editableAgents, row) }, `Edit ${row.task} assignment…`) : null))),
             validationCommand ? el('section', {},
                 el('h4', {}, 'Validate in Claude Code'),

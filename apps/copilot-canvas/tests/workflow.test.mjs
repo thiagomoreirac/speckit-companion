@@ -442,6 +442,40 @@ describe('graph from a Spec Kit repository', () => {
         assert.equal((await api(`/spec?id=${feature}`)).assignments.validationCommand, null);
     });
 
+    it('checks task IDs and project reviewer profiles without running Agent Assign', async t => {
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        const { path, profile } = installAgentAssign(f, feature);
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n- [ ] T001 Add tests\n- [ ] T003 Third task\n- [ ] T004 Fourth task\n');
+        const assignment = { assignments: {
+            T001: { agent: 'hve-review' }, T002: { agent: 'user-only' },
+            T003: { agent: 'undocumented' }, T004: { agent: 'default' }, T005: { agent: ['malformed'] },
+        }, agents_scanned: [] };
+        f.put(path, assignment);
+        f.put('.claude/agents/undocumented.md', '---\nname: undocumented\ndescription: " "\n---\n# Review');
+        f.put('.claude/agents/duplicate.md', '---\nname: hve-review\ndescription: Same name\n---\n# Review');
+        const { api } = await serve(t, f.root, { send: () => assert.fail('Unexpected agent dispatch') });
+        const read = async () => (await api(`/spec?id=${feature}`)).assignments;
+        const first = await read();
+        assert.deepEqual(first.checks, { projectAgentsChecked: true, error: null, invalidRows: 1, omittedRows: 0, scanRecorded: true });
+        assert.deepEqual(first.assignments.map(({ task, taskExists, taskAmbiguous, agentCheck }) => [task, taskExists, taskAmbiguous, agentCheck]), [
+            ['T001', true, true, 'ambiguous'], ['T002', false, false, 'not-found'],
+            ['T003', true, false, 'missing-description'], ['T004', true, false, null],
+        ]);
+        assert.deepEqual(first.editableAgents, []);
+        rmSync(join(f.root, '.claude/agents/duplicate.md'));
+        f.put(profile, '---\nname: hve-review\ndescription: Changed profile\n---\n# Review');
+        const changed = await read();
+        assert.equal(changed.assignments[0].agentCheck, 'found');
+        assert.equal(changed.assignments[0].import.verified, false);
+        assert.deepEqual(changed.editableAgents, []);
+        f.registry['agent-assign'].enabled = false;
+        f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+        assert.equal((await read()).assignments[0].agentCheck, null);
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(assignment));
+    });
+
     it('shows Copilot-only imports before assignments without offering Claude Code dispatch', async t => {
         const f = fixture(t);
         const feature = 'specs/001-exports';
@@ -3588,17 +3622,21 @@ describe('workflow in the browser', () => {
         const f = fixture(t);
         const feature = 'specs/001-exports';
         f.put(`${feature}/spec.md`, '# Export');
-        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n- [ ] T001 Add tests\n');
         const { path, assignment } = installAgentAssign(f, feature);
         const { url, focus } = await serve(t, f.root, { send: () => assert.fail('Unexpected agent dispatch') });
         focus('001-exports');
-        const page = await browser.newPage();
+        const page = await browser.newPage({ viewport: { width: 440, height: 900 } });
         await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
             value: { writeText: async text => { document.body.dataset.copiedCommand = text; } },
         }));
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         await page.getByRole('tab', { name: /^Tasks/ }).click();
         await page.getByRole('button', { name: 'See agent assignments' }).click();
+        await page.getByRole('region', { name: 'Local assignment checks' }).waitFor();
+        await page.getByText('Task ID appears more than once in Tasks.', { exact: true }).waitFor();
+        await page.getByText('Task no longer appears in Tasks.', { exact: true }).waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Edit T001 assignment…' }).count(), 0);
         await page.getByRole('button', { name: 'Copy validation command' }).click();
         await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
         assert.equal(await page.locator('body').getAttribute('data-copied-command'), '/speckit.agent-assign.validate');

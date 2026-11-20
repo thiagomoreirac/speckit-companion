@@ -16,6 +16,7 @@ const REGISTRY = '.specify/extensions/.registry';
 const ASSIGN_MANIFEST = '.specify/extensions/agent-assign/extension.yml';
 const ASSIGN_VALIDATE = 'speckit.agent-assign.validate';
 const ASSIGN_VALIDATE_FILE = 'commands/validate.md';
+const MAX_ASSIGNMENTS = 256;
 const kinds = [
     { match: /^(?:architecture|diagrams)\/|^architecture\.md$/i, phase: 'Architecture' },
     { match: /^(?:figma|design-context)\/|^(?:figma|design-context)\.(?:md|json)$/i, phase: 'Design context' },
@@ -160,7 +161,7 @@ function projectClaudeAgents(root) {
         const name = meta?.name ?? entry.name.slice(0, -3);
         if (!safeId(name) || name === 'default') continue;
         if (agents.has(name)) agents.set(name, null);
-        else agents.set(name, { path, hash: digest(bytes), description: typeof meta?.description === 'string' ? meta.description.slice(0, 300) : '' });
+        else agents.set(name, { path, hash: digest(bytes), description: typeof meta?.description === 'string' ? meta.description.trim().slice(0, 300) : '' });
     }
     return agents;
 }
@@ -172,9 +173,8 @@ function supportedAssignmentManifest(root) {
     return manifest?.extension?.id === 'agent-assign' && manifest.extension.version === '1.1.0' ? manifest : null;
 }
 
-function editableAssignmentAgents(root, records, manifest) {
-    if (!manifest) return [];
-    return [...projectClaudeAgents(root)].flatMap(([name, agent]) => agent?.description && records.get(agent.path) === agent.hash
+function editableAssignmentAgents(agents, records) {
+    return [...agents].flatMap(([name, agent]) => agent?.description && records.get(agent.path) === agent.hash
         ? [{ ...agent, name }] : []);
 }
 
@@ -184,23 +184,29 @@ export function featureAssignments(root, id, taskIds) {
     try {
         const raw = exists ? readYaml(root, path) : { assignments: {}, agents_scanned: [] };
         if (!object(raw?.assignments)) return { path, error: 'Agent Assign did not provide a readable assignments mapping.' };
-        let records = new Map(), importError = null, editableAgents = [], validationCommand = null;
+        const scanRecorded = Array.isArray(raw.agents_scanned);
+        let records = new Map(), importError = null, projectAgents = null, checkError = null, validationCommand = null;
         try {
             ({ records } = hveReceipt(root));
-            if (Array.isArray(raw.agents_scanned) && (exists || records.size)) {
+        } catch (error) {
+            importError = error.status ? error.message : `Could not verify local APM imports (${error.name}).`;
+        }
+        try {
+            if (exists || records.size) {
                 const manifest = supportedAssignmentManifest(root);
                 const commands = manifest?.provides?.commands;
-                if (exists && taskIds.length && Array.isArray(commands) && commands.some(command =>
+                if (scanRecorded && exists && taskIds.length && Array.isArray(commands) && commands.some(command =>
                     command?.name === ASSIGN_VALIDATE && command.file === ASSIGN_VALIDATE_FILE) &&
                     workspaceEntry(root, `.specify/extensions/agent-assign/${ASSIGN_VALIDATE_FILE}`, { rejectSymlinks: true })?.stat.isFile()) {
                     validationCommand = `/${ASSIGN_VALIDATE}`;
                 }
-                if (records.size) editableAgents = editableAssignmentAgents(root, records, manifest);
+                if (manifest) projectAgents = projectClaudeAgents(root);
             }
         } catch (error) {
-            importError = error.status ? error.message : `Could not verify local APM imports (${error.name}).`;
+            checkError = error.status ? error.message : `Could not check project Claude Code agents (${error.name}).`;
         }
         if (!exists && !records.size && !importError) return null;
+        const editableAgents = scanRecorded && projectAgents ? editableAssignmentAgents(projectAgents, records) : [];
         const eligiblePaths = new Set(editableAgents.map(agent => agent.path));
         const deployed = new Map();
         const imports = [];
@@ -221,17 +227,26 @@ export function featureAssignments(root, id, taskIds) {
         }
         const foundTasks = new Map();
         for (const task of taskIds) foundTasks.set(task, (foundTasks.get(task) ?? 0) + 1);
+        const rows = Object.entries(raw.assignments);
+        const visible = rows.slice(0, MAX_ASSIGNMENTS);
+        const invalidRows = visible.filter(([task, row]) => !safeId(task) || !/^T\d+$/.test(task) || !safeId(row?.agent)).length;
         return { path, exists, imports, importError, validationCommand, editableAgents: editableAgents.map(({ name, path }) => ({ name, path })),
+            checks: exists ? { projectAgentsChecked: projectAgents !== null, error: checkError,
+                invalidRows, omittedRows: rows.length - visible.length, scanRecorded } : null,
             unassignedTasks: editableAgents.length ? [...foundTasks].flatMap(([task, count]) =>
-                count === 1 && /^T\d+$/.test(task) && !Object.hasOwn(raw.assignments, task) ? [task] : []).slice(0, 256) : [],
-            assignments: Object.entries(raw.assignments).slice(0, 256).flatMap(([task, row]) => {
-            if (!safeId(task) || !safeId(row?.agent)) return [];
-            const matches = deployed.get(row.agent) ?? [];
-            const claude = matches.filter(agent => agent.harness === 'Claude Code');
-            const imports = claude.length ? claude : matches;
-            return [{ task, agent: row.agent, reason: typeof row.reason === 'string' ? row.reason.slice(0, 240) : null,
-                taskExists: foundTasks.has(task), import: imports.length === 1 ? imports[0] : null }];
-        }) };
+                count === 1 && /^T\d+$/.test(task) && !Object.hasOwn(raw.assignments, task) ? [task] : []).slice(0, MAX_ASSIGNMENTS) : [],
+            assignments: visible.flatMap(([task, row]) => {
+                if (!safeId(task) || !safeId(row?.agent)) return [];
+                const matches = deployed.get(row.agent) ?? [];
+                const claude = matches.filter(agent => agent.harness === 'Claude Code');
+                const imports = claude.length ? claude : matches;
+                const profile = projectAgents?.get(row.agent);
+                const agentCheck = row.agent === 'default' || !projectAgents ? null : profile === null ? 'ambiguous'
+                    : !profile ? 'not-found' : !profile.description ? 'missing-description' : 'found';
+                return [{ task, agent: row.agent, reason: typeof row.reason === 'string' ? row.reason.slice(0, 240) : null,
+                    taskExists: foundTasks.has(task), taskAmbiguous: (foundTasks.get(task) ?? 0) > 1, agentCheck,
+                    import: imports.length === 1 ? imports[0] : null }];
+            }) };
     } catch (error) {
         return { path, error: `Could not read Agent Assign metadata (${error.name}).` };
     }
@@ -257,7 +272,8 @@ export function planAgentAssignment(root, feature, task, agentName, reason, task
             'This task no longer has an editable assignment.', 409);
     }
     const receipt = hveReceipt(root);
-    const agent = editableAssignmentAgents(root, receipt.records, supportedAssignmentManifest(root)).find(item => item.name === agentName);
+    const agent = supportedAssignmentManifest(root)
+        ? editableAssignmentAgents(projectClaudeAgents(root), receipt.records).find(item => item.name === agentName) : null;
     if (!agent) throw assignmentError('Choose an APM-verified HVE Core agent deployed for Claude Code by the project.');
     if (raw.assignments[task]?.agent === agent.name && raw.assignments[task]?.reason === reason) throw assignmentError('The assignment is unchanged.');
     raw.assignments[task] = { ...raw.assignments[task], agent: agent.name, reason };

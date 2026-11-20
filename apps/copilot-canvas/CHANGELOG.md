@@ -8,7 +8,7 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 
 - **Operate the Spec Kit workflow.** Preview bundle changes, inspect hooks, and review evidence, fan-out results, and saved gate questions even after a workflow is removed.
 - **Explore evidence in Specs & runs.** Open extension tabs, read decisions, inspect architecture flowcharts, and move between screens in a wireflow without leaving the preview.
-- **Assign an HVE Core reviewer from Tasks.** Review the pinned import, assign the Claude Code reviewer, and copy the read-only validation command.
+- **Assign an HVE Core reviewer from Tasks.** Review the pinned import, assign a Claude Code reviewer, and spot missing tasks or unresolved profiles.
 
 ### Fixed
 
