@@ -255,6 +255,11 @@ describe('graph from a Spec Kit repository', () => {
         assert.deepEqual(run.question, { message: 'Accept the draft?\nReview the acceptance criteria first.',
             options: ['Approve draft', 'Reject'], onReject: 'abort' });
         assert.deepEqual(run.checkpoint.evidence, { feature: `feature:${feature}`, path: evidence });
+        assert.equal(run.resumeHold, undefined);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { [id]: { enabled: false } } });
+        await assert.rejects(callSpecKit(f.root, ['workflow', 'resume', run.id]), /disabled/);
+        const disabled = await api('/workflow');
+        assert.deepEqual(disabled.nodes.find(node => node.id === `workflow:${id}`).nativeRuns, [{ ...run, resumeHold: 'disabled' }]);
         rmSync(join(f.root, definition));
         f.put('.specify/workflows/workflow-registry.json', { workflows: {} });
         const removed = await api('/workflow');
@@ -3498,6 +3503,43 @@ describe('workflow in the browser', () => {
         assert.equal(await card.getByRole('heading', { name: 'Step diagram' }).count(), 0);
         await card.getByRole('button', { name: 'Read recorded evidence reference…' }).click();
         await page.getByRole('dialog').getByText('Saved gate evidence', { exact: false }).waitFor();
+    });
+
+    it('explains why native resume is unavailable without losing the saved checkpoint', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { release: { enabled: false } } });
+        f.put('.specify/workflows/release/workflow.yml', { workflow: { id: 'release', version: '1.0.0' },
+            steps: [{ id: 'approve', type: 'gate', message: 'Accept?' }] });
+        const external = join(f.root, 'outside-registry');
+        for (const [id, root] of [['local', null], ['external', external]]) {
+            f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'release', installed_workflow_id: 'release',
+                installed_registry_root: root, status: 'paused', updated_at: '2026-01-03T00:00:00Z' });
+        }
+        const { url, api } = await serve(t, f.root);
+        const graph = await api('/workflow');
+        const { nativeRuns } = graph.nodes.find(node => node.id === 'workflow:release');
+        assert.deepEqual(nativeRuns.map(({ id, resumeHold }) => [id, resumeHold]), [['external', 'other-registry'], ['local', 'disabled']]);
+        assert.equal(JSON.stringify(nativeRuns).includes('outside-registry'), false);
+        const page = await browser.newPage();
+        page.setDefaultTimeout(12_000);
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        const records = page.getByLabel('Run record', { exact: true });
+        await records.selectOption('native:local');
+        await page.getByText(/^The installed workflow is disabled/).waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Copy resume command' }).count(), 0);
+        await records.selectOption('native:external');
+        await page.getByText(/^This checkpoint names a separate workflow registry/).waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Copy resume command' }).count(), 0);
     });
 
     it('changes the acceptance label in Workflow & runs only after confirmation', { timeout: 60_000 }, async t => {

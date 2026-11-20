@@ -922,12 +922,16 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
             const checkpoint = current ? nativeStepResult(current) : null;
             const gateWaiting = run.status === 'paused' && checkpoint?.status === 'paused' && checkpoint.gate;
             const question = gateWaiting ? nativeGateQuestion(current[1].output) : null;
-            const record = { id: runId, status: run.status, updatedAt: run.updated_at, step,
-                gateWaiting: Boolean(gateWaiting), ...(question ? { question } : {}),
-                checkpoint, steps: nativeStepResults(results.slice(0, 192)), omittedSteps: Math.max(0, results.length - 192),
-            };
             const id = `workflow:${key}`;
             const owner = stage(id);
+            const resumeHold = run.status !== 'paused' ? null :
+                run.installed_registry_root ? 'other-registry' :
+                    owner?.installed && !owner.active && (run.installed_workflow_id != null || !Object.hasOwn(run, 'installed_workflow_id'))
+                        ? 'disabled' : null;
+            const record = { id: runId, status: run.status, updatedAt: run.updated_at, step,
+                gateWaiting: Boolean(gateWaiting), ...(question ? { question } : {}), ...(resumeHold ? { resumeHold } : {}),
+                checkpoint, steps: nativeStepResults(results.slice(0, 192)), omittedSteps: Math.max(0, results.length - 192),
+            };
             if (!owner?.installed) {
                 if (!detachedNativeWorkflows.has(key)) detachedNativeWorkflows.set(key, { id, key, name: key, nativeRuns: [] });
                 detachedNativeWorkflows.get(key).nativeRuns.push(record);

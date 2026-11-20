@@ -83,7 +83,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
     const question = native?.question;
     const issue = graph.findings.filter(item => item.severity === 'blocked' &&
         item.nodeIds.some(id => id === selected.id || byId.get(id)?.workflowOwner === selected.id));
-    const resumeCommand = !historyOnly && native?.status === 'paused' && cliId.test(native.id)
+    const resumeCommand = !historyOnly && native?.status === 'paused' && !native.resumeHold && cliId.test(native.id)
         ? `specify workflow resume ${native.id}` : null;
     const startCommand = key === 'definition' && selected.active && selected.state !== 'blocked' && !issue.length && cliId.test(selected.key)
         ? `specify workflow run ${selected.key}` : null;
@@ -201,7 +201,9 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                     tag(verdicts[verdict]))))) : null,
         run?.error ? el('p', { role: 'alert' }, run.error) : null,
         native?.updatedAt ? el('p', { class: 'run-meta' }, 'Updated ', el('time', { datetime: native.updatedAt }, new Date(native.updatedAt).toLocaleString())) : null,
-        historyOnly ? p('This workflow is not installed. You can inspect its saved records, but this view cannot start or resume it.')
+        native?.resumeHold === 'other-registry' ? p('This checkpoint names a separate workflow registry. Companion does not verify that registry or offer a resume command.')
+            : historyOnly ? p('This workflow is not installed. You can inspect its saved records, but this view cannot start or resume it.')
+            : native?.resumeHold === 'disabled' ? p('The installed workflow is disabled. To resume this checkpoint, first review and enable its workflow in Management.')
             : native?.status === 'paused' ? p('This checkpoint belongs to a native Spec Kit run. Inspect it here; resume it through the runtime that owns it.') : null,
         native?.gateWaiting ? el('section', { class: 'run-question' },
             el('h4', {}, 'Recorded decision'),
