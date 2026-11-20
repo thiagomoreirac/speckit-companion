@@ -49,6 +49,7 @@ const entries = value => object(value) ? Object.entries(value) : [];
 const unique = values => [...new Set(values.filter(Boolean))];
 const MAX_FILE = 512 * 1024;
 const MAX_DIR = 384;
+const MAX_NATIVE_RUNS = 20;
 const WORKFLOW_RUNS = '.specify/workflows/runs';
 const WORKFLOW_OVERLAYS = '.specify/workflows/overlays';
 const OVERLAY_OPERATIONS = ['insert_after', 'insert_before', 'replace', 'remove'];
@@ -922,7 +923,10 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     }
     for (const owner of nodes.filter(item => item.nativeRuns)) {
         owner.nativeRuns.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id));
-        owner.nativeRuns = owner.nativeRuns.slice(0, 20);
+        const paused = owner.nativeRuns.filter(run => run.status === 'paused');
+        const visible = new Set([...paused, ...owner.nativeRuns.filter(run => run.status !== 'paused')].slice(0, MAX_NATIVE_RUNS));
+        if (paused.length > MAX_NATIVE_RUNS) owner.omittedPausedRuns = paused.length - MAX_NATIVE_RUNS;
+        owner.nativeRuns = owner.nativeRuns.filter(run => visible.has(run));
     }
     const workflowKeys = nodes.filter(node => node.kind === 'Workflows').map(node => node.key);
     for (const key of unique([...dirs(WORKFLOW_OVERLAYS), ...workflowKeys])) {

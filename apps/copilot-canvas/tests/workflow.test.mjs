@@ -3419,6 +3419,11 @@ describe('workflow in the browser', () => {
                 'first-approval': { type: 'gate', status: 'completed', output: { choice: 'approve', show_file: `${feature}/data-model-diagram.mmd` } },
                 'first-rejection': { type: 'gate', status: 'completed', output: { choice: 'reject', on_reject: 'continue' } },
                 'old-approval': { type: 'gate', status: 'paused', output: { show_file: `${feature}/historical-review.md` } } } });
+        for (let day = 3; day <= 22; day++) {
+            const id = `completed-${day}`;
+            f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'review', status: 'completed',
+                updated_at: `2026-01-${String(day).padStart(2, '0')}T00:00:00Z` });
+        }
         const { url, focus } = await serve(t, f.root);
         const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
         const artifactRequests = [];
@@ -3430,6 +3435,10 @@ describe('workflow in the browser', () => {
         await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
         await page.getByText('Native gate needs input', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Inspect checkpoint' }).click();
+        const records = page.getByLabel('Run record', { exact: true });
+        assert.equal(await records.inputValue(), 'native:native-1');
+        assert.equal(await records.locator('option[value^="native:"]').count(), 20);
+        assert.equal(await records.locator('option[value="native:completed-3"]').count(), 0);
         await page.getByText('check[0]:item', { exact: true }).waitFor();
         await page.getByText('Fan-out expansion · 2 items · Recorded concurrency limit: 2', { exact: true }).waitFor();
         const items = page.getByRole('list', { name: 'Recorded items for old-check' });
@@ -3450,10 +3459,9 @@ describe('workflow in the browser', () => {
         await page.getByRole('button', { name: 'Copy resume command', exact: true }).click();
         await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
         assert.equal(await page.evaluate(() => window.testCopied), 'specify workflow resume native-1');
-        const record = page.getByLabel('Run record', { exact: true });
-        await record.selectOption({ label: 'Current definition' });
+        await records.selectOption({ label: 'Current definition' });
         assert.equal(await page.getByRole('button', { name: 'Copy resume command', exact: true }).count(), 0);
-        await record.selectOption('native:native-1');
+        await records.selectOption('native:native-1');
         await page.getByRole('listitem').filter({ hasText: 'old-approval' }).getByRole('button', { name: 'Read recorded evidence reference…' }).click();
         await page.getByRole('dialog').getByText(/Evidence referenced by the previous workflow definition/).waitFor();
         await page.getByRole('dialog').getByText(/may have changed since that checkpoint/).waitFor();
@@ -3469,6 +3477,13 @@ describe('workflow in the browser', () => {
             await page.setViewportSize({ width, height: 900 });
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
         }
+        for (let day = 3; day <= 22; day++) {
+            const id = `completed-${day}`;
+            f.put(`.specify/workflows/runs/${id}/state.json`, { run_id: id, workflow_id: 'review', status: 'paused',
+                updated_at: `2026-01-${String(day).padStart(2, '0')}T00:00:00Z` });
+        }
+        await page.getByRole('button', { name: 'Refresh runs', exact: true }).click();
+        await page.getByText('1 additional paused checkpoint is outside this view. Inspect native run records for the rest.', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Specs & runs', exact: true }).click();
         focus(feature);
         await page.getByRole('tab', { name: 'Spec', exact: true }).click();

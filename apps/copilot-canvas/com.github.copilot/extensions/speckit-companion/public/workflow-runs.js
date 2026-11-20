@@ -23,6 +23,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
     const roleButton = (text, action, attrs = {}) => button(text, action, attrs);
     const findings = id => graph.findings.filter(item => item.severity === 'blocked' && item.nodeIds.includes(id));
     const inbox = [];
+    const omittedPauses = workflows.reduce((count, node) => count + (node.omittedPausedRuns ?? 0), 0);
     for (const node of workflows) {
         const guided = node.guidedRun;
         const isolated = node.isolatedRun;
@@ -56,7 +57,8 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                     Object.assign(selection, { workflow: item.node.id, run: item.runKey, feature: null });
                     render();
                     document.getElementById('run-details-heading')?.focus();
-                }, { id: `run-decision-${item.node.key}-${item.runKey}` })))) : p('No waiting decisions in the visible run records.'));
+                }, { id: `run-decision-${item.node.key}-${item.runKey}` })))) : p('No waiting decisions in the visible run records.'),
+        omittedPauses ? p(`${omittedPauses} additional paused ${omittedPauses === 1 ? 'checkpoint is' : 'checkpoints are'} outside this view. Inspect native run records for the rest.`) : null);
     const content = [el('div', { class: 'workflow-heading' },
         el('div', {}, el('h2', {}, 'Workflow & runs'), p('See what ran, what is waiting, and the evidence behind the next decision.')),
         button('Refresh runs', refresh, { id: 'run-refresh' })), section];
