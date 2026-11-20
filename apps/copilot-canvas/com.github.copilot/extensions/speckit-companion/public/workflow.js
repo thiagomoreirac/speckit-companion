@@ -537,7 +537,8 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
                     void preview({ operation: 'catalog-allow-install', id: node.id, url: node.origin });
                 }) : null,
                 node.kind === 'Bundles' && node.canRemoveRecord ? button('Remove bundle record…', () => direct('bundle-remove-record', node.id)) : null,
-                node.kind === 'Bundles' && node.canRemoveBundleWorkflow ? button('Remove bundle and workflow…', () => direct('bundle-remove-workflow', node.id)) : null,
+                node.kind === 'Bundles' && node.canRemoveBundleWorkflow ? button(node.bundleWorkflowCandidates.length > 1
+                    ? 'Remove bundle and workflows…' : 'Remove bundle and workflow…', () => direct('bundle-remove-workflow', node.id)) : null,
                 node.kind === 'Bundles' && node.canRefreshRecord ? button('Refresh from local bundle…', () => bundleForm(node)) : null,
                 node.kind === 'Bundles' && node.canRefreshRecord ? button('Refresh from pinned GitHub bundle…', () => bundleForm(node, true)) : null,
                 ...(node.configs ?? []).map(config => button(`Configure ${config.name}…`, () => configure(node, config))),

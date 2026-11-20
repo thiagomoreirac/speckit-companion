@@ -2709,6 +2709,59 @@ describe('workflow previews and confirmed changes', () => {
             refs.map(ref => ({ kind: 'workflows', ...ref })));
     });
 
+    it('removes a reviewed workflow bundle without touching unrelated packages', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 180_000,
+    }, async t => {
+        const f = fixture(t);
+        const registry = '.specify/workflows/workflow-registry.json';
+        const records = '.specify/bundle-records.json';
+        const refs = [{ id: 'release-review', version: '1.0.2' }, { id: 'bugfix-review', version: '1.0.1' }];
+        const paths = refs.map(ref => `.specify/workflows/${ref.id}/workflow.yml`);
+        const components = refs.map(ref => ({ kind: 'workflows', ...ref }));
+        const unrelated = { bundle_id: 'other', version: '1.0.0', installed_at: '2026-01-01T00:00:00Z',
+            contributed_components: [], required_components: [] };
+        f.put(records, { schema_version: '1.0', bundles: [unrelated, { ...unrelated, bundle_id: 'delivery-core',
+            contributed_components: components, required_components: components }] });
+        const registered = version => ({ version, enabled: false, source: 'local' });
+        f.put(registry, { schema_version: '1.0', workflows: {
+            other: registered('2.0.0'), ...Object.fromEntries(refs.map(ref => [ref.id, registered(ref.version)])),
+        } });
+        refs.forEach(({ id, version }, index) => f.put(paths[index], { workflow: { id, version },
+            steps: [{ id: 'review', type: 'gate', message: 'Inspect the release.' }] }));
+        const { api } = await serve(t, f.root);
+        const read = path => readFileSync(join(f.root, path), 'utf8');
+        const remove = { operation: 'bundle-remove-workflow', id: 'bundle:delivery-core' };
+        const installedRegistry = JSON.parse(read(registry));
+        const installedRecords = JSON.parse(read(records));
+        const definitions = paths.map(read);
+        const shared = { ...installedRecords.bundles[0], bundle_id: 'workflow-consumer', contributed_components: [],
+            required_components: [{ kind: 'workflows', ...refs[1] }] };
+        f.put(records, { ...installedRecords, bundles: [...installedRecords.bundles, shared] });
+        await api('/workflow/preview', remove, 400);
+        f.put(records, installedRecords);
+        f.put(registry, { ...installedRegistry, workflows: { ...installedRegistry.workflows,
+            [refs[1].id]: { ...installedRegistry.workflows[refs[1].id], enabled: true } } });
+        await api('/workflow/preview', remove, 400);
+        f.put(registry, { ...installedRegistry, workflows: { ...installedRegistry.workflows,
+            [refs[1].id]: registered('9.9.9') } });
+        await api('/workflow/preview', remove, 409);
+        f.put(registry, installedRegistry);
+        const removal = await api('/workflow/preview', remove);
+        assert.deepEqual(removal.documentChanges.filter(change => change.after === null).map(change => change.path), paths);
+        assert.deepEqual(paths.map(read), definitions);
+        f.put(paths[1], `${definitions[1]}\n`);
+        await api('/workflow/apply', { id: removal.id }, 409);
+        assert.equal(read(paths[0]), definitions[0]);
+        assert.deepEqual(JSON.parse(read(records)), installedRecords);
+        f.put(paths[1], definitions[1]);
+        const finalRemoval = await api('/workflow/preview', remove);
+        const removed = await api('/workflow/apply', { id: finalRemoval.id });
+        assert.ok(paths.every(path => !existsSync(join(f.root, path)) && existsSync(join(f.root, dirname(path)))));
+        assert.ok(!removed.graph.nodes.some(node => refs.some(ref => node.id === `workflow:${ref.id}`)));
+        assert.deepEqual(JSON.parse(read(registry)).workflows, { other: registered('2.0.0') });
+        assert.deepEqual(JSON.parse(read(records)).bundles, installedRecords.bundles.slice(0, 1));
+    });
+
     it('binds declared routing choices to the exact isolated checkpoint with released Spec Kit', {
         skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 90_000,
     }, async t => {
@@ -3013,8 +3066,8 @@ describe('workflow previews and confirmed changes', () => {
 });
 
 describe('workflow in the browser', () => {
-    it('previews every core bundle file before installing disabled workflows in Management', {
-        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 60_000,
+    it('previews every core bundle file before installing or removing disabled workflows in Management', {
+        skip: !process.env.SPECKIT_CANVAS_TEST_CLI, timeout: 180_000,
     }, async t => {
         let browser;
         try {
@@ -3035,23 +3088,38 @@ describe('workflow in the browser', () => {
         const { url, api } = await serve(t, f.root);
         const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
         page.setDefaultTimeout(10_000);
+        const change = async (endpoint, button) => {
+            const response = page.waitForResponse(item => new URL(item.url()).pathname === `/api/workflow/${endpoint}`, { timeout: 45_000 });
+            await button.click();
+            const result = await response;
+            assert.equal(result.status(), 200, await result.text());
+        };
         await page.goto(url);
         await page.getByRole('button', { name: 'Spec Kit Management' }).click();
         await page.getByLabel('Filter by category').selectOption('Bundles');
         await page.getByRole('button', { name: 'Install core workflow bundle…' }).click();
         const dialog = page.getByRole('dialog');
         await dialog.getByLabel('Path to bundle.yml').fill(source);
-        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await change('preview', dialog.getByRole('button', { name: 'Preview', exact: true }));
         await dialog.getByRole('heading', { name: 'Install assessment 1.0.0 with assess, bugfix disabled' }).waitFor();
         for (const { id } of refs) {
             const definition = `.specify/workflows/${id}/workflow.yml`;
             await dialog.getByRole('heading', { name: definition, exact: true }).waitFor();
             assert.equal(existsSync(join(f.root, definition)), false);
         }
-        await dialog.getByRole('button', { name: 'Confirm change' }).click();
-        await page.getByRole('table', { name: 'Participants' }).getByRole('button', { name: 'Inspect assessment', exact: true }).waitFor();
+        await change('apply', dialog.getByRole('button', { name: 'Confirm change' }));
+        const inspect = page.getByRole('table', { name: 'Participants' }).getByRole('button', { name: 'Inspect assessment', exact: true });
+        await inspect.waitFor();
         const graph = await api('/workflow');
         for (const { id } of refs) assert.equal(graph.nodes.find(node => node.id === `workflow:${id}`).state, 'disabled');
+        await inspect.click();
+        await change('preview', page.getByRole('button', { name: 'Remove bundle and workflows…' }));
+        for (const { id } of refs) {
+            await dialog.getByRole('heading', { name: `.specify/workflows/${id}/workflow.yml`, exact: true }).waitFor();
+        }
+        assert.equal(await dialog.getByText('Remove this file.', { exact: true }).count(), refs.length);
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        assert.ok(refs.every(({ id }) => existsSync(join(f.root, '.specify', 'workflows', id, 'workflow.yml'))));
     });
 
     it('collects isolated workflow inputs from Workflow & runs and records them on reload', {

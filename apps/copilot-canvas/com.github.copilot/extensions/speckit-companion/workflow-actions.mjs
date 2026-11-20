@@ -458,29 +458,37 @@ async function stageCoreBundle(root, graph, request, cli, reviewedAt) {
     } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
 }
 
-async function stageBundleWorkflowRemoval(root, bundle, workflow, base, next, cli) {
-    const registryBase = file(root, workflow.registry);
-    const definition = file(root, workflow.path);
-    if (registryBase == null || definition == null) throw invalid('The standalone workflow files are no longer readable.', 409);
+async function stageBundleWorkflowRemoval(root, bundle, workflows, base, next, cli) {
+    const registry = workflows[0].registry;
+    const registryBase = file(root, registry);
+    if (registryBase == null) throw invalid('The workflow registry is no longer readable.', 409);
     const expected = JSON.parse(registryBase);
-    if (expected.workflows?.[workflow.node.key]?.enabled !== false) throw invalid('Disable the standalone workflow before removing it.', 409);
-    delete expected.workflows[workflow.node.key];
+    const definitions = workflows.map(({ node, path }) => {
+        const entry = expected.workflows?.[node.key];
+        if (entry?.enabled !== false || entry.version !== node.version) {
+            throw invalid(`The registration of ${node.key} does not match the disabled bundle pin.`, 409);
+        }
+        delete expected.workflows[node.key];
+        const definition = readReviewedMarkdown(root, path, 'workflow YAML', configSize);
+        return { path, before: definition.text, after: null };
+    });
     const staged = mkdtempSync(join(tmpdir(), 'canvas-bundle-remove-'));
     try {
         writeTemporaryProject(staged, new Map([
-            [BUNDLE_RECORDS, base], [workflow.registry, registryBase], [workflow.path, definition],
+            [BUNDLE_RECORDS, base], [registry, registryBase], ...definitions.map(({ path, before }) => [path, before]),
         ]));
         await cli(staged, ['bundle', 'remove', bundle.key]);
-        const registryAfter = file(staged, workflow.registry);
+        const registryAfter = file(staged, registry);
         const recordsAfter = file(staged, BUNDLE_RECORDS);
-        if (lstatSync(join(staged, workflow.dir), { throwIfNoEntry: false }) || registryAfter == null || recordsAfter == null ||
+        if (workflows.some(({ dir }) => lstatSync(join(staged, dir), { throwIfNoEntry: false })) ||
+            registryAfter == null || recordsAfter == null ||
             !isDeepStrictEqual(JSON.parse(registryAfter), expected) ||
             !isDeepStrictEqual(JSON.parse(recordsAfter).bundles, next.bundles)) {
             throw invalid('Spec Kit did not produce the expected standalone workflow and bundle removal. No repository files changed.');
         }
         return [
-            { path: workflow.registry, before: registryBase, after: registryAfter },
-            { path: workflow.path, before: definition, after: null },
+            { path: registry, before: registryBase, after: registryAfter },
+            ...definitions,
         ];
     } finally { rmSync(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
 }
@@ -1164,7 +1172,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             const removeWorkflow = operation === 'bundle-remove-workflow';
             if (node?.kind !== 'Bundles' || !(removeWorkflow ? node.canRemoveBundleWorkflow : node.canRemoveRecord) ||
                 before.findings.some(item => item.code === 'malformed-bundle')) {
-                throw invalid(removeWorkflow ? 'Select a flat bundle with one disabled standalone workflow and no dependent workflows, overlays, or saved native runs.' :
+                throw invalid(removeWorkflow ? 'Select an eligible flat bundle of disabled standalone workflows without dependent workflows, overlays, or saved native runs.' :
                     'Only a flat bundle record whose removal leaves all packages in place can be removed from this canvas.');
             }
             const base = file(root, BUNDLE_RECORDS);
@@ -1186,27 +1194,27 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
                 ...removal.transfers.map(({ component, to }) => `${component}: bundle ownership transfers to ${to}.`)];
             execute = () => writeConfig(root, BUNDLE_RECORDS, text, base);
             if (removeWorkflow) {
-                const eligibleWorkflow = graph => {
-                    const workflow = standaloneBundleWorkflow(root, graph, removal.removedWorkflow);
-                    if (!workflow) throw invalid('The standalone workflow changed. Reopen its inspector before removing it.', 409);
+                const eligibleWorkflows = graph => removal.removedWorkflows.map(ref => {
+                    const workflow = standaloneBundleWorkflow(root, graph, ref);
+                    if (!workflow) throw invalid(`${ref.id} changed. Reopen the bundle inspector before removing it.`, 409);
                     const guided = guidedRuns.observe(root, workflow.node), review = reviewRuns.observe(root, workflow.node);
                     if (guided?.error || review?.error || ['review', 'write', 'uncertain'].includes(guided?.status) || review?.status === 'paused') {
                         throw invalid('The canvas could not rule out an open review. Keep the workflow or resolve its saved run before removing it.', 409);
                     }
                     return workflow;
-                };
-                const workflow = eligibleWorkflow(before);
-                const documents = await stageBundleWorkflowRemoval(root, node, workflow, base, next, cli);
+                });
+                const workflows = eligibleWorkflows(before);
+                const documents = await stageBundleWorkflowRemoval(root, node, workflows, base, next, cli);
                 documentChanges = [documentChange, ...documents];
                 documentChange = null;
                 for (const change of documents) overrides.set(change.path, change.after === null ? null : JSON.parse(change.after));
                 paths = documentChanges.map(change => change.path);
-                affected.push(workflow.node);
-                title = `Remove ${node.name} and ${workflow.node.name}`;
-                notes[0] = 'Spec Kit checks the removal in a temporary project. Confirmation applies only the listed files and leaves the empty directory in place.';
+                affected.push(...workflows.map(workflow => workflow.node));
+                title = `Remove ${node.name} and ${workflows.map(({ node }) => node.name).join(', ')}`;
+                notes[0] = 'Spec Kit checks the removal in a temporary project. Confirmation applies only the listed files and leaves the empty workflow directories in place.';
                 sourceStamp = documentChanges.map(change => [change.path, createHash('sha256').update(JSON.stringify([change.before, change.after])).digest('hex')]);
                 execute = () => {
-                    eligibleWorkflow(read().graph);
+                    eligibleWorkflows(read().graph);
                     writeReviewedDocuments(root, documentChanges);
                 };
             }
