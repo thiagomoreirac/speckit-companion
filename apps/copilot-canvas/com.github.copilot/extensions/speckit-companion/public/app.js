@@ -659,7 +659,7 @@ function renderEvidence(item) {
 function renderPanel(detail, tabId) {
     if (tabId === 'activity') return renderActivity(detail);
     if (tabId === 'assignments') {
-        const { path, error, assignments, imports, importError, editableAgents, exists, unassignedTasks } = detail.assignments;
+        const { path, error, assignments, imports, importError, editableAgents, exists, unassignedTasks, validationCommand } = detail.assignments;
         return el('section', { class: 'sb-feature-evidence' }, el('h3', {}, 'Agent assignments'),
             el('p', {}, exists === false ? (unassignedTasks?.length ? `No assignments recorded yet. A confirmed assignment creates ${path}.` :
                 'No assignments recorded. Adding one requires an unassigned task and an eligible Claude Code profile.') :
@@ -673,6 +673,10 @@ function renderPanel(detail, tabId) {
                     row.import ? el('p', {}, `HVE Core · ${row.import.harness} · ${row.import.path} · ${row.import.verified ? 'APM lock hash matches' : 'APM file listed; hash not verified'}`) : null,
                     row.taskExists && editableAgents?.length ? el('button', { type: 'button', class: 'btn btn-quiet',
                         onclick: () => workflowView.editAssignment(detail.spec.id, row.task, editableAgents, row) }, `Edit ${row.task} assignment…`) : null))),
+            validationCommand ? el('section', {},
+                el('h4', {}, 'Validate in Claude Code'),
+                el('p', {}, 'Run the read-only validator in a Claude Code session for this feature’s checkout. Confirm the report names this feature. Copying does not run validation.'),
+                el('div', { class: 'workflow-actions' }, el('code', {}, validationCommand), copyButton(validationCommand, 'Copy validation command'))) : null,
             imports?.length ? el('details', {}, el('summary', {}, `HVE Core imports (${imports.length})`),
                 el('p', {}, 'From the APM lockfile. A matching hash verifies the deployed file, not execution or harness compatibility.'),
                 el('ul', { class: 'run-lines' }, imports.map(agent => el('li', {}, el('div', {},

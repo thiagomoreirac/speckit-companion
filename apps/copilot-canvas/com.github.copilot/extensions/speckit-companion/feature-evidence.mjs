@@ -13,6 +13,8 @@ const CORE_DOCUMENTS = ['spec', 'plan', 'tasks'];
 const APM_LOCK = 'apm.lock.yaml';
 const REGISTRY = '.specify/extensions/.registry';
 const ASSIGN_MANIFEST = '.specify/extensions/agent-assign/extension.yml';
+const ASSIGN_VALIDATE = 'speckit.agent-assign.validate';
+const ASSIGN_VALIDATE_FILE = 'commands/validate.md';
 const kinds = [
     { match: /^(?:architecture|diagrams)\/|^architecture\.md$/i, phase: 'Architecture' },
     { match: /^(?:figma|design-context)\/|^(?:figma|design-context)\.(?:md|json)$/i, phase: 'Design context' },
@@ -161,11 +163,15 @@ function projectClaudeAgents(root) {
     return agents;
 }
 
-function editableAssignmentAgents(root, records) {
+function supportedAssignmentManifest(root) {
     const registry = readYaml(root, REGISTRY)?.extensions?.['agent-assign'];
-    if (registry?.enabled === false || registry?.version !== '1.1.0') return [];
+    if (registry?.enabled === false || registry?.version !== '1.1.0') return null;
     const manifest = readYaml(root, ASSIGN_MANIFEST);
-    if (manifest?.extension?.id !== 'agent-assign' || manifest.extension.version !== '1.1.0') return [];
+    return manifest?.extension?.id === 'agent-assign' && manifest.extension.version === '1.1.0' ? manifest : null;
+}
+
+function editableAssignmentAgents(root, records, manifest) {
+    if (!manifest) return [];
     return [...projectClaudeAgents(root)].flatMap(([name, agent]) => agent?.description && records.get(agent.path) === agent.hash
         ? [{ ...agent, name }] : []);
 }
@@ -176,10 +182,19 @@ export function featureAssignments(root, id, taskIds) {
     try {
         const raw = exists ? readYaml(root, path) : { assignments: {}, agents_scanned: [] };
         if (!object(raw?.assignments)) return { path, error: 'Agent Assign did not provide a readable assignments mapping.' };
-        let records = new Map(), importError = null, editableAgents = [];
+        let records = new Map(), importError = null, editableAgents = [], validationCommand = null;
         try {
             ({ records } = hveReceipt(root));
-            if (records.size && Array.isArray(raw.agents_scanned)) editableAgents = editableAssignmentAgents(root, records);
+            if (Array.isArray(raw.agents_scanned) && (exists || records.size)) {
+                const manifest = supportedAssignmentManifest(root);
+                const commands = manifest?.provides?.commands;
+                if (exists && taskIds.length && Array.isArray(commands) && commands.some(command =>
+                    command?.name === ASSIGN_VALIDATE && command.file === ASSIGN_VALIDATE_FILE) &&
+                    workspaceEntry(root, `.specify/extensions/agent-assign/${ASSIGN_VALIDATE_FILE}`, { rejectSymlinks: true })?.stat.isFile()) {
+                    validationCommand = `/${ASSIGN_VALIDATE}`;
+                }
+                if (records.size) editableAgents = editableAssignmentAgents(root, records, manifest);
+            }
         } catch (error) {
             importError = error.status ? error.message : `Could not verify local APM imports (${error.name}).`;
         }
@@ -204,7 +219,7 @@ export function featureAssignments(root, id, taskIds) {
         }
         const foundTasks = new Map();
         for (const task of taskIds) foundTasks.set(task, (foundTasks.get(task) ?? 0) + 1);
-        return { path, exists, imports, importError, editableAgents: editableAgents.map(({ name, path }) => ({ name, path })),
+        return { path, exists, imports, importError, validationCommand, editableAgents: editableAgents.map(({ name, path }) => ({ name, path })),
             unassignedTasks: editableAgents.length ? [...foundTasks].flatMap(([task, count]) =>
                 count === 1 && /^T\d+$/.test(task) && !Object.hasOwn(raw.assignments, task) ? [task] : []).slice(0, 256) : [],
             assignments: Object.entries(raw.assignments).slice(0, 256).flatMap(([task, row]) => {
@@ -240,7 +255,7 @@ export function planAgentAssignment(root, feature, task, agentName, reason, task
             'This task no longer has an editable assignment.', 409);
     }
     const receipt = hveReceipt(root);
-    const agent = editableAssignmentAgents(root, receipt.records).find(item => item.name === agentName);
+    const agent = editableAssignmentAgents(root, receipt.records, supportedAssignmentManifest(root)).find(item => item.name === agentName);
     if (!agent) throw assignmentError('Choose an APM-verified HVE Core agent deployed for Claude Code by the project.');
     if (raw.assignments[task]?.agent === agent.name && raw.assignments[task]?.reason === reason) throw assignmentError('The assignment is unchanged.');
     raw.assignments[task] = { ...raw.assignments[task], agent: agent.name, reason };

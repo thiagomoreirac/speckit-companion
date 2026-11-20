@@ -43,15 +43,22 @@ function installRoadmap(f) {
     return ledger;
 }
 
+function installAgentAssignExtension(f) {
+    f.install('agent-assign', { manifest: { extension: { version: '1.1.0' }, provides: { commands: [
+        { name: 'speckit.agent-assign.validate', file: 'commands/validate.md' },
+    ] } } });
+    f.put('.specify/extensions/agent-assign/commands/validate.md', '# Validate assignments');
+    f.registry['agent-assign'].version = '1.1.0';
+    f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+}
+
 function installAgentAssign(f, feature) {
     const path = `${feature}/agent-assignments.yml`;
     const profile = '.claude/agents/hve-review.md';
     const content = '---\nname: hve-review\ndescription: Review task evidence\n---\n# Review';
     const assignment = { agents_scanned: [], assignments: { T001: { agent: 'default' }, T002: { agent: 'default', reason: 'Unchanged' } } };
     f.put(path, assignment);
-    f.install('agent-assign', { manifest: { extension: { version: '1.1.0' } } });
-    f.registry['agent-assign'].version = '1.1.0';
-    f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+    installAgentAssignExtension(f);
     f.put(profile, content);
     f.put('apm.lock.yaml', { dependencies: [{ repo_url: 'microsoft/hve-core', deployed_files: [profile],
         deployed_file_hashes: { [profile]: `sha256:${createHash('sha256').update(content).digest('hex')}` } }] });
@@ -344,10 +351,11 @@ describe('graph from a Spec Kit repository', () => {
             agent: 'hve-review', reason: 'Review the export evidence.' };
         const before = await api(`/spec?id=${feature}`);
         assert.equal(before.assignments.exists, false);
+        assert.equal(before.assignments.validationCommand, null);
         assert.deepEqual(before.assignments.unassignedTasks, ['T001']);
         assert.deepEqual(before.assignments.imports.map(({ harness, verified, assignable }) => [harness, verified, assignable]),
             [['Claude Code', true, true]]);
-        const run = await api('/workflow/preview', { operation: 'run', id: 'extension:agent-assign', command: 'speckit.agent-assign.run' }, 400);
+        const run = await api('/workflow/preview', { operation: 'run', id: 'extension:agent-assign', command: 'speckit.agent-assign.validate' }, 400);
         assert.match(run.error, /Agent Assign commands run in Claude Code/);
         const preview = await api('/workflow/preview', request);
         assert.equal(preview.documentChange.before, null);
@@ -362,6 +370,14 @@ describe('graph from a Spec Kit repository', () => {
         assert.equal(after.assignments.exists, true);
         assert.deepEqual(after.assignments.unassignedTasks, []);
         assert.equal(after.assignments.assignments[0].agent, 'hve-review');
+        assert.equal(after.assignments.validationCommand, '/speckit.agent-assign.validate');
+        const commandPath = '.specify/extensions/agent-assign/commands/validate.md';
+        rmSync(join(f.root, commandPath));
+        assert.equal((await api(`/spec?id=${feature}`)).assignments.validationCommand, null);
+        f.put(commandPath, '# Validate assignments');
+        f.registry['agent-assign'].enabled = false;
+        f.put(REGISTRY, { schema_version: '1.0', extensions: f.registry });
+        assert.equal((await api(`/spec?id=${feature}`)).assignments.validationCommand, null);
     });
 
     it('shows Copilot-only imports before assignments without offering Claude Code dispatch', async t => {
@@ -3414,6 +3430,36 @@ describe('workflow in the browser', () => {
             [['T001', 'functional-code-review', 'Claude Code', true]]);
         assert.equal(readFileSync(join(f.root, '.claude/settings.json'), 'utf8'), '{"unrelated":true}\n');
         assert.equal(existsSync(join(f.root, '.github/agents/functional-code-review.agent.md')), false);
+    });
+
+    it('copies the installed Claude Code validation command without dispatching it', { timeout: 45_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        const feature = 'specs/001-exports';
+        f.put(`${feature}/spec.md`, '# Export');
+        f.put(`${feature}/tasks.md`, '# Tasks\n\n- [ ] T001 Build export\n');
+        const { path, assignment } = installAgentAssign(f, feature);
+        const { url, focus } = await serve(t, f.root, { send: () => assert.fail('Unexpected agent dispatch') });
+        focus('001-exports');
+        const page = await browser.newPage();
+        await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText: async text => { document.body.dataset.copiedCommand = text; } },
+        }));
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.getByRole('tab', { name: /^Tasks/ }).click();
+        await page.getByRole('button', { name: 'See agent assignments' }).click();
+        await page.getByRole('button', { name: 'Copy validation command' }).click();
+        await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        assert.equal(await page.locator('body').getAttribute('data-copied-command'), '/speckit.agent-assign.validate');
+        assert.equal(readFileSync(join(f.root, path), 'utf8'), JSON.stringify(assignment));
     });
 
     it('separates native checkpoints from current steps and renders extension tabs without executing prototypes', { timeout: 45_000 }, async t => {
