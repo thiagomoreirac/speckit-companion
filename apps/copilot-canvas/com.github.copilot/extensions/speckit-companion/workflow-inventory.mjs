@@ -49,6 +49,7 @@ const entries = value => object(value) ? Object.entries(value) : [];
 const unique = values => [...new Set(values.filter(Boolean))];
 const MAX_FILE = 512 * 1024;
 const MAX_DIR = 384;
+export const MAX_RUN_ANNOTATIONS = 384;
 const MAX_NATIVE_RUNS = 20;
 const WORKFLOW_RUNS = '.specify/workflows/runs';
 const WORKFLOW_OVERLAYS = '.specify/workflows/overlays';
@@ -1301,7 +1302,7 @@ export function readWorkflow(root, specs = [], specDirs = [], overrides = new Ma
     }
     if (policy?.version === 1 && policy.runAnnotations !== undefined) {
         const annotations = policy.runAnnotations;
-        if (!object(annotations) || Object.keys(annotations).length > MAX_DIR) {
+        if (!object(annotations) || Object.keys(annotations).length > MAX_RUN_ANNOTATIONS) {
             warning('malformed-run-annotations', 'advisory', `${POLICY_PATH}: runAnnotations must map workflow step IDs to display purposes.`);
         } else {
             for (const [id, purpose] of Object.entries(annotations)) {

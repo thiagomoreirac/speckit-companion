@@ -10,8 +10,12 @@ const types = {
 const verdicts = { approve: 'Approved', reject: 'Rejected', abort: 'Aborted by verdict' };
 const cliId = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 
+export function runPurposeLabel(purpose) {
+    return purpose === 'acceptance' ? 'Acceptance gate' : purpose === 'validation' ? 'Validation check' : 'Default step label';
+}
+
 export function renderWorkflowRuns({ root, graph, selection, el, button, copyButton, render, openFeature, openWorkflow,
-    handleDecision, start, allowGuidedWrite, inspectEvidence, inspectDecision, refresh }) {
+    handleDecision, start, allowGuidedWrite, inspectEvidence, inspectDecision, configurePurpose, refresh }) {
     const installed = graph.nodes.filter(node => node.kind === 'Workflows' && node.installed);
     const history = graph.nativeHistory ?? [];
     const workflows = [...installed, ...history];
@@ -115,7 +119,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                     const gate = step.stepType === 'gate' && gateRecords.get(step.name);
                     const active = !native && ['paused', 'review', 'write'].includes(run?.status) &&
                         (key === 'isolated' ? Boolean(gate) && step.name === run.step : key === 'guided' && step.name === run.step);
-                    const stepLabel = step.runPurpose === 'acceptance' ? 'Acceptance gate' : step.runPurpose === 'validation' ? 'Validation check'
+                    const stepLabel = step.runPurpose ? runPurposeLabel(step.runPurpose)
                         : types[step.stepType] ?? step.stepType ?? 'Unknown step';
                     return el('li', { class: 'run-step', 'data-current': String(active) },
                         el('div', { class: 'run-step-title' }, el('strong', {}, step.name),
@@ -133,6 +137,9 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                         step.outputs.length ? p(`Declared outputs: ${step.outputs.join(', ')}`) : null,
                         step.reviewArtifact && readable.has(step.id) ? roleButton('Read definition evidence…', () => inspectEvidence(step, step.reviewArtifact), { id: `run-evidence-${step.id}` }) : null,
                         gate?.artifact && gate.artifact !== step.reviewArtifact ? p(`Review evidence: ${gate.artifact}`) : null,
+                        key === 'definition' && step.stepType ? button('Change step label…', () => configurePurpose(step), {
+                            'aria-label': `Change step label: ${step.name}`, id: `run-purpose-${step.id}`,
+                        }) : null,
                         byId.get(step.subworkflow)?.installed ? button('Inspect subworkflow', () => {
                             changeWorkflow(step.subworkflow);
                             document.getElementById('run-details-heading')?.focus();

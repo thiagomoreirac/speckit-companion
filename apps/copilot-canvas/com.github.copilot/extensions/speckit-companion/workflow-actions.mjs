@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { dump, load, JSON_SCHEMA } from './vendor/workflow-yaml.mjs';
 import { AUTOMATIC_HOOKS, graphDiff, scopeProblem } from './workflow-model.mjs';
-import { BUNDLE_RECORDS, CATALOG_TYPES, CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, NATIVE_HOOK_PATH, POLICY_PATH, TEMPLATE_OVERRIDES, bundleRecordRemoval, catalogKey, catalogPath, hookPriority, object, readWorkflow, safeId, standaloneBundleWorkflow, workflowOverlayPaths, workspaceEntry } from './workflow-inventory.mjs';
+import { BUNDLE_RECORDS, CATALOG_TYPES, CHARTER_CONFIG, CHARTER_STATE, CONSTITUTION, HOOK_PATH, MAX_RUN_ANNOTATIONS, NATIVE_HOOK_PATH, POLICY_PATH, TEMPLATE_OVERRIDES, bundleRecordRemoval, catalogKey, catalogPath, hookPriority, object, readWorkflow, safeId, standaloneBundleWorkflow, workflowOverlayPaths, workspaceEntry } from './workflow-inventory.mjs';
 import { createGitHubChanges } from './workflow-github.mjs';
 import { testHookFixture } from './workflow-hook-fixture.mjs';
 import { composeReviewOverlay, createReviewRuns, isReviewArtifactPath, REVIEW_OVERLAY_ID, reviewOverlayPath } from './workflow-review-run.mjs';
@@ -983,6 +983,36 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             title = `Review ${externalChange.field.toLowerCase()} change`;
             notes = ['Confirmation makes one GitHub API write with the account below. The canvas rechecks the target immediately before writing; GitHub does not provide an atomic compare-and-set for this operation.'];
             if (fromStep) notes.push('This is a manual change. It does not evaluate conditions, run the workflow, advance a checkpoint, or grant approval for other steps.');
+        } else if (operation === 'workflow-step-purpose') {
+            const owner = before.nodes.find(item => item.id === node?.workflowOwner);
+            if (node?.kind !== 'Workflow steps' || !node.stepType || !owner?.installed) {
+                throw invalid('Select a step from an installed workflow definition.');
+            }
+            const { purpose } = request;
+            if (purpose !== 'default' && purpose !== (node.stepType === 'gate' ? 'acceptance' : 'validation')) {
+                throw invalid('Choose a label that matches the step type.');
+            }
+            const base = file(root, POLICY_PATH);
+            if ((base !== null && !object(current.policy)) ||
+                before.findings.some(item => item.path === POLICY_PATH || ['malformed-policy', 'malformed-run-annotations'].includes(item.code))) {
+                throw invalid('Repair the Companion workflow policy before changing a label.');
+            }
+            const annotations = { ...current.policy?.runAnnotations };
+            const previous = annotations[node.id];
+            if (purpose === (previous ?? 'default')) throw invalid('The step label is unchanged.');
+            if (purpose === 'default') delete annotations[node.id];
+            else annotations[node.id] = purpose;
+            if (Object.keys(annotations).length > MAX_RUN_ANNOTATIONS) throw invalid('The workflow policy has too many step labels.');
+            const next = { version: 1, decisions: [], ...current.policy, runAnnotations: annotations };
+            const text = json(next);
+            if (Buffer.byteLength(text) > configSize) throw invalid('The updated workflow policy exceeds the inspection size limit.');
+            overrides.set(POLICY_PATH, next);
+            paths = [POLICY_PATH];
+            sourceStamp = [base, node.id, node.stepType];
+            title = `Change step label: ${node.name}`;
+            documentChange = { path: POLICY_PATH, before: base, after: text };
+            notes = ['This changes the display label in the current definition. It does not run or modify the workflow, edit saved run records, or grant approval.'];
+            execute = () => writeConfig(root, POLICY_PATH, text, base, { exclusiveCreate: base === null });
         } else if (operation === 'record-owner') {
             if (current.graph.findings.some(item => item.path === POLICY_PATH || item.code === 'malformed-policy')) throw invalid('Repair the ownership policy before writing another decision.');
             const primary = before.nodes.find(item => item.kind === 'Extensions' && item.key === request.primary);

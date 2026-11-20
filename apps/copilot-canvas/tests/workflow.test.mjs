@@ -262,6 +262,45 @@ describe('graph from a Spec Kit repository', () => {
         assert.deepEqual(removed.nativeHistory.map(({ key, nativeRuns }) => [key, nativeRuns]), [[id, [run]]]);
     });
 
+    it('previews workflow step labels and rejects incompatible labels or a stale policy', async t => {
+        const f = fixture(t);
+        const definition = '.specify/workflows/release/workflow.yml';
+        const registry = '.specify/workflows/workflow-registry.json';
+        f.put(registry, { workflows: { release: { enabled: false } } });
+        f.put(definition, { workflow: { id: 'release', version: '1.0.0' },
+            steps: [{ id: 'check', type: 'prompt', prompt: 'Check the release.' }, { id: 'approve', type: 'gate', message: 'Accept?' }] });
+        const original = readFileSync(join(f.root, definition), 'utf8');
+        const { api } = await serve(t, f.root, { send: () => assert.fail('Unexpected agent dispatch') });
+        const check = { operation: 'workflow-step-purpose', id: 'workflow:release:check', purpose: 'validation' };
+        const gate = { ...check, id: 'workflow:release:approve', purpose: 'acceptance' };
+        await api('/workflow/preview', { ...gate, purpose: 'validation' }, 400);
+        await api('/workflow/preview', { ...check, purpose: 'acceptance' }, 400);
+        await api('/workflow/preview', { ...check, id: 'workflow:release:missing' }, 400);
+        f.put(POLICY_PATH, 'false');
+        await api('/workflow/preview', check, 400);
+        assert.equal(readFileSync(join(f.root, POLICY_PATH), 'utf8'), 'false');
+        rmSync(join(f.root, POLICY_PATH));
+        const first = await api('/workflow/preview', check);
+        assert.equal(first.documentChange.before, null);
+        assert.equal(first.diff.nodes.changed.find(item => item.after.id === check.id)?.after.runPurpose, 'validation');
+        assert.equal(existsSync(join(f.root, POLICY_PATH)), false);
+        const decision = { primary: 'roadmap', secondary: 'spec-status', strategy: 'manual', owner: 'Product',
+            rationale: 'One roadmap owner', approval: { method: 'canvas-confirmation', at: '2026-01-03T00:00:00Z' } };
+        const policy = { version: 1, decisions: [decision], runAnnotations: { [gate.id]: 'acceptance' } };
+        f.put(POLICY_PATH, policy);
+        await api('/workflow/apply', { id: first.id }, 409);
+        const reviewed = await api('/workflow/preview', check);
+        assert.deepEqual(reviewed.external, []);
+        assert.deepEqual(reviewed.commands, []);
+        assert.deepEqual(JSON.parse(reviewed.documentChange.after),
+            { ...policy, runAnnotations: { ...policy.runAnnotations, [check.id]: 'validation' } });
+        await api('/workflow/apply', { id: reviewed.id });
+        const reset = await api('/workflow/preview', { ...check, purpose: 'default' });
+        await api('/workflow/apply', { id: reset.id });
+        assert.deepEqual(JSON.parse(readFileSync(join(f.root, POLICY_PATH), 'utf8')), policy);
+        assert.equal(readFileSync(join(f.root, definition), 'utf8'), original);
+    });
+
     it('keeps only valid detached records and reserves space for paused runs', async t => {
         const f = fixture(t);
         const put = (id, fields = {}) => f.put(`.specify/workflows/runs/${id}/state.json`, {
@@ -3459,6 +3498,38 @@ describe('workflow in the browser', () => {
         assert.equal(await card.getByRole('heading', { name: 'Step diagram' }).count(), 0);
         await card.getByRole('button', { name: 'Read recorded evidence reference…' }).click();
         await page.getByRole('dialog').getByText('Saved gate evidence', { exact: false }).waitFor();
+    });
+
+    it('changes the acceptance label in Workflow & runs only after confirmation', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { release: { enabled: true } } });
+        f.put('.specify/workflows/release/workflow.yml', { workflow: { id: 'release', name: 'Release review', version: '1.0.0' },
+            steps: [{ id: 'approve', type: 'gate', message: 'Accept?' }] });
+        const { url } = await serve(t, f.root, { send: () => assert.fail('Unexpected agent dispatch') });
+        const page = await browser.newPage({ viewport: { width: 440, height: 900 } });
+        page.setDefaultTimeout(12_000);
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByRole('button', { name: 'Change step label: approve' }).click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByLabel('Step label').selectOption({ label: 'Acceptance gate' });
+        await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+        await dialog.getByText('approve: Default step label → Acceptance gate', { exact: true }).waitFor();
+        assert.equal(existsSync(join(f.root, POLICY_PATH)), false);
+        await dialog.getByRole('button', { name: 'Confirm change' }).click();
+        const steps = page.getByRole('list', { name: 'Workflow steps', exact: true });
+        await steps.getByText('Acceptance gate', { exact: true }).waitFor();
+        assert.deepEqual(JSON.parse(readFileSync(join(f.root, POLICY_PATH), 'utf8')).runAnnotations,
+            { 'workflow:release:approve': 'acceptance' });
     });
 
     it('copies a native start command without starting a run or filling its inputs', { timeout: 60_000 }, async t => {

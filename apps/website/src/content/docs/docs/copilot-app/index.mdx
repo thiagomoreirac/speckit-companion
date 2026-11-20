@@ -76,7 +76,7 @@ The **Decision inbox** brings paused checkpoints together. Paused native runs ta
 
 For an isolated or guided run, **Recorded gate decisions** lists the confirmed verdicts in order, with their timestamps and the source path and SHA-256 of any reviewed file. **Compare current evidence** opens the current file and tells you whether its bytes match the version reviewed. Companion stores the digest, not a copy of the file, so it cannot recover earlier contents. Earlier runs without these receipts are not backfilled.
 
-To distinguish review from automated validation in the current definition, set `runAnnotations` in the version 1 Companion workflow policy. For example, `"runAnnotations": { "workflow:release:approve": "acceptance", "workflow:release:check": "validation" }` labels an existing human gate and an existing non-gate step. Keep the existing `decisions` array. Labels do not run checks, change step behavior, or grant approval.
+In **Workflow & runs**, select **Current definition** and use **Change step label** to mark a human gate as **Acceptance gate** or a non-gate step as **Validation check**. Preview the change before confirming, or select **Default step label** to clear it. Companion writes the label to its workflow policy, not the installed definition or saved records. Labels do not run checks, change step behavior, or grant approval.
 
 ## What the board shows
 

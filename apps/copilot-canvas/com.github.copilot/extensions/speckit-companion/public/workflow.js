@@ -1,4 +1,4 @@
-import { renderWorkflowRuns } from '/workflow-runs.js';
+import { renderWorkflowRuns, runPurposeLabel } from '/workflow-runs.js';
 
 const statusNames = { valid: 'Valid', advisory: 'Advisory', confirm: 'Needs confirmation', blocked: 'Blocked' };
 const badge = status => statusNames[status] ?? status;
@@ -194,6 +194,7 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
                 start: startReview,
                 inspectEvidence: artifact,
                 inspectDecision: decisionEvidence,
+                configurePurpose: stepPurposeForm,
             });
             return;
         }
@@ -616,6 +617,16 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
         } }, fields, actions(submit, button('Cancel', () => dialog.close())));
         dialogBody.append(element);
         element.querySelector('input, select, textarea')?.focus();
+    }
+
+    function stepPurposeForm(step) {
+        const choices = ['default', step.stepType === 'gate' ? 'acceptance' : 'validation'];
+        const control = select('purpose', choices.map(purpose => [purpose, runPurposeLabel(purpose)]));
+        control.value = step.runPurpose ?? 'default';
+        form(`Choose step label: ${step.name}`, [
+            paragraph('This changes the current definition’s display label only. It does not change execution or saved records.'),
+            scalarField('Step label', control),
+        ], ({ purpose }) => ({ operation: 'workflow-step-purpose', id: step.id, purpose }));
     }
 
     function startReview(node, kind = 'isolated') {
@@ -1049,7 +1060,9 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
                                 'Inherited on next integration refresh' :
                             before.priority !== after.priority ? `Priority ${before.priority} → ${after.priority}` :
                             before.version !== after.version ? `Version ${before.version ?? 'none'} → ${after.version ?? 'none'}` :
-                            before.approval !== after.approval ? `${human(before.approval)} → ${human(after.approval)}` : 'Metadata changed';
+                            before.approval !== after.approval ? `${human(before.approval)} → ${human(after.approval)}` :
+                            before.runPurpose !== after.runPurpose ? `${runPurposeLabel(before.runPurpose)} → ${runPurposeLabel(after.runPurpose)}` :
+                            'Metadata changed';
                         return `${name(after)}: ${stateChange}`;
                     }),
                 ];
