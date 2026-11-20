@@ -703,6 +703,12 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'GET' && pathname === '/api/workflow') return sendJson(res, 200, workflow.snapshot());
         if (req.method === 'GET' && pathname === '/api/workflow/artifact') return sendJson(res, 200,
             inspectWorkflowArtifact(state.root, workflow.snapshot(), url.searchParams.get('id'), url.searchParams.get('path')));
+        if (req.method === 'GET' && pathname === '/api/workflow/decision-evidence') {
+            const { searchParams } = url;
+            return sendJson(res, 200, workflow.inspectGateDecision({
+                id: searchParams.get('id'), mode: searchParams.get('mode'), runId: searchParams.get('runId'), step: searchParams.get('step'),
+            }));
+        }
         if (req.method === 'GET' && pathname === '/api/workflow/config') return sendJson(res, 200, workflow.inspectConfig(url.searchParams.get('id'), url.searchParams.get('path')));
         if (req.method === 'GET' && pathname === '/api/spec/evidence') {
             const spec = requireSpec(url.searchParams.get('id'));

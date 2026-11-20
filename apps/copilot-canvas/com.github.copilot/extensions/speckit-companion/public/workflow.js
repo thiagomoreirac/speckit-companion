@@ -193,6 +193,7 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
                 allowGuidedWrite: availableGitHubWriters().length > 0,
                 start: startReview,
                 inspectEvidence: artifact,
+                inspectDecision: decisionEvidence,
             });
             return;
         }
@@ -950,6 +951,14 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
         result => dialogBody.replaceChildren(
             ...(recorded ? [paragraph('Current repository copy of the file referenced in the run record. It may have changed since that checkpoint.')] : []),
             ...(recorded?.featureArtifact ? renderEvidence(result) : [el('pre', { text: result.text, tabindex: 0 })]),
+            actions(button('Close', () => dialog.close()))));
+
+    const decisionEvidence = (id, mode, runId, step, path) => readDialog(path,
+        () => api(`/api/workflow/decision-evidence?${new URLSearchParams({ id, mode, runId, step })}`),
+        result => dialogBody.replaceChildren(
+            paragraph(result.matches ? 'The current file matches the version reviewed at this gate.' :
+                'The current file differs from the version reviewed at this gate. The run did not save the original contents.'),
+            el('pre', { text: result.text, tabindex: 0 }),
             actions(button('Close', () => dialog.close()))));
 
     function templateForm(node) {

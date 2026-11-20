@@ -11,7 +11,7 @@ const verdicts = { approve: 'Approved', reject: 'Rejected', abort: 'Aborted by v
 const cliId = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 
 export function renderWorkflowRuns({ root, graph, selection, el, button, copyButton, render, openFeature, openWorkflow,
-    handleDecision, start, allowGuidedWrite, inspectEvidence, refresh }) {
+    handleDecision, start, allowGuidedWrite, inspectEvidence, inspectDecision, refresh }) {
     const workflows = graph.nodes.filter(node => node.kind === 'Workflows' && node.installed);
     const requested = workflows.find(node => node.id === selection.workflow);
     const selected = requested ?? workflows[0];
@@ -159,7 +159,10 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                 run.decisions.map(({ step, verdict, at, evidence }) => el('li', {},
                     el('div', {}, el('strong', {}, step),
                         el('p', { class: 'run-meta' }, el('time', { datetime: at }, new Date(at).toLocaleString())),
-                        evidence ? el('p', { class: 'run-meta' }, evidence.path, el('br'), 'SHA-256 ', el('code', {}, evidence.digest)) : null),
+                        evidence ? el('div', {},
+                            el('p', { class: 'run-meta' }, evidence.path, el('br'), 'SHA-256 ', el('code', {}, evidence.digest)),
+                            roleButton('Compare current evidence…', () => inspectDecision(selected.id, key, run.id, step, evidence.path),
+                                { id: `run-compare-${key}-${step}` })) : null),
                     tag(verdicts[verdict]))))) : null,
         run?.error ? el('p', { role: 'alert' }, run.error) : null,
         native?.updatedAt ? el('p', { class: 'run-meta' }, 'Updated ', el('time', { datetime: native.updatedAt }, new Date(native.updatedAt).toLocaleString())) : null,

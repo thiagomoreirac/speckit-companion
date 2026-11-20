@@ -1664,6 +1664,13 @@ describe('workflow previews and confirmed changes', () => {
             assert.deepEqual(saved.decisions.map(({ step, verdict, evidence }) => ({ step, verdict, evidence })), [
                 { step: 'intake', verdict, evidence: { path: evidence, digest: createHash('sha256').update(original).digest('hex') } },
             ]);
+            if (track === 'review-only') {
+                const receipt = overrides => `/workflow/decision-evidence?${new URLSearchParams({ id, mode: 'guided', runId, step: 'intake', ...overrides })}`;
+                assert.deepEqual(await api(receipt({ path: '../outside.md' })), { path: evidence, text: original, matches: true });
+                await api(receipt({ runId: 'stale-run' }), undefined, 404);
+                await api(receipt({ mode: 'isolated' }), undefined, 404);
+                await api(receipt({ step: 'manual' }), undefined, 404);
+            }
             await decide('intake', 'approve', 409);
             await write(label.id, 409);
             await api('/workflow/preview', { operation: 'workflow-issue-label', id: `${id}:${route.id}:${branch.id}:${label.id}`, writer }, 400);
@@ -2985,6 +2992,46 @@ describe('workflow in the browser', () => {
         const decisions = page.getByRole('list', { name: 'Recorded gate decisions' });
         await decisions.getByText('Approved', { exact: true }).waitFor();
         assert.match(await decisions.innerText(), /specs\/001-exports\/spec\.md\s+SHA-256 [a-f0-9]{64}/);
+    });
+
+    it('compares the current evidence with a confirmed gate receipt', { timeout: 60_000 }, async t => {
+        let browser;
+        try {
+            const { chromium } = await import('playwright-core');
+            browser = await chromium.launch({ channel: 'chrome', headless: true });
+        } catch {
+            t.skip('No system Chrome to drive');
+            return;
+        }
+        t.after(() => browser.close());
+        const f = fixture(t);
+        f.install('ghp');
+        const evidence = 'specs/001-exports/spec.md';
+        f.put(evidence, '# Feature Specification: Export board\n\nReviewed evidence.');
+        const definition = guidedDefinition(evidence), [gate] = definition.steps;
+        f.put('.specify/workflows/guided/workflow.yml', definition);
+        f.put('.specify/workflows/workflow-registry.json', { workflows: { guided: { enabled: true } } });
+        const { api, url } = await serve(t, f.root, { workflowRunStorage: fixture(t).root });
+        const id = 'workflow:guided';
+        const apply = async request => api('/workflow/apply', { id: (await api('/workflow/preview', { id, ...request })).id });
+        const started = await apply({ operation: 'guided-start' });
+        const runId = started.graph.nodes.find(node => node.id === id).guidedRun.id;
+        await apply({ operation: 'guided-verdict', runId, gate: gate.id, verdict: 'approve' });
+        const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
+        page.setDefaultTimeout(10_000);
+        await page.goto(url);
+        await page.getByRole('button', { name: 'Workflow & runs', exact: true }).click();
+        await page.getByLabel('Run record', { exact: true }).selectOption('guided');
+        const decisions = page.getByRole('list', { name: 'Recorded gate decisions' });
+        const dialog = page.getByRole('dialog');
+        const compare = decisions.getByRole('button', { name: 'Compare current evidence…' });
+        await compare.click();
+        await dialog.getByText('The current file matches the version reviewed at this gate.', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+        f.put(evidence, '# Feature Specification: Export board\n\nUpdated evidence.');
+        await compare.click();
+        await dialog.getByText('The current file differs from the version reviewed at this gate.', { exact: false }).waitFor();
+        await dialog.locator('pre', { hasText: 'Updated evidence.' }).waitFor();
     });
 
     it('shows ordered sequence evidence and falls back to source for a conditional sequence', { timeout: 60_000 }, async t => {

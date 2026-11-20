@@ -1622,6 +1622,16 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
     return {
         get changing() { return applying; },
         snapshot,
+        inspectGateDecision({ id, mode, runId, step }) {
+            const { root } = context();
+            const graph = snapshot();
+            const node = graph.nodes.find(item => item.kind === 'Workflows' && item.id === id);
+            const record = mode === 'guided' ? node?.guidedRun : mode === 'isolated' ? node?.isolatedRun : null;
+            const evidence = record?.id === runId && record?.decisions?.find(item => item.step === step)?.evidence;
+            if (!evidence) throw invalid('This decision or its evidence is no longer in the selected run record. Refresh Workflow & runs.', 404);
+            const current = readGateArtifact(root, graph, evidence.path);
+            return { path: current.path, text: current.text, matches: current.digest === evidence.digest };
+        },
         async inspectComposition(id) {
             const { root, revision } = context();
             const node = snapshot().nodes.find(item => item.id === id && item.kind === 'Workflows' && item.installed);
