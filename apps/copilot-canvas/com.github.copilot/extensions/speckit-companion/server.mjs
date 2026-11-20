@@ -25,6 +25,7 @@ const ASSETS = {
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
     '/workflow.js': ['workflow.js', 'text/javascript; charset=utf-8'],
     '/workflow-runs.js': ['workflow-runs.js', 'text/javascript; charset=utf-8'],
+    '/detail-tabs.js': ['detail-tabs.js', 'text/javascript; charset=utf-8'],
     '/diagram-preview.js': ['diagram-preview.js', 'text/javascript; charset=utf-8'],
     '/workflow.css': ['workflow.css', 'text/css; charset=utf-8'],
     '/viewer.css': ['../vendor/viewer.css', 'text/css; charset=utf-8'],

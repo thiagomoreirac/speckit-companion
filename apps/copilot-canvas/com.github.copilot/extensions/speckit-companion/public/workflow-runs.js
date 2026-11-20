@@ -1,3 +1,6 @@
+import { detailTabId, renderDetailTabs } from '/detail-tabs.js';
+
+const panelId = 'run-panel';
 const statuses = {
     created: 'Created', running: 'Running', paused: 'Paused', completed: 'Completed', failed: 'Failed',
     aborted: 'Aborted', skipped: 'Skipped', pending: 'Pending', review: 'Needs a verdict',
@@ -14,6 +17,8 @@ const tiers = { running: 'active', paused: 'review', review: 'review', write: 'r
 const preferredRun = node => node.guidedRun ?? node.isolatedRun ?? node.nativeRuns?.[0];
 const railState = status => status === 'completed' ? status :
     ['running', 'paused', 'review', 'write'].includes(status) ? 'in-progress' : 'not-started';
+const stepLabel = id => /^[a-z0-9][a-z0-9_-]*$/i.test(id)
+    ? id.replace(/[-_]+(?=.)/g, ' ').replace(/^./, char => char.toUpperCase()) : id;
 
 export function runPurposeLabel(purpose) {
     return purpose === 'acceptance' ? 'Acceptance gate' : purpose === 'validation' ? 'Validation check' : 'Default step label';
@@ -31,6 +36,8 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
     const focusId = root.contains(document.activeElement) ? document.activeElement.id : '';
     const boardScroll = document.getElementById('run-list')?.scrollTop ?? 0;
     const detailScroll = document.getElementById('run-detail')?.scrollTop ?? 0;
+    const railScroll = root.querySelector('.run-rail')?.scrollLeft ?? 0;
+    const tabScroll = root.querySelector('.tabs')?.scrollLeft ?? 0;
     const selectDetail = ({ workflow, run = null, feature = null, tab = 'overview' }, focus = 'run-details-heading') => {
         Object.assign(selection, { workflow, run, feature, tab, pane: 'detail' });
         render();
@@ -130,8 +137,8 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             filterBar,
             el('div', { class: 'workflow-actions' },
                 button(`Decision inbox${inbox.length ? ` (${inbox.length})` : ''}`,
-                    () => selectDetail({ workflow: selected?.id, run: selection.run, feature: selection.feature, tab: 'inbox' }, 'run-tab-inbox'),
-                    { id: 'run-show-inbox', 'aria-controls': 'run-panel', 'aria-pressed': String(selection.tab === 'inbox') }),
+                    () => selectDetail({ workflow: selected?.id, run: selection.run, feature: selection.feature, tab: 'inbox' }, detailTabId(panelId, 'inbox')),
+                    { id: 'run-show-inbox', 'aria-controls': panelId, 'aria-pressed': String(selection.tab === 'inbox') }),
                 button('Refresh runs', refresh, { id: 'run-refresh' }))),
         list, listEmpty);
     renderList();
@@ -197,9 +204,9 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
     }
     const topSteps = children.get(selected?.id) ?? [];
     const gateRecords = new Map([...(selected?.reviewGates ?? []), ...(selected?.guidedReview ?? []).map(pair => pair.gate)].map(gate => [gate.id, gate]));
-    function diagram(parent) {
+    function diagram(parent, childEdges = children.get(parent) ?? []) {
         const groups = new Map();
-        for (const edge of children.get(parent) ?? []) {
+        for (const edge of childEdges) {
             if (!groups.has(edge.label)) groups.set(edge.label, []);
             groups.get(edge.label).push(edge);
         }
@@ -209,14 +216,11 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                 el('ol', { class: 'run-steps', 'aria-label': parent === selected.id ? 'Workflow steps' : label }, edges.map(edge => {
                     const step = byId.get(edge.target);
                     const gate = step.stepType === 'gate' && gateRecords.get(step.name);
-                    const active = !native && ['paused', 'review', 'write'].includes(run?.status) &&
-                        (key === 'isolated' ? Boolean(gate) && step.name === run.step : key === 'guided' && step.name === run.step);
-                    const stepLabel = step.runPurpose ? runPurposeLabel(step.runPurpose)
+                    const kind = step.runPurpose ? runPurposeLabel(step.runPurpose)
                         : types[step.stepType] ?? step.stepType ?? 'Unknown step';
-                    return el('li', { class: 'run-step', 'data-current': String(active) },
+                    return el('li', { class: 'run-step' },
                         el('div', { class: 'run-step-title' }, el('strong', {}, step.name),
-                            el('div', { class: 'run-step-labels' }, tag(stepLabel),
-                                active ? tag(run.status === 'paused' ? 'review' : run.status) : null)),
+                            el('div', { class: 'run-step-labels' }, tag(kind))),
                         incoming.has(step.id) ? el('p', { class: 'run-meta' }, `After ${incoming.get(step.id).join(', ')}`) : null,
                         step.stepType === 'fan-out' ? p(step.fanOutConcurrency === 1 ? 'Runs one item at a time.' :
                             step.fanOutConcurrency > 1 ? `Up to ${step.fanOutConcurrency} items run in parallel.` : 'Concurrency is not a literal positive number.') : null,
@@ -233,7 +237,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                         key === 'definition' && step.stepType ? button('Change step label…', () => configurePurpose(step), {
                             'aria-label': `Change step label: ${step.name}`, id: `run-purpose-${step.id}`,
                         }) : null,
-                        byId.get(step.subworkflow)?.installed ? button('Inspect subworkflow', () => selectDetail({ workflow: step.subworkflow, run: 'definition', tab: 'steps' })) : null,
+                        byId.get(step.subworkflow)?.installed ? button('Inspect subworkflow', () => selectDetail({ workflow: step.subworkflow, run: 'definition' })) : null,
                         findings(step.id).map(item => el('p', { class: 'run-blocker' }, item.message)),
                         children.has(step.id) ? diagram(step.id) : null);
                 })))));
@@ -263,30 +267,43 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         items?.length ? el('ul', { class: 'run-occurrences', 'aria-label': `Recorded items for ${step.id}` },
             items.sort((a, b) => a.fanOutItem.index - b.fanOutItem.index).map(recordedStep)) : null);
     }
+    const receipts = run?.decisions ?? [];
+    function recordedDecisions(decisions) {
+        return el('ol', { class: 'run-lines', 'aria-label': 'Recorded gate decisions' },
+            decisions.map(({ step, verdict, at, evidence }) => el('li', {},
+                el('div', {}, el('strong', {}, step),
+                    el('p', { class: 'run-meta' }, el('time', { datetime: at }, new Date(at).toLocaleString())),
+                    evidence ? el('div', {},
+                        el('p', { class: 'run-meta' }, evidence.path, el('br'), 'SHA-256 ', el('code', {}, evidence.digest)),
+                        roleButton('Compare current evidence…', () => inspectDecision(selected.id, key, run.id, step, evidence.path),
+                            { id: `run-compare-${key}-${step}` })) : null),
+                tag(verdicts[verdict]))));
+    }
     const activity = () => [
         !native && run?.startInputs?.length ? el('section', {},
             el('h4', {}, 'Recorded start inputs'),
             el('dl', {}, run.startInputs.flatMap(({ name, value }) => [el('dt', {}, name), el('dd', {}, value)]))) : null,
-        !native && run?.decisions?.length ? el('section', {},
+        receipts.length ? el('section', {},
             el('h4', {}, 'Recorded gate decisions'),
             p('Each digest identifies the reviewed version. The run does not store a copy of the evidence or authorize an external change.'),
-            el('ol', { class: 'run-lines', 'aria-label': 'Recorded gate decisions' },
-                run.decisions.map(({ step, verdict, at, evidence }) => el('li', {},
-                    el('div', {}, el('strong', {}, step),
-                        el('p', { class: 'run-meta' }, el('time', { datetime: at }, new Date(at).toLocaleString())),
-                        evidence ? el('div', {},
-                            el('p', { class: 'run-meta' }, evidence.path, el('br'), 'SHA-256 ', el('code', {}, evidence.digest)),
-                            roleButton('Compare current evidence…', () => inspectDecision(selected.id, key, run.id, step, evidence.path),
-                                { id: `run-compare-${key}-${step}` })) : null),
-                    tag(verdicts[verdict]))))) : null,
+            recordedDecisions(receipts)) : null,
         native?.steps.length ? el('section', {}, el('h4', {}, 'Recorded step results'),
             native.steps.some(result => result.evidence) ? p('Recorded paths open the current files. Native run records do not preserve the reviewed bytes.') : null,
             native.steps.some(step => step.fanOut) ? p('Fan-out results show recorded item outcomes, not whether their execution overlapped.') : null,
             el('ul', { class: 'run-lines' }, native.steps.filter(step => !step.fanOutItem).map(recordedStep)),
             native.omittedSteps ? p(`${native.omittedSteps} additional results are available in the native run record.`) : null) : null,
-        !native?.steps.length && !run?.startInputs?.length && !run?.decisions?.length ? p('No step results or gate decisions are recorded in this selection.') : null,
+        !run ? p('Select a saved run to see its activity here. The current definition does not contain run results.')
+            : !native?.steps.length && !run.startInputs?.length && !receipts.length
+                ? p('No step results or gate decisions are recorded in this run.') : null,
     ];
-    const overview = () => [
+    const recordedQuestion = () => native?.gateWaiting ? el('section', { class: 'run-question' },
+        el('h4', {}, 'Recorded decision'),
+        question?.message ? el('p', { class: 'run-question-message', dir: 'auto' }, question.message) : p('Question text is not available in this view.'),
+        question?.options ? el('ul', { 'aria-label': 'Recorded choices' }, question.options.map(option => el('li', { dir: 'auto' }, option))) : null,
+        question?.onReject ? p(`Recorded behavior on rejection: ${question.onReject}.`) : null) : null;
+    const overview = () => !selected ? p('Pick a workflow to see its steps and run history.') : [
+        run ? p('Step tabs show what this run recorded, not the current workflow definition.')
+            : p(topSteps.length ? 'Select a step on the rail or in the tabs to see what it does.' : 'No steps are available in the repository definition.'),
         run?.step ? p(`Recorded checkpoint: ${run.step}`) : null,
         run?.error ? el('p', { role: 'alert' }, run.error) : null,
         native?.updatedAt ? el('p', { class: 'run-meta' }, 'Updated ', el('time', { datetime: native.updatedAt }, new Date(native.updatedAt).toLocaleString())) : null,
@@ -294,11 +311,7 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             : historyOnly ? p('This workflow is not installed. You can inspect its saved records, but this view cannot start or resume it.')
             : native?.resumeHold === 'disabled' ? p('The installed workflow is disabled. To resume this checkpoint, first review and enable its workflow in Management.')
             : native?.status === 'paused' ? p('This checkpoint belongs to a native Spec Kit run. Inspect it here; resume it through the runtime that owns it.') : null,
-        native?.gateWaiting ? el('section', { class: 'run-question' },
-            el('h4', {}, 'Recorded decision'),
-            question?.message ? el('p', { class: 'run-question-message', dir: 'auto' }, question.message) : p('Question text is not available in this view.'),
-            question?.options ? el('ul', { 'aria-label': 'Recorded choices' }, question.options.map(option => el('li', { dir: 'auto' }, option))) : null,
-            question?.onReject ? p(`Recorded behavior on rejection: ${question.onReject}.`) : null) : null,
+        recordedQuestion(),
         resumeCommand ? el('div', {},
             p('Run this from the repository root in an interactive terminal. Review any prompts there; the canvas does not supply a verdict or run the command.'),
             el('div', { class: 'workflow-actions' }, el('code', {}, resumeCommand),
@@ -306,13 +319,17 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         startCommand ? nativeStart() : null,
         recordedEvidence(native?.checkpoint, 'run-checkpoint-evidence'),
         !historyOnly ? el('div', { class: 'workflow-actions' },
+            run ? button('View current definition', () => selectDetail({ workflow: selected.id, run: 'definition', feature: selection.feature })) : null,
             button('Inspect configuration', () => openWorkflow(selected.id)),
             requested && selection.feature ? button('Return to linked spec', () => openFeature(selection.feature)) : null) : null,
         !historyOnly && issue.length ? el('details', {}, el('summary', {}, `${issue.length} configuration ${issue.length === 1 ? 'blocker' : 'blockers'}`),
             el('ul', {}, issue.map(item => el('li', {}, item.message)))) : null,
     ];
-    const definitionEvidence = selected && !historyOnly ? graph.nodes.filter(step => step.workflowOwner === selected.id && step.definitionEvidence) : [];
+    const definitionEvidence = selected && key === 'definition'
+        ? graph.nodes.filter(step => step.workflowOwner === selected.id && step.definitionEvidence) : [];
+    const linkedSpecs = key === 'definition' ? [...featureIds] : [];
     const historicalEvidence = new Map([...(native?.steps ?? []), native?.checkpoint].filter(step => step?.evidence).map(step => [step.id, step]));
+    const reviewedEvidence = receipts.filter(decision => decision.evidence);
     const evidence = () => [
         historicalEvidence.size ? el('section', {}, el('h4', {}, 'Recorded evidence references'),
             p('Recorded paths open the current files. Native run records do not preserve the reviewed bytes.'),
@@ -322,12 +339,14 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
             el('ul', { class: 'run-lines' }, definitionEvidence.map(step => el('li', {},
                 el('div', {}, el('strong', {}, step.name), el('p', { class: 'run-meta' }, step.definitionEvidence.path)),
                 button('Read definition evidence…', () => inspectEvidence(step, step.definitionEvidence.path, step.definitionEvidence)))))) : null,
-        run?.decisions?.some(decision => decision.evidence) ? el('section', {}, el('h4', {}, 'Reviewed evidence'),
-            el('ul', { class: 'run-lines' }, run.decisions.filter(decision => decision.evidence).map(({ step, evidence }) => el('li', {},
+        reviewedEvidence.length ? el('section', {}, el('h4', {}, 'Reviewed evidence'),
+            el('ul', { class: 'run-lines' }, reviewedEvidence.map(({ step, evidence }) => el('li', {},
                 el('div', {}, el('strong', {}, step), el('p', { class: 'run-meta' }, evidence.path)),
                 button('Compare current evidence…', () => inspectDecision(selected.id, key, run.id, step, evidence.path)))))) : null,
-        featureIds.size ? el('section', {}, el('h4', {}, 'Linked specs'), el('div', { class: 'workflow-actions' },
-            [...featureIds].map(id => button(`Spec evidence: ${byId.get(id).name}`, () => openFeature(byId.get(id).key))))) : null,
+        linkedSpecs.length ? el('section', {}, el('h4', {}, 'Linked specs'), el('div', { class: 'workflow-actions' },
+            linkedSpecs.map(id => button(`Spec evidence: ${byId.get(id).name}`, () => openFeature(byId.get(id).key))))) : null,
+        !historicalEvidence.size && !definitionEvidence.length && !reviewedEvidence.length && !linkedSpecs.length
+            ? p(run ? 'This run has no recorded evidence.' : 'No evidence or linked specs are available in this workflow definition.') : null,
     ];
     const pendingDecision = inbox.find(item => item.node.id === selected?.id && item.runKey === key);
     const startActions = selected && !historyOnly ? [
@@ -346,41 +365,57 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
         pendingDecision?.action ? button(pendingDecision.action === 'guided-write' ? 'Review GitHub change…' : 'Review verdict…',
             () => handleDecision(selected, pendingDecision.action), { class: 'btn btn-primary', id: 'run-next-review' }) : null),
         startActions.length ? el('div', { class: 'next-more' }, startActions) : null);
-    const rail = native ? native.steps.filter(step => !step.fanOutItem).map(step => [step.id, step.status])
+    const nativeResults = new Map((native?.steps ?? []).map(step => [step.id, step]));
+    if (native?.checkpoint && !nativeResults.has(native.checkpoint.id)) nativeResults.set(native.checkpoint.id, native.checkpoint);
+    const historySteps = new Set(native ? [...nativeResults.values()].filter(step => !step.fanOutItem).map(step => step.id)
+        : receipts.map(decision => decision.step));
+    if (run?.step) historySteps.add(nativeResults.get(run.step)?.fanOutItem?.parent ?? run.step);
+    const stepTabs = run
+        ? [...historySteps].map(name => {
+            const result = nativeResults.get(name);
+            const atCheckpoint = name === run.step || name === nativeResults.get(run.step)?.fanOutItem?.parent;
+            const decisions = receipts.filter(decision => decision.step === name);
+            const status = (atCheckpoint && ['paused', 'running', 'review', 'write', 'uncertain'].includes(run.status) ? run.status : result?.status) ?? null;
+            return { id: `recorded:${name}`, name, status, panel: () => [
+                el('h3', {}, stepLabel(name)),
+                atCheckpoint && status ? p(`Checkpoint: ${statuses[status] ?? status}`) : null,
+                atCheckpoint ? recordedQuestion() : null,
+                result ? el('ul', { class: 'run-lines', 'aria-label': 'Recorded step result' }, recordedStep(result)) : null,
+                decisions.length ? recordedDecisions(decisions) : null,
+                !result && !decisions.length ? p('No step result is recorded for this checkpoint.') : null,
+            ] };
+        })
         : topSteps.map(edge => {
-            const step = byId.get(edge.target);
-            return [step.name, step.name === run?.step ? run.status : null];
+            const { name, id } = byId.get(edge.target);
+            return { id: `step:${id}`, name, status: null, panel: () => [el('h3', {}, stepLabel(name)), diagram(selected.id, [edge])] };
         });
-    const tabs = [
-        ...(selected ? [['overview', 'Overview', overview],
-            ...(!historyOnly ? [['steps', 'Steps', () => [
-                el('h4', {}, 'Step diagram'), p(native ? 'The diagram is the current definition, not a reconstruction of this historical run.' :
-                    'Branches show what can run; only a saved checkpoint confirms where a run stopped.'),
-                topSteps.length ? diagram(selected.id) : p('No steps are available in the repository definition.'),
-            ]]] : []),
-            ...(run ? [['activity', 'Activity', activity]] : []),
-            ...(definitionEvidence.length || historicalEvidence.size || featureIds.size || run?.decisions?.some(decision => decision.evidence)
-                ? [['evidence', 'Evidence', evidence]] : []),
-        ] : []),
-        ['inbox', 'Decision inbox', () => section, inbox.length],
-    ];
-    const [activeTab, , panel] = tabs.find(([id]) => id === selection.tab) ?? tabs[0];
+    const utilities = [{ id: 'activity', label: 'Activity', panel: activity }, { id: 'evidence', label: 'Evidence', panel: evidence },
+        { id: 'inbox', label: 'Decision inbox', count: inbox.length, panel: () => section }];
+    const labels = new Map(utilities.map(tab => [tab.label.toLowerCase(), 1]));
+    labels.set('overview', 1);
+    for (const { name } of stepTabs) {
+        const label = stepLabel(name).toLowerCase();
+        labels.set(label, (labels.get(label) ?? 0) + 1);
+    }
+    const tabs = [{ id: 'overview', label: 'Overview', panel: overview }, ...stepTabs.map(tab => {
+        const label = stepLabel(tab.name);
+        return { ...tab, label: labels.get(label.toLowerCase()) > 1 ? `${label} (${tab.name})` : label, title: tab.name };
+    }), ...utilities];
+    const { id: activeTab, panel } = tabs.find(({ id }) => id === selection.tab) ?? tabs[0];
     function selectTab(id) {
         selection.tab = id;
         render();
-        document.getElementById(`run-tab-${id}`)?.focus();
+        document.getElementById(detailTabId(panelId, id))?.focus();
     }
-    const tabBar = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Workflow details' },
-        tabs.map(([id, label, , count], index) => el('button', { type: 'button', class: 'tab', role: 'tab', id: `run-tab-${id}`,
-            'aria-controls': 'run-panel', 'aria-selected': String(activeTab === id), tabindex: activeTab === id ? 0 : -1,
-            onclick: () => selectTab(id),
-            onkeydown: event => {
-                const next = { ArrowLeft: (index + tabs.length - 1) % tabs.length, ArrowRight: (index + 1) % tabs.length,
-                    Home: 0, End: tabs.length - 1 }[event.key];
-                if (typeof next !== 'number') return;
-                event.preventDefault();
-                selectTab(tabs[next][0]);
-            } }, label, count ? el('span', { class: 'count' }, count) : null)));
+    const tabBar = renderDetailTabs({ el, tabs, active: activeTab, panelId, label: 'Workflow details', select: selectTab });
+    const rail = stepTabs.length && activeTab !== 'inbox' ? el('ol', { class: 'rail run-rail', 'aria-label': run ? 'Recorded step progress' : 'Workflow pipeline' },
+        stepTabs.map(({ id, name, status }, index) => el('li', { dataset: { state: railState(status) } },
+            el('button', { type: 'button', class: 'run-rail-step', title: name, 'aria-current': id === activeTab ? 'true' : null,
+                'aria-label': status ? `${stepLabel(name)}, ${statuses[status] ?? status}` : stepLabel(name),
+                onclick: () => selectTab(id) },
+            el('span', { class: 'rail-node', 'aria-hidden': 'true' }, status === 'completed' ? '✓' : String(index + 1)),
+            el('span', { class: 'sb-rail-label' }, stepLabel(name)),
+            status ? el('span', { class: 'rail-state' }, statuses[status] ?? status) : null)))) : null;
     const detail = el('section', { class: 'detail', id: 'run-detail', 'aria-labelledby': 'run-details-heading' },
         el('div', { class: 'detail-inner' },
             button('← All workflows', back, { class: 'btn btn-quiet back', id: 'run-back' }),
@@ -396,18 +431,15 @@ export function renderWorkflowRuns({ root, graph, selection, el, button, copyBut
                     render();
                     document.getElementById('run-detail')?.scrollTo(0, 0);
                 } }, options.map(([id, name]) => el('option', { value: id, selected: key === id }, name)))) : null,
-            rail.length && activeTab !== 'inbox' ? el('ol', { class: 'rail run-rail', 'aria-label': native ? 'Recorded step progress' : 'Workflow pipeline' },
-                rail.map(([name, status], index) => el('li', { dataset: { state: railState(status) } },
-                    el('span', { class: 'rail-node', 'aria-hidden': 'true' }, status === 'completed' ? '✓' : String(index + 1)),
-                    el('span', { class: 'sb-rail-label' }, name),
-                    status ? el('span', { class: 'rail-state', 'aria-hidden': 'true' }, statuses[status] ?? status) : null,
-                    status ? el('span', { class: 'sr-only' }, `: ${statuses[status] ?? status}`) : null))) : null,
+            rail,
             activeTab !== 'inbox' ? next : null,
             tabBar,
-            el('div', { class: 'panel', role: 'tabpanel', id: 'run-panel', 'aria-labelledby': `run-tab-${activeTab}`, tabindex: 0 }, panel())));
+            el('div', { class: 'panel', role: 'tabpanel', id: panelId, 'aria-labelledby': detailTabId(panelId, activeTab), tabindex: 0 }, panel())));
     root.dataset.view = selection.pane;
     root.replaceChildren(board, detail);
     list.scrollTop = boardScroll;
     detail.scrollTop = detailScroll;
+    if (rail) rail.scrollLeft = railScroll;
+    tabBar.scrollLeft = tabScroll;
     if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
 }

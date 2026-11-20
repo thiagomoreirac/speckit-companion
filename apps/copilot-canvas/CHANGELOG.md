@@ -12,7 +12,7 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 
 ### Changed
 
-- **Browse workflows like specs.** Find installed workflows in the familiar sidebar, then open their steps, evidence, activity, and waiting decisions in tabs.
+- **Browse workflows like specs.** Open a tab for each workflow step, or switch to a saved run to inspect its recorded results and evidence.
 
 ### Fixed
 

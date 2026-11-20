@@ -72,7 +72,9 @@ On the PDaC Product participant, **Review approved Product Change** lists only h
 
 ## Inspect workflow runs and decisions
 
-**Workflow & runs** uses the same sidebar, progress rail, next-step card, and detail tabs as **Specs & runs**. Search installed workflows or saved history in the sidebar. Pick **Current definition** or a saved run in **Run record**. **Overview** shows the checkpoint and available actions; **Steps** shows the installed definition; **Activity** shows the selected run's recorded results; **Evidence** groups links from the definition, run, or linked specs when available. Choose **← All workflows** to return to the list in a narrow panel.
+**Workflow & runs** uses the same sidebar, progress rail, next-step card, and detail tabs as **Specs & runs**. Pick **Current definition** in **Run record** to see a tab for each top-level workflow step. Click the rail or the tab to inspect a step; branches and parallel templates stay inside their parent step. Pick a saved run to see tabs based on its recorded results and checkpoint, not the current definition. Recorded parallel items stay together when the checkpoint identifies their parent.
+
+**Overview** shows the checkpoint and available actions. **Activity** and **Evidence** stay visible even when there are no results or evidence. Evidence from the current definition and evidence recorded in a run appear under their respective selections. Choose **← All workflows** to return to the list in a narrow panel.
 
 The steps come from the selected workflow, not a fixed Spec Kit lifecycle. The diagram distinguishes conditional branches from fan-out, shows declared concurrency and join inputs, and links to installed subworkflows. It shows declared agents and inputs, not evidence that a specific agent ran. Recorded results list individual step occurrences separately so updated definitions don't rewrite history. When a native checkpoint records a fan-out expansion, its item outcomes appear under that expansion with the recorded item count and concurrency limit. This limit does not establish that the items ran at the same time.
 

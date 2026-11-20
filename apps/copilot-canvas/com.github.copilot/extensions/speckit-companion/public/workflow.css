@@ -124,6 +124,15 @@
 .run-record-control { display: grid; gap: 4px; max-width: 24rem; margin-top: 12px; }
 .run-rail { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(5rem, 1fr); overflow-x: auto; }
 .run-rail li { min-width: 0; padding-inline: 4px; }
+.run-rail-step {
+    position: relative; display: grid; justify-items: center; align-content: start; gap: 4px;
+    width: 100%; padding: 0 0 4px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.run-rail-step:focus-visible { outline-offset: -2px; }
+.run-rail-step:hover .sb-rail-label, .run-rail-step[aria-current="true"] .sb-rail-label { text-decoration: underline; }
+#workflow-runs .tabs { scrollbar-width: thin; }
+#workflow-runs .tab { max-inline-size: min(16rem, 75vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#workflow-runs .tab:focus-visible { outline-offset: -2px; }
 .run-next { margin-top: 16px; }
 .run-inbox h3 { margin: 0 0 12px; }
 .run-native-start { overflow-wrap: anywhere; }
@@ -142,7 +151,6 @@
 .run-status:is([data-run-status="write"], [data-run-status="paused"], [data-run-status="review"]) { font-weight: 650; }
 .run-steps { display: grid; gap: 0.85rem; padding-inline-start: 0.8rem; border-inline-start: 1px solid var(--border); }
 .run-step { padding: 0.75rem 0.85rem; border: 1px solid var(--border); overflow-wrap: anywhere; min-width: 0; }
-.run-step[data-current="true"] { outline: 1px solid var(--color-focus-outline, currentColor); }
 .run-step .run-branches { margin-top: 0.75rem; }
 .run-branches > div { min-width: 0; }
 .run-branch-label { margin: 0 0 0.3rem; font-size: 0.88em; }

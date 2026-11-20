@@ -1,6 +1,7 @@
 import { selectState, setupStatesSelect } from '/states-select.mjs';
 import { setupWorkflow } from '/workflow.js';
 import { flowchartDrawing, staticDrawings } from '/diagram-preview.js';
+import { detailTabId, renderDetailTabs } from '/detail-tabs.js';
 
 const params = new URLSearchParams(location.search);
 const token = params.get('token') ?? '';
@@ -847,23 +848,22 @@ function renderDetail() {
     if (spec.workflow && workflowView.hasWorkflow(spec.workflow)) head.append(el('button', { type: 'button', class: 'btn',
         onclick: () => workflowView.openRun(spec.workflow, spec.id) }, 'Open workflow runs'));
 
-    const tabBar = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Documents' }, tabs.map(tab => el('button', {
-        class: 'tab',
-        type: 'button',
-        role: 'tab',
-        'aria-selected': tab.id === state.tab ? 'true' : 'false',
-        onclick: () => {
-            state.tab = tab.id;
+    const panelId = 'spec-panel';
+    const tabBar = renderDetailTabs({ el, tabs, active: state.tab, panelId, label: 'Documents',
+        select: id => {
+            state.tab = id;
             renderDetail();
+            $(detailTabId(panelId, id))?.focus();
         },
-    }, tab.label, tab.count ? el('span', { class: 'count' }, tab.count) : null)));
+    });
 
     els.detail.replaceChildren(el('div', { class: 'detail-inner' },
         head,
         renderRail(spec.steps),
         renderNext(spec),
         tabBar,
-        el('div', { class: 'panel', role: 'tabpanel' }, renderPanel(detail, state.tab))));
+        el('div', { class: 'panel', role: 'tabpanel', id: panelId, 'aria-labelledby': detailTabId(panelId, state.tab), tabindex: 0 },
+            renderPanel(detail, state.tab))));
     restoreStates(picked);
     els.detail.scrollTop = scrollTop;
     if (evidenceFocus) $('spec-evidence-picker')?.focus({ preventScroll: true });
