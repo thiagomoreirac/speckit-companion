@@ -606,7 +606,7 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
         } else if (operation === 'agent-apm-import') {
             const feature = specs.find(spec => spec.id === request.feature);
             if (!feature || node?.id !== `feature:${feature.id}`) throw invalid('Select an inventoried feature.');
-            const target = requireApmImportTarget(root, workspaceEntry);
+            const target = requireApmImportTarget(root, workspaceEntry, request.harness);
             apmStage = reviewedApmStage ?? await stageApmImport(workspaceEntry, target);
             documentChanges = apmStage.documents;
             if (documentChanges[0].before !== target.before || documentChanges[0].after !== target.after) {
@@ -616,13 +616,14 @@ export function createWorkflowActions({ context, runPreview, run, changed, cli =
             sourceStamp = createHash('sha256').update(JSON.stringify(documentChanges)).digest('hex');
             affected = [node];
             title = 'Import the HVE Core functional code reviewer';
-            notes = [`APM staged one Copilot profile from microsoft/hve-core at ${apmStage.commit}. This import belongs to the project, not just this feature.`,
-                'Confirmation writes the three reviewed files only. No package cache, settings, hooks, or services are installed. This Copilot profile is inspect-only in Agent Assign; no agent is run.'];
+            notes = [`APM staged one ${target.label} profile from microsoft/hve-core at ${apmStage.commit}. This import belongs to the project, not just this feature.`,
+                'Confirmation writes the three reviewed files only. No package cache, settings, hooks, or services are installed. No agent is run.',
+                target.harness === 'claude' ? 'Use Agent Assign 1.1.0 to review an assignment separately.' : 'This Copilot profile is inspect-only in Agent Assign.'];
             execute = () => {
-                requireApmImportTarget(root, workspaceEntry);
+                requireApmImportTarget(root, workspaceEntry, target.harness);
                 const created = [];
                 try {
-                    for (const dir of ['.github', '.github/agents']) {
+                    for (const dir of target.directories) {
                         if (!workspaceEntry(root, dir, { rejectSymlinks: true })) {
                             mkdirSync(join(root, dir));
                             created.push(dir);

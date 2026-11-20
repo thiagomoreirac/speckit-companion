@@ -1217,9 +1217,9 @@ export function setupWorkflow({ el, api, reportSend, copyButton, renderEvidence,
     });
     return {
         show, update, editAssignment, addAssignment,
-        importHve(feature) {
+        importHve(feature, harness) {
             openDialog('Preparing HVE Core import');
-            void preview({ operation: 'agent-apm-import', id: `feature:${feature}`, feature });
+            void preview({ operation: 'agent-apm-import', id: `feature:${feature}`, feature, harness });
         },
         hasWorkflow(key) {
             return Boolean(state.graph?.nodes.some(node => node.kind === 'Workflows' && node.key === key && node.installed));

@@ -731,7 +731,7 @@ function renderPanel(detail, tabId) {
     } }, name);
     const figma = detail.figmaSections?.includes(doc?.type);
     const assignments = doc?.type === 'tasks' && detail.assignments;
-    const importHve = doc?.type === 'tasks' && detail.canImportHve;
+    const importHve = doc?.type === 'tasks' ? detail.hveImportOptions ?? [] : [];
     const related = doc?.type === 'data-model' ? ['Data model'] : doc?.type === 'plan' ? ['Architecture', 'Data model', 'Wireframes', 'Prototypes', 'Decisions'] : [];
     if (figma) related.push('Design context');
     const links = new Map(related.filter(phase => detail.evidence.some(item => item.phase === phase)).map(phase => [phase, null]));
@@ -739,11 +739,11 @@ function renderPanel(detail, tabId) {
         if (item.documents.includes(doc?.type) && !links.get(item.phase)) links.set(item.phase, item);
     }
     return el('div', {}, renderDocumentHooks(detail, doc?.type),
-        figma || assignments || importHve || links.size ? el('div', { class: 'sb-feature-evidence' },
+        figma || assignments || importHve.length || links.size ? el('div', { class: 'sb-feature-evidence' },
             figma ? el('p', {}, 'This document contains an embedded Figma section. Its presence does not record a passed verification.') : null,
             assignments ? showTab('See agent assignments', 'assignments') : null,
-            importHve ? el('button', { type: 'button', class: 'btn btn-quiet',
-                onclick: () => workflowView.importHve(detail.spec.id) }, 'Preview HVE Core import…') : null,
+            importHve.map(({ harness, label }) => el('button', { type: 'button', class: 'btn btn-quiet',
+                onclick: () => workflowView.importHve(detail.spec.id, harness) }, `Preview HVE Core import for ${label}…`)),
             [...links].map(([phase, preferred]) => showTab(`See ${phase.toLowerCase()} evidence`, `evidence:${phase}`, preferred))) : null,
         viewerScope(body));
 }

@@ -14,7 +14,7 @@ import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { validateRepositoryRoot, validateRoot } from './workspace.mjs';
 import { pickFolder } from './folder-picker.mjs';
 import { createWorkflowActions } from './workflow-actions.mjs';
-import { canOfferApmImport } from './workflow-apm.mjs';
+import { apmImportOptions } from './workflow-apm.mjs';
 import { inspectWorkflowArtifact, NATIVE_GENERATED_FILES, workspaceEntry } from './workflow-inventory.mjs';
 import { embeddedFigmaSections, featureAssignments, featureEvidence, readFeatureEvidence, specDocumentHooks } from './feature-evidence.mjs';
 
@@ -722,7 +722,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             return sendJson(res, 200, { ...detail, spec: present(detail.spec), evidence: featureEvidence(state.root, spec.id),
                 documentHooks: specDocumentHooks(state.root), figmaSections: embeddedFigmaSections(state.root, spec.id),
                 assignments: featureAssignments(state.root, spec.id, detail.taskList.map(task => task.id)),
-                canImportHve: canOfferApmImport(state.root, workspaceEntry),
+                hveImportOptions: apmImportOptions(state.root, workspaceEntry),
                 commandSet: set, commands: availableCommands(set), commandHint: commandPattern(state.root, set) });
         }
 
