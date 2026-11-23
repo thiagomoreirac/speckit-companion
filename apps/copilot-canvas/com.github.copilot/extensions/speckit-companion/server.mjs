@@ -25,6 +25,7 @@ import { createReportPrompt, ideasDirectory, listReports, processExtensionPrompt
 import { ensureCacheFolder } from './vendor/report-host.mjs';
 import { listTriage, productUpdateDraft, productUpdates, recordProductUpdate, saveTriage } from './product-work.mjs';
 import { archiveRoutine, routineHandoff, routineInventory, routineManagement, saveRoutine } from './routines.mjs';
+import { dedicatedWorkHandoff } from './work-handoff.mjs';
 import { ALL_SORT_MODES, comparators } from './vendor/specs-sort.mjs';
 import { FORCE_STATUS_CHOICES, forceSpecContextStatus, lifecycleFallback, reactivateSpecContext, setSpecContextStatus, updateSpecContextStrict } from './vendor/spec-lifecycle.mjs';
 
@@ -1140,6 +1141,23 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         return record;
     }
 
+    function prepareDedicatedWork(kind, id) {
+        if (typeof id !== 'string' || !id || id.length > 320) throw new Error('Choose one existing work item.');
+        if (kind === 'spec') {
+            const spec = state.snapshot.specs.find(item => item.id === id);
+            if (!spec?.files.spec) throw new Error('Choose the exact spec folder from this board.');
+            return dedicatedWorkHandoff(state.root, kind, id, `${id.split(sep).join('/')}/${spec.files.spec}`);
+        }
+        if (kind !== 'bug' && kind !== 'idea') throw new Error('Choose a spec, bug, or ready idea.');
+        sourceRecord({ kind, id });
+        const area = `${kind}-triage`;
+        const path = `.speckit-companion/${area}/${id}.json`;
+        const saved = listTriage(state.root, `${kind}s`).find(row => row.id === id);
+        if (!saved) throw new Error('Save Companion triage for this report before handing it off.');
+        if (kind === 'idea' && saved.status !== 'ready') throw new Error('Mark the idea Ready in Companion before handing it off.');
+        return dedicatedWorkHandoff(state.root, kind, id, path);
+    }
+
     function reviewedGate(spec, reference) {
         if (reference === undefined) return undefined;
         const run = inspectWorkflowRun(state.root, reference?.run);
@@ -1754,6 +1772,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         bindSession,
         updateCoordinatedSessions,
         selectCoordinatedSession,
+        prepareDedicatedWork,
         refreshChildren,
         followSession,
         followWorkingDirectory,

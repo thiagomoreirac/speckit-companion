@@ -13,14 +13,13 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 - **Preview delivery before creating issues.** Check the destination repository, tasks and delivery owner before sending a GitHub issue request.
 - **Carry product ideas into delivery.** Triage bugs and ideas in Companion, derive epics from plans, and review updates before applying them to existing work.
 - **Prepare recurring routines.** Draft schedules for commands, agents, GitHub Actions, and Copilot Automations, then review setup with the scheduler that owns them.
+- **Hand off dedicated cloud work.** Start from an exact published spec, bug, or Ready idea without changing the session that owns your board.
 
 ### Fixed
 
 - **Keep commands in the selected session.** Child dispatch uses session management and never falls back to the parent chat. <!-- area: copilot-app -->
 - **Stop on invalid settings or unavailable workflows.** The board shows the problem instead of dispatching with stock defaults. <!-- area: copilot-app -->
-- **Choose an owned session or checkout.** Pick the worktree to watch, or let a Project chat follow its only session. <!-- area: copilot-app -->
-- **The board follows each session's worktree.** Without a saved choice, each session's board moves to its own working directory when the runtime reports a change. <!-- area: copilot-app -->
-- **A coordinator can bind a child session's worktree.** The agent passes the child's id and path from its session details, and the board keeps it through ordinary buttons. <!-- area: copilot-app -->
+- **Follow or pin a worktree.** Follow the session's working directory, choose a checkout, or keep a coordinated child's worktree selected. <!-- area: copilot-app -->
 
 ## [0.2.2] - 2026-11-12
 

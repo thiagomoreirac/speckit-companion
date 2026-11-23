@@ -239,6 +239,26 @@ const session = await joinSession({
                     },
                 },
                 {
+                    name: 'prepare_dedicated_work',
+                    description: 'Read-only handoff for an explicit request to start isolated work on one spec, bug, or Ready idea. Returns the repository, exact base branch and commit, and one committed work record. Before creating a cloud worktree session, the coordinating agent must recheck the branch tip on GitHub and reuse any session already assigned to that item. Verify the new checkout starts at the reported commit before work. Never substitute the parent chat or another item. This action does not start work or grant approval.',
+                    inputSchema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            kind: { type: 'string', enum: ['spec', 'bug', 'idea'] },
+                            id: { type: 'string', minLength: 1, maxLength: 320, description: 'Exact spec folder path or Companion triage record ID.' },
+                        },
+                        required: ['kind', 'id'],
+                    },
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).prepareDedicatedWork(ctx.input.kind, ctx.input.id);
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
                     name: 'refresh',
                     description: 'Re-read every spec folder and update the board.',
                     handler: (ctx) => ({ count: serverFor(ctx).rescan().specs.length }),

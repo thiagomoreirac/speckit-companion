@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +77,63 @@ describe('how the board learns that a chat turn started and ended', () => {
 });
 
 describe('routing board commands to a selected child session', () => {
+    it('prepares distinct immutable work-item handoffs without starting, sending, or substituting work', async () => {
+        const [canvas] = (await loadExtension()).canvases;
+        const root = mkdtempSync(join(tmpdir(), 'canvas-work-handoff-'));
+        const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+        const spec = 'specs/001-roster';
+        const bug = '.speckit-companion/bug-triage/cancel.json';
+        const idea = '.speckit-companion/idea-triage/status.json';
+        const record = (id, status) => JSON.stringify({ schema: 1, id, captured: true, status, title: 'Review', description: 'Synthetic record' });
+        const ctx = { instanceId: 'test-dedicated-work', session: { workingDirectory: root }, input: null };
+        let opened = false;
+        let sends = 0;
+        globalThis.__copilotOnSend = () => { sends++; };
+        globalThis.__copilotManagementMessage = () => { sends++; };
+        try {
+            mkdirSync(join(root, spec), { recursive: true });
+            mkdirSync(join(root, '.speckit-companion', 'bug-triage'), { recursive: true });
+            mkdirSync(join(root, '.speckit-companion', 'idea-triage'), { recursive: true });
+            writeFileSync(join(root, spec, 'spec.md'), '# Roster\n');
+            writeFileSync(join(root, bug), record('cancel', 'reviewing'));
+            writeFileSync(join(root, idea), record('status', 'new'));
+            git('init', '-q', '-b', 'pilot/desktop');
+            git('config', 'user.email', 'test@example.invalid');
+            git('config', 'user.name', 'Test');
+            git('config', 'core.hooksPath', join(root, 'nonexistent-hooks'));
+            git('config', 'commit.gpgsign', 'false');
+            git('remote', 'add', 'origin', 'https://github.com/example/trailhead.git');
+            git('add', '--', '.');
+            git('commit', '-qm', 'Fixture');
+            const baseRevision = git('rev-parse', 'HEAD');
+            const track = 'refs/remotes/origin/pilot/desktop';
+            git('update-ref', track, baseRevision);
+            await canvas.open(ctx);
+            opened = true;
+            const prepare = input => canvas.actions.find(a => a.name === 'prepare_dedicated_work').handler({ ...ctx, input });
+            assert.deepEqual(prepare({ kind: 'spec', id: spec }), {
+                repository: 'example/trailhead', baseBranch: 'pilot/desktop', baseRevision,
+                item: { kind: 'spec', id: spec, path: `${spec}/spec.md` },
+                recordUrl: `https://github.com/example/trailhead/blob/${baseRevision}/${spec}/spec.md`,
+            });
+            assert.equal(prepare({ kind: 'bug', id: 'cancel' }).item.path, bug);
+            assert.throws(() => prepare({ kind: 'spec', id: '001' }), /exact spec folder/);
+            writeFileSync(join(root, idea), record('status', 'ready'));
+            assert.throws(() => prepare({ kind: 'idea', id: 'status' }), /publish the Ready status/);
+            git('add', '--', idea);
+            git('commit', '-qm', 'Mark idea ready');
+            assert.throws(() => prepare({ kind: 'bug', id: 'cancel' }), /not at its recorded origin branch tip/);
+            git('update-ref', track, git('rev-parse', 'HEAD'));
+            assert.equal(prepare({ kind: 'idea', id: 'status' }).item.path, idea);
+            assert.equal(sends, 0);
+        } finally {
+            if (opened) await canvas.onClose(ctx);
+            globalThis.__copilotOnSend = null;
+            delete globalThis.__copilotManagementMessage;
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('uses the exact session-management message target and never falls back to the parent chat', async () => {
         const [canvas] = (await loadExtension()).canvases;
         const workspace = mkdtempSync(join(tmpdir(), 'canvas-child-session-state-'));
