@@ -130,5 +130,8 @@ assets/mascot/explore/
 # Hypothesis example cache from the record property tests
 .hypothesis/
 
+# Repository-local Spec Kit CLI
+/.venv/
+
 # A damaged run record the writer kept aside before starting a fresh one
 .spec-context.damaged-*.json

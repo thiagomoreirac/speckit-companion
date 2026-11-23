@@ -10,15 +10,11 @@ import * as vscode from 'vscode';
 import {
     completedStatusForStep,
     HistoryEntryBy,
-    inFlightStatusForStep,
-    lifecycleStepFor,
     SpecContext,
-    STATUS_OWNING_STEP,
     STEP_NAMES,
     StepName,
 } from '../../core/types/specContext';
 import {
-    appendTransition,
     setStepStarted,
     setStepCompleted,
     setSubstepStarted,
@@ -26,8 +22,13 @@ import {
     updateSpecContext,
 } from './specContextWriter';
 import { Status } from '../../core/types/specContext';
-import { deriveSpecName } from '../../core/utils/specDisplayName';
 import { readSpecContextSyncSafe } from './specContextReader';
+import {
+    forceSpecContextStatus,
+    lifecycleFallback,
+    reactivateSpecContext,
+    setSpecContextStatus,
+} from './specLifecycleMutations';
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -43,17 +44,6 @@ function logError(action: string, err: unknown): void {
     outputChannel?.appendLine(msg);
 }
 
-function buildFallback(specDir: string, step: StepName): SpecContext {
-    return {
-        workflow: 'speckit',
-        specName: deriveSpecName(specDir),
-        branch: '',
-        currentStep: step,
-        status: 'draft',
-        history: [],
-    };
-}
-
 export async function startStep(
     specDir: string,
     step: StepName,
@@ -64,7 +54,7 @@ export async function startStep(
         await updateSpecContext(
             specDir,
             ctx => setStepStarted(ctx, step, by, undefined, dedupe),
-            buildFallback(specDir, step)
+            lifecycleFallback(specDir, step)
         );
     } catch (err) {
         logError(`startStep(${path.basename(specDir)}, ${step})`, err);
@@ -80,7 +70,7 @@ export async function completeStep(
         await updateSpecContext(
             specDir,
             ctx => setStepCompleted(ctx, step, by),
-            buildFallback(specDir, step)
+            lifecycleFallback(specDir, step)
         );
     } catch (err) {
         logError(`completeStep(${path.basename(specDir)}, ${step})`, err);
@@ -97,7 +87,7 @@ export async function startSubstep(
         await updateSpecContext(
             specDir,
             ctx => setSubstepStarted(ctx, step, substep, by),
-            buildFallback(specDir, step)
+            lifecycleFallback(specDir, step)
         );
     } catch (err) {
         logError(`startSubstep(${path.basename(specDir)}, ${step}/${substep})`, err);
@@ -113,23 +103,8 @@ export async function setStatus(
     try {
         await updateSpecContext(
             specDir,
-            ctx => {
-                // Only converge's own hook closes converge; a finish stamped here would bill the wait to it.
-                if (ctx.currentStep === 'converge') return { ...ctx, status };
-                const at = new Date().toISOString();
-                const next = appendTransition(
-                    { ...ctx, status },
-                    {
-                        step: ctx.currentStep,
-                        substep: null,
-                        kind: 'complete',
-                        by,
-                        at,
-                    }
-                );
-                return next;
-            },
-            buildFallback(specDir, 'specify')
+            ctx => setSpecContextStatus(ctx, status, by),
+            lifecycleFallback(specDir, 'specify')
         );
         return true;
     } catch (err) {
@@ -160,22 +135,11 @@ export async function forceStatus(
     if (status === 'completed' || status === 'archived') {
         return setStatus(specDir, status, by);
     }
-    const owning = STATUS_OWNING_STEP.get(status);
-    if (!owning) {
-        // `draft` and any unmapped value: fall back to the plain status write.
-        return setStatus(specDir, status, by);
-    }
     try {
         await updateSpecContext(
             specDir,
-            ctx => {
-                const aligned: SpecContext = { ...ctx, currentStep: owning.step };
-                return owning.settled
-                    ? setStepCompleted(aligned, owning.step, by)
-                    // Recovery re-stamps a boundary even on an already-started step — opt out of the start-dedup the automatic path uses.
-                    : setStepStarted(aligned, owning.step, by, undefined, false);
-            },
-            buildFallback(specDir, owning.step)
+            ctx => forceSpecContextStatus(ctx, status, by),
+            lifecycleFallback(specDir, 'specify')
         );
         return true;
     } catch (err) {
@@ -192,23 +156,8 @@ export async function reactivate(
     try {
         await updateSpecContext(
             specDir,
-            ctx => {
-                // A reactivated converge spec goes back to implement, so converge's own span is never re-closed.
-                const step = lifecycleStepFor(ctx.currentStep);
-                const status = inFlightStatusForStep(step) ?? ctx.status;
-                const at = new Date().toISOString();
-                return appendTransition(
-                    { ...ctx, currentStep: step, status },
-                    {
-                        step,
-                        substep: null,
-                        kind: 'complete',
-                        by,
-                        at,
-                    }
-                );
-            },
-            buildFallback(specDir, 'specify')
+            ctx => reactivateSpecContext(ctx, by),
+            lifecycleFallback(specDir, 'specify')
         );
     } catch (err) {
         logError(`reactivate(${path.basename(specDir)})`, err);
@@ -269,7 +218,7 @@ export async function retractStepStart(
                 retracted = true;
                 return restoreRunPosition(ctx, step, from);
             },
-            buildFallback(specDir, from.currentStep),
+            lifecycleFallback(specDir, from.currentStep),
         );
     } catch (err) {
         logError(`retractStepStart(${path.basename(specDir)}, ${step})`, err);
@@ -288,7 +237,7 @@ export async function completeSubstep(
         await updateSpecContext(
             specDir,
             ctx => setSubstepCompleted(ctx, step, substep, by),
-            buildFallback(specDir, step)
+            lifecycleFallback(specDir, step)
         );
     } catch (err) {
         logError(`completeSubstep(${path.basename(specDir)}, ${step}/${substep})`, err);

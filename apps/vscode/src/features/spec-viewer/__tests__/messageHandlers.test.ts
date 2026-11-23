@@ -759,7 +759,7 @@ describe('messageHandlers - openIdea', () => {
         const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-idea-'));
         fs.writeFileSync(path.join(outside, 'decision.md'), '# Decision');
         fs.mkdirSync(path.join(root, '.specify', 'assessments'), { recursive: true });
-        fs.symlinkSync(outside, path.join(root, '.specify', 'assessments', 'escape'));
+        fs.symlinkSync(outside, path.join(root, '.specify', 'assessments', 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
         const handler = createMessageHandlers(SPEC_DIR, createMockDeps());
 
         await handler({ type: 'openIdea', folder: '.specify/assessments/escape/' } as any);

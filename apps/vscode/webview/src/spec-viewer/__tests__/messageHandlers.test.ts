@@ -56,6 +56,7 @@ describe('the webview routes every message the extension can send', () => {
         );
 
         const handled = new Set(Object.keys(buildHandlers(() => undefined)));
+        declared.add('workEvidenceResult'); // VS Code's work/evidence slot extends the package protocol.
         expect(handled).toEqual(declared);
     });
 

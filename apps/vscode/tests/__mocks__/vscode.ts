@@ -162,6 +162,7 @@ function currentFolders(): any[] | undefined {
 }
 
 export const workspace = {
+    get isTrusted() { return true; },
     fs: {
         readDirectory: jest.fn().mockResolvedValue([]),
         stat: jest.fn().mockRejectedValue(new Error('not found')),

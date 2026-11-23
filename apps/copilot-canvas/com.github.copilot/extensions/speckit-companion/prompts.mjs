@@ -1,12 +1,13 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, globSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONTEXT_WRITER, DEFAULT_SPEC_DIRS } from './spec-rules.mjs';
 import { isKnownStep, renderPreamble, renderSpecifyCreationLifecyclePreamble } from './vendor/preamble.mjs';
 
 export const STEP_COMMANDS = ['plan', 'tasks', 'implement'];
-export const SPEC_COMMANDS = [...STEP_COMMANDS, 'status', 'resume', 'doctor', 'mark-complete'];
+export const SPEC_COMMANDS = [...STEP_COMMANDS, 'clarify', 'checklist', 'analyze', 'converge', 'taskstoissues', 'status', 'resume', 'doctor', 'mark-complete'];
 const COMPANION_ONLY = new Set(['status', 'resume', 'doctor', 'mark-complete']);
+const STOCK_COMMANDS = new Set(['clarify', 'checklist', 'analyze', 'converge', 'taskstoissues']);
 
 /** Companion is installed when its extension folder is: the same check VS Code makes (`isCompanionInstalled`). */
 export function isCompanionInstalled(root) {
@@ -50,20 +51,22 @@ export function availableCommands(commandSet) {
     return SPEC_COMMANDS.filter(command => commandSet === 'companion' || !COMPANION_ONLY.has(command));
 }
 
-const dottedName = (command, commandSet) => (commandSet === 'companion' ? `speckit.companion.${command}` : `speckit.${command}`);
+const dottedName = (command, commandSet) => (commandSet === 'companion' && !STOCK_COMMANDS.has(command) ? `speckit.companion.${command}` : `speckit.${command}`);
 const SKILL_DIRS = ['.github/skills', '.agents/skills', '.claude/skills'];
 
 /** How this project spells a command: dashed for a skill folder, dotted for a prompt or agent file, and a dotted guess (`registered` false) with the command's body when neither exists. */
-export function resolveCommand(root, command, commandSet = 'companion') {
-    const dotted = dottedName(command, commandSet);
+export function resolveCommand(root, command, commandSet = 'companion', format = 'auto') {
+    const githubIssues = command === 'taskstoissues' && existsSync(join(root, '.specify', 'extensions', 'github'));
+    const dotted = githubIssues ? 'speckit.github.taskstoissues' : dottedName(command, commandSet);
     const dashed = dotted.replace(/\./g, '-');
     const first = candidates => candidates.find(candidate => existsSync(join(root, candidate))) ?? null;
     const skill = first(SKILL_DIRS.map(dir => `${dir}/${dashed}/SKILL.md`));
-    if (skill) return { name: dashed, registered: true, instructions: skill };
     const prompt = first([`.github/prompts/${dotted}.prompt.md`, `.github/agents/${dotted}.agent.md`]);
-    if (prompt) return { name: dotted, registered: true, instructions: prompt };
-    const body = first([commandSet === 'companion' ? `.specify/extensions/companion/commands/${dotted}.md` : `.specify/templates/commands/${command}.md`]);
-    return { name: dotted, registered: false, instructions: body };
+    if (format !== 'dot' && skill) return { name: dashed, registered: true, instructions: skill };
+    if (format !== 'dash' && prompt) return { name: dotted, registered: true, instructions: prompt };
+    const processExtension = command.startsWith('bug.') ? 'bug' : command.startsWith('assess.') ? 'assess' : null;
+    const body = first([githubIssues ? `.specify/extensions/github/commands/${dotted}.md` : processExtension ? `.specify/extensions/${processExtension}/commands/${dotted}.md` : commandSet === 'companion' && !STOCK_COMMANDS.has(command) ? `.specify/extensions/companion/commands/${dotted}.md` : `.specify/templates/commands/${command}.md`]);
+    return { name: format === 'dash' ? dashed : dotted, registered: false, instructions: body ?? skill ?? prompt };
 }
 
 /** Where the command's body lives on disk. */
@@ -72,8 +75,8 @@ export function commandInstructions(root, command, commandSet = 'companion') {
 }
 
 /** `/speckit-<step>` or `/speckit.<step>`: the pattern the board's buttons send for a command set, in this project's spelling. */
-export function commandPattern(root, commandSet = 'companion') {
-    return `/${resolveCommand(root, 'plan', commandSet).name.replace(/plan$/, '<step>')}`;
+export function commandPattern(root, commandSet = 'companion', format) {
+    return `/${resolveCommand(root, 'plan', commandSet, format).name.replace(/plan$/, '<step>')}`;
 }
 
 /** Where the board keeps the run instructions it writes, relative to the project root. The only place it writes. */
@@ -139,7 +142,12 @@ export function buildPrompt(command, specId, commandSet = 'companion', spelling 
         throw new Error(`Unknown command for the ${commandSet} command set: ${command}`);
     }
     const name = spelling?.name ?? dottedName(command, commandSet);
-    const text = `/${name} ${specId}${bodySentence(spelling, `for the spec in \`${specId}\``)}`;
+    const target = command === 'converge'
+        ? `Converge the feature in ${specId}. If that is not the feature you resolve for this run, stop and say so instead of changing its tasks.`
+        : command === 'taskstoissues'
+            ? `Create the issues from ${specId}/tasks.md. If that is not the tasks file of the feature you resolve for this run, stop and say so instead of creating issues.`
+            : specId;
+    const text = `/${name} ${target}${bodySentence(spelling, `for the spec in \`${specId}\``)}`;
     return instructionsFile ? `${text}\n\n${instructionsSentence(instructionsFile)}` : text;
 }
 
@@ -154,17 +162,18 @@ export function buildStepPreamble(command, specId, root, commandSet, now = new D
 /** What the New spec form offers, mirroring VS Code's create-spec dialog: Companion, Spec Kit, and Auto (Companion only). */
 export const SPECIFY_WORKFLOWS = ['companion', 'speckit', 'auto'];
 
-export function specifyChoices(root) {
+export function specifyChoices(root, settings = {}, custom = []) {
     const installed = isCompanionInstalled(root);
     const needs = 'Needs the SpecKit Companion extension, which is not installed in this workspace.';
     return {
         installed,
         installCommand: installed ? null : INSTALL_COMMAND,
-        default: installed ? 'companion' : 'speckit',
+        default: settings.defaultWorkflow === 'speckit' || !installed ? 'speckit' : 'companion',
         choices: [
             { id: 'companion', label: 'Companion', available: installed, reason: installed ? null : needs },
             { id: 'speckit', label: 'Spec Kit', available: true, reason: null },
             { id: 'auto', label: 'Auto', available: installed, reason: installed ? null : needs },
+            ...custom.map(workflow => ({ id: workflow.name, label: workflow.displayName || workflow.name, description: workflow.description, available: true })),
         ],
     };
 }
@@ -196,6 +205,15 @@ export function nextSpecNumber(root, specDirs = DEFAULT_SPEC_DIRS) {
     if (usesTimestampNumbering(root)) return null;
     let highest = 0;
     for (const specDir of specDirs) {
+        if (/[*?[\]{}]/.test(specDir)) {
+            const pattern = /[*?[\]{}]/.test(specDir.split('/').at(-1)) ? specDir : `${specDir}/*`;
+            for (const match of globSync(pattern, { cwd: root, withFileTypes: true, exclude: ['**/node_modules', '**/.git'] })) {
+                if (!match.isDirectory() || /^\d{8}-\d{6}-/.test(match.name)) continue;
+                const number = Number(match.name.match(/^(\d{3,})-/)?.[1] ?? 0);
+                if (number > highest) highest = number;
+            }
+            continue;
+        }
         let entries;
         try {
             entries = readdirSync(join(root, specDir), { withFileTypes: true });
@@ -223,17 +241,17 @@ export function numberingRule(root, specDirs = DEFAULT_SPEC_DIRS) {
  * description, the folder number, and one sentence naming the file that will hold the lifecycle preamble that seeds `.spec-context.json`.
  * The caller writes `preamble` to `instructionsName` (`writeRunInstructions`) before it sends `prompt`; a stock run with no context writer gets neither.
  */
-export function buildSpecifyPrompt({ description, workflow, root, specDirs = DEFAULT_SPEC_DIRS, now = new Date(), writer = writerPath(root) }) {
+export function buildSpecifyPrompt({ description, workflow, root, specDirs = DEFAULT_SPEC_DIRS, now = new Date(), writer = writerPath(root), format, contextInstructions = true }) {
     const text = String(description ?? '').replace(/\r\n?/g, '\n').trim();
     if (!text) throw new Error('Describe the feature to specify.');
     const installed = isCompanionInstalled(root);
     const { command, effective } = resolveSpecify(workflow, installed);
-    const spelling = resolveCommand(root, command.replace(/^speckit\.(companion\.)?/, ''), effective);
+    const spelling = resolveCommand(root, command.replace(/^speckit\.(companion\.)?/, ''), effective, format);
     let message = `/${spelling.name} ${text}${bodySentence(spelling, 'with the feature description above')}`;
     const numbering = numberingRule(root, specDirs);
     if (numbering) message += `\n\n${numbering}`;
     const sent = { command: spelling.name, workflow: effective, startedAt: now.toISOString() };
-    if (effective !== 'companion' && !writer) return { ...sent, prompt: message, preamble: null, instructionsName: null, instructionsDoc: null };
+    if (!contextInstructions || (effective !== 'companion' && !writer)) return { ...sent, prompt: message, preamble: null, instructionsName: null, instructionsDoc: null };
     const preamble = renderSpecifyCreationLifecyclePreamble(effective, null, now.toISOString(), effective === 'companion' && installed, writer ?? WORKSPACE_WRITER, null);
     const instructionsName = specifyInstructionsName(now);
     return {

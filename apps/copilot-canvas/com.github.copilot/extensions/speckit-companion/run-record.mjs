@@ -160,6 +160,7 @@ export function recordStep(root, { id, title }, step, startedAt, endedAt, { clos
     } catch {
         return false;
     }
+
     const target = join(dir, FILE);
     const token = acquireLock(target);
     if (token === false) return BUSY;
@@ -172,6 +173,36 @@ export function recordStep(root, { id, title }, step, startedAt, endedAt, { clos
         renameSync(temp, target);
         return true;
     } finally {
+        releaseLock(target, token);
+    }
+}
+
+/** Mutate review data on an existing record under the common writers' lock. */
+export function updateReviewRecord(root, id, mutate) {
+    const dir = realpathSync(join(root, id));
+    const realRoot = realpathSync(root);
+    if (!dir.startsWith(realRoot + sep)) throw new Error('The spec folder is outside the project.');
+    const target = join(dir, FILE);
+    const realTarget = realpathSync(target);
+    if (realTarget !== target) throw new Error('The run record must not be a symbolic link.');
+    const token = acquireLock(target);
+    if (!token) throw new Error(token === false ? 'The run record is busy. Try again.' : 'The run record lock is unavailable; no changes were saved.');
+    let temp;
+    try {
+        const record = readRecord(target);
+        const existing = record.unreadable ? null : parseSpecContext(record.text);
+        if (!existing) throw new Error('The run record is missing or unreadable; no changes were saved.');
+        const next = mutate(existing);
+        if (next === existing) return existing;
+        temp = join(dir, `${FILE}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`);
+        writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });
+        renameSync(temp, target);
+        temp = null;
+        return next;
+    } finally {
+        if (temp) {
+            try { unlinkSync(temp); } catch { /* the write did not create a temporary file */ }
+        }
         releaseLock(target, token);
     }
 }

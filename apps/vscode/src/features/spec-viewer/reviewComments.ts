@@ -5,8 +5,8 @@
  * old per-doc `<doc>-extra.md` scratchpad files). These functions build a
  * `ReviewComment` from a click + source lines (anchoring via `extractBlock`)
  * and apply add/remove/mark-applied mutations to a `SpecContext`. They are
- * deliberately side-effect free — the message handler wraps them in
- * `updateSpecContext` so the only writer remains `specContextWriter`.
+ * deliberately side-effect free — each host wraps mutations in its locked
+ * run-record writer.
  */
 
 import type {
@@ -100,4 +100,24 @@ export function markApplied(ctx: SpecContext, ids: string[]): SpecContext {
 /** Pending comments for a document, in stored order. */
 export function pendingForDoc(ctx: SpecContext, doc: ReviewCommentDoc): ReviewComment[] {
     return getComments(ctx).filter(c => c.doc === doc && c.status === 'pending');
+}
+
+export function refinementPrompt(target: string, pending: ReviewComment[]): string {
+    const blockquote = (text: string) => text.split('\n').map(line => `> ${line}`).join('\n');
+    const refinements = pending.map(c => {
+        const where = c.anchor.heading
+            ? `Line ${c.anchor.line} in section "${c.anchor.heading}"`
+            : `Line ${c.anchor.line}`;
+        const indented = blockquote(c.anchor.blockText).replace(/^/gm, '  ');
+        return `- ${where}: ${c.comment}\n${indented}`;
+    }).join('\n\n');
+    return [
+        `Edit ${target} in place to apply ONLY these line-specific refinements.`,
+        'DO NOT regenerate from any template.',
+        'DO NOT run any setup script (e.g. setup-spec.sh, setup-plan.sh, setup-tasks.sh).',
+        'DO NOT replace the file — make targeted edits only.',
+        '',
+        'Refinements requested:',
+        refinements,
+    ].join('\n');
 }

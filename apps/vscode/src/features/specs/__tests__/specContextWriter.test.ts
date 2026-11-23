@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { appendHistory, setStepStarted, setStepCompleted, setSubstepStarted, setSubstepCompleted, updateSpecContext } from '../specContextWriter';
+import { appendHistory, lockTiming, setStepStarted, setStepCompleted, setSubstepStarted, setSubstepCompleted, specContextLockPath, updateSpecContext, updateSpecContextStrict } from '../specContextWriter';
 import { deriveStepHistory } from '../stepHistoryDerivation';
 import type { HistoryEntry, SpecContext } from '../../../core/types/specContext';
 
@@ -243,5 +243,24 @@ describe('updateSpecContext — profile pin back-fill', () => {
         const after = JSON.parse(fs.readFileSync(path.join(specDir, '.spec-context.json'), 'utf-8'));
         expect(after.somethingNobodyDeclared).toEqual({ deep: [1, 2, 3] });
         expect(after.status).toBe('implementing');
+    });
+
+    it('does not write an explicit lifecycle change without the shared lock', async () => {
+        const target = path.join(specDir, '.spec-context.json');
+        const lock = specContextLockPath(target);
+        const timing = { ...lockTiming };
+        fs.mkdirSync(path.dirname(lock), { recursive: true });
+        fs.writeFileSync(lock, 'held-by-another-writer');
+        lockTiming.pollMs = 1;
+        lockTiming.maxWaitMs = 10;
+
+        try {
+            await expect(updateSpecContextStrict(specDir, c => ({ ...c, status: 'archived' }), makeContext({})))
+                .rejects.toThrow(/cross-process lock.*no changes were saved/i);
+            expect(fs.existsSync(target)).toBe(false);
+        } finally {
+            Object.assign(lockTiming, timing);
+            fs.rmSync(lock, { force: true });
+        }
     });
 });

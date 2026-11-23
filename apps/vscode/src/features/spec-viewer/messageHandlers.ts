@@ -55,6 +55,7 @@ import {
   editComment as editCommentInCtx,
   markApplied,
   pendingForDoc,
+  refinementPrompt,
   removeComment as removeCommentFromCtx,
 } from "./reviewComments";
 import type { CoreDocumentType } from "./types";
@@ -69,7 +70,9 @@ import { readBugReport } from "../bugs/bugReports";
 import { answerReviewGate, coerceGateVerdict } from "../bugs/engineGate";
 import { clarificationsIn } from "../reports/clarifications";
 import { buildAnswerPrompt, stageReportAnswer } from "../reports/reportAnswers";
-import type { ReviewComment, ReviewCommentDoc } from "../../core/types/specContext";
+import { handleWorkEvidence } from "./workEvidenceActions";
+import type { WorkEvidenceResponse } from "../../protocol/workEvidence";
+import type { ReviewCommentDoc } from "../../core/types/specContext";
 import {
   DocumentType,
   SpecViewerState,
@@ -98,6 +101,10 @@ export interface MessageHandlerDependencies {
   refreshPanelTitle: (specDirectory: string) => void;
   resolveWorkflowSteps: () => Promise<WorkflowStepConfig[]>;
   executeInTerminal: (prompt: string) => Promise<vscode.Terminal | undefined | void>;
+  workEvidence?: {
+    reply: (response: WorkEvidenceResponse) => Thenable<boolean>;
+    explain: (prompt: string) => Promise<unknown>;
+  };
   outputChannel: vscode.OutputChannel;
   context: vscode.ExtensionContext;
   /** Fixed when the panel opens: a read-only panel accepts only the messages that read. */
@@ -146,6 +153,9 @@ function toWorkspaceRelativeSpecPath(specDirectory: string): string {
 
 function buildHandlerMap(): DispatcherMap<ViewerToExtensionMessage, [string, MessageHandlerDependencies]> {
   return {
+    workEvidence: async (msg, dir, deps) => {
+      if (deps.workEvidence) await handleWorkEvidence(dir, msg, deps.workEvidence);
+    },
     switchDocument: (msg, dir, deps) => handleSwitchDocument(dir, msg.documentType, deps),
     editDocument: (_msg, dir, deps) => handleEditDocument(dir, deps),
     editSource: (_msg, dir, deps) => handleEditDocument(dir, deps),
@@ -1176,32 +1186,6 @@ async function handleRemoveComment(
     deps,
   );
   deps.outputChannel.appendLine(`[SpecViewer] Removed comment ${id}`);
-}
-
-function refinementPrompt(target: string, pending: ReviewComment[]): string {
-  const blockquote = (text: string) =>
-    text
-      .split("\n")
-      .map((l) => `> ${l}`)
-      .join("\n");
-  const promptRefinementText = pending
-    .map((c) => {
-      const where = c.anchor.heading
-        ? `Line ${c.anchor.line} in section "${c.anchor.heading}"`
-        : `Line ${c.anchor.line}`;
-      const indented = blockquote(c.anchor.blockText).replace(/^/gm, "  ");
-      return `- ${where}: ${c.comment}\n${indented}`;
-    })
-    .join("\n\n");
-  return [
-    `Edit ${target} in place to apply ONLY these line-specific refinements.`,
-    `DO NOT regenerate from any template.`,
-    `DO NOT run any setup script (e.g. setup-spec.sh, setup-plan.sh, setup-tasks.sh).`,
-    `DO NOT replace the file — make targeted edits only.`,
-    ``,
-    `Refinements requested:`,
-    promptRefinementText,
-  ].join("\n");
 }
 
 /**

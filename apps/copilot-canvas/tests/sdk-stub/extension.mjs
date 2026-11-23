@@ -15,7 +15,13 @@ export async function joinSession(config) {
     return {
         sessionId: 'parent-session',
         get workspacePath() { return globalThis.__copilotWorkspacePath; },
-        rpc: { management: { list: async (params) => globalThis.__copilotManagementList(params) } },
+        rpc: {
+            management: {
+                list: async (params) => globalThis.__copilotManagementList(params),
+                message: async (params) => globalThis.__copilotManagementMessage?.(params),
+            },
+            get canvas() { return globalThis.__copilotCanvasRpc; },
+        },
         send: async (options) => { await globalThis.__copilotOnSend?.(options); },
         log: () => {},
         on: (type, handler) => { handlers[type] = handler; return () => {}; },

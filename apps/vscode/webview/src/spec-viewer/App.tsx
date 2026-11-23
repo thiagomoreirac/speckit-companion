@@ -4,6 +4,7 @@ import { StaleBanner } from './components/StaleBanner';
 import { RemovedDocBanner } from './components/RemovedDocBanner';
 import { FooterActions } from './components/FooterActions';
 import { InstallBanner } from './components/InstallBanner';
+import { WorkEvidence } from './components/WorkEvidence';
 import { navState } from './signals';
 import { restoreComments, clearAllRefinements } from './editor';
 
@@ -19,6 +20,7 @@ export function App({ specStatus }: AppProps) {
             <>
                 <RemovedDocBanner />
                 <StaleBanner />
+                {navState.value && !report && <WorkEvidence />}
             </>
         ),
         footer: <FooterActions initialSpecStatus={specStatus} />,

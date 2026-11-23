@@ -23,6 +23,10 @@ A custom workflow is a list of steps in VS Code settings, each one a slash comma
       "commands": [
         { "name": "auto", "title": "Auto Mode", "command": "/myflow.auto", "step": "specify" }
       ],
+      "checkpoints": [
+        { "id": "commit", "trigger": "after-implement" },
+        { "id": "pr", "trigger": "after-commit", "prTitleTemplate": "feat: ${featureName}" }
+      ],
       "supportedAiProviders": ["claude", "claude-vscode"],
       "steering": [
         { "label": "Codebase notes", "path": ".planning/codebase" }
@@ -45,6 +49,7 @@ It appears in Create New Spec next to the two built-ins. The choice is recorded 
 | `description` | No | Second line in the picker |
 | `steps` | No | The steps, in order |
 | `commands` | No | Extra buttons beside a step's own action. Each needs `name`, `command` and `step`, and takes `title` and `tooltip`. |
+| `checkpoints` | No | Optional `commit` or `pr` actions, each triggered `after-implement` or `after-commit`. Checkpoint actions ask for approval by default; `prTitleTemplate` accepts `${featureName}`. |
 | `supportedAiProviders` | No | The [provider](/docs/reference/configuration#providers) ids that can use the workflow. It's hidden for any other. Empty means all. |
 | `steering` | No | Folders or files the workflow reads that aren't specs. Each needs a `path` and takes a `label`. They show under Steering. |
 
@@ -66,6 +71,10 @@ The sidebar and the viewer's rail show your steps under the labels you wrote.
 | `includeRelatedDocs` | No | Groups the spec folder's unassigned `.md` files under this step. Use it on one step. |
 | `model` | No | Passed as `claude --model`. Claude Code only. |
 | `effort` | No | `low`, `medium` or `high`, passed as `claude --effort`. Claude Code only. |
+
+In the GitHub Copilot app canvas, additional configured steps appear beside the standard pipeline. For a run sent to the current chat, the board records **Output updated** only if the observed turn ends and the configured file was created or updated inside the spec folder. An action-only phase or a turn with no changed output says **Turn ended; verify result**. The board cannot observe turns in a selected child session, so those runs say **Sent; completion not observed**. These results are stored separately from the standard pipeline and do not advance it.
+
+Commit and PR checkpoints are shown only when their trigger is ready and require confirmation before the request is sent, even when `requiresApproval` is false. The canvas does not run `git` or `gh`; after-commit actions become available after you confirm that the commit is complete.
 
 ## Run Companion on spec-kit's workflow engine
 

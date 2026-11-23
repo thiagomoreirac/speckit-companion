@@ -655,6 +655,10 @@ export class SpecViewerProvider {
       refreshContextIfDisplaying: ctxPath => this.refreshContextIfDisplaying(ctxPath),
       refreshPanelTitle: dir => this.refreshPanelTitle(dir),
       resolveWorkflowSteps: () => this.resolveWorkflowSteps(specDirectory),
+      workEvidence: {
+        reply: response => instance.panel.webview.postMessage(response),
+        explain: prompt => getAIProvider().executeInTerminal(prompt, undefined, { specDir: specDirectory }),
+      },
       executeInTerminal: async (prompt: string) => {
         const assistant = getConfiguredProviderType();
         // A bug or idea report folder is not a spec, so only a spec pins the terminal.

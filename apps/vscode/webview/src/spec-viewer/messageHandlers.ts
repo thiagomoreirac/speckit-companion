@@ -15,6 +15,7 @@ import { showToast } from '../shared/components/Toast';
 import { navState, viewerState, historyEntries, viewerMode, specMoved } from './signals';
 import { setCurrentTask, setHasSpecContext, setReportMode, setSpecLedgerTasks, setTaskSummaries } from 'speckit-viewer/core/markdown/index';
 import type { ExtensionToViewerMessage, NavState, ViewerState } from './types';
+import { workEvidenceReply } from './workEvidenceReply';
 
 /**
  * Push a navState onto the signals and the renderer's flags together.
@@ -46,6 +47,7 @@ export function buildHandlers(
     rerender: () => void = () => undefined,
 ): DispatcherMap<ExtensionToViewerMessage, []> {
     return {
+        workEvidenceResult: message => { workEvidenceReply.value = message; },
         contentUpdated: message => {
             specMoved.value = false;
             if (message.navState) applyNavState(message.navState);

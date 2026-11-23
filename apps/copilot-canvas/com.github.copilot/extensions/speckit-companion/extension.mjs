@@ -4,7 +4,7 @@
 import { joinSession, createCanvas, CanvasError } from '@github/copilot-sdk/extension';
 import { createSpecServer } from './server.mjs';
 import { CANVAS_DESCRIPTION, SPEC_COMMANDS, SYSTEM_RULE, openStatus } from './prompts.mjs';
-import { rootSelection, validateRepositoryRoot, validateRoot } from './workspace.mjs';
+import { linkedDraftStorage, rootSelection, validateRepositoryRoot, validateRoot } from './workspace.mjs';
 
 const CANVAS_ID = 'speckit-spec-board';
 const servers = new Map();
@@ -16,8 +16,8 @@ function serverFor(ctx) {
 }
 
 function summary(spec) {
-    const { id, title, statusLabel, currentStep, steps, tasks, done, pendingReviews, lastActivity } = spec;
-    return { id, title, status: statusLabel, currentStep, steps, tasks, done, pendingReviews, lastActivity };
+    const { id, title, statusLabel, currentStep, steps, tasks, done, pendingReviews, lastActivity, workflowError } = spec;
+    return { id, title, status: statusLabel, currentStep, steps, tasks, done, pendingReviews, lastActivity, workflowError };
 }
 
 function specError(error) {
@@ -95,7 +95,7 @@ const session = await joinSession({
                 },
                 {
                     name: 'select_child',
-                    description: 'Select one of the sessions this chat created (listed in the board) and save the choice. Use when the board lists several child sessions and the user says which one to show. Specs are read from that child\'s worktree; commands still run in this chat with that repository named.',
+                    description: 'Select one of the sessions this chat created (listed in the board) and save the choice. Use when the board lists several child sessions and the user says which one to show. Specs are read from that child\'s worktree; commands are sent to that exact child through session management. The board does not observe the child turn or report its progress.',
                     inputSchema: {
                         type: 'object',
                         additionalProperties: false,
@@ -113,7 +113,7 @@ const session = await joinSession({
                 },
                 {
                     name: 'update_coordinated_sessions',
-                    description: 'Coordinator only: replace the complete list of your own nonarchived app sessions, including idle sessions, using scoped get_sessions_status and get_session for exact ids, names and worktree directories. Refresh after create, resume, switch, archive or worktree changes. The board cannot verify ownership; never supply unrelated sessions or guess a latest session. The user chooses a source; commands still run in this chat, not the child.',
+                    description: 'Coordinator only: replace the complete list of your own nonarchived app sessions, including idle sessions, using scoped get_sessions_status and get_session for exact ids, names, worktree directories and activity. Refresh after create, resume, switch, archive, activity or worktree changes. The board cannot verify ownership; never supply unrelated sessions or guess a latest session. The user chooses a source; commands are sent to that exact session through session management, without child-turn progress tracking.',
                     inputSchema: {
                         type: 'object',
                         additionalProperties: false,
@@ -146,7 +146,7 @@ const session = await joinSession({
                 },
                 {
                     name: 'bind_coordinated_session',
-                    description: 'Coordinator only. Show a coordinated session\'s worktree on this board. First read that session with your get_session tool and pass its exact session id, its worktree path and its name; never guess, scan sessions, or use a latest one, and when several children exist use the one the user means. This is a caller-provided binding the board cannot verify, and it does not follow later changes: call it again whenever the child is created, resumed, switched or its worktree changes. It is saved and outranks following; use_session_directory clears it. Commands from the board still run in this chat, naming that repository, not in the child.',
+                    description: 'Coordinator only. Show a coordinated session\'s worktree on this board. First read that session with your get_session tool and pass its exact session id, its worktree path and its name; never guess, scan sessions, or use a latest one, and when several children exist use the one the user means. This is a caller-provided binding the board cannot verify, and it does not follow later changes: call it again whenever the child is created, resumed, switched or its worktree changes. It is saved and outranks following; use_session_directory clears it. Commands are sent to that exact session through session management, without child-turn progress tracking.',
                     inputSchema: {
                         type: 'object',
                         additionalProperties: false,
@@ -219,18 +219,19 @@ const session = await joinSession({
                 },
                 {
                     name: 'run_step',
-                    description: 'Send the SpecKit command for a spec into this chat (plan, tasks, implement, status, resume, doctor, mark-complete), exactly as the board buttons do.',
+                    description: 'Send a SpecKit command for a spec to the selected session when bound, otherwise to this chat. Child turn progress is not tracked.',
                     inputSchema: {
                         type: 'object',
                         additionalProperties: false,
                         properties: {
                             spec: specInput.properties.spec,
-                            command: { type: 'string', enum: SPEC_COMMANDS },
+                            command: { type: 'string', enum: SPEC_COMMANDS.filter(command => command !== 'taskstoissues') },
                         },
                         required: ['spec', 'command'],
                     },
                     handler: async (ctx) => {
                         try {
+                            if (ctx.input.command === 'taskstoissues') throw new Error('Create issues requires confirmation on the board.');
                             return await serverFor(ctx).run(ctx.input.spec, ctx.input.command);
                         } catch (error) {
                             throw specError(error);
@@ -267,10 +268,27 @@ const session = await joinSession({
                         coordinatedSessions: selection.sessions(),
                         saveCoordinatedSessions: (sessions, root, source) => selection.writeSessions(sessions, root, source),
                         saveRoot: (root, source) => selection.write(root, source),
+                        linkedDraft: linkedDraftStorage(session.workspacePath, ctx.instanceId),
                         clearRoot: () => selection.clear(),
+                        readSortMode: selection.sortMode,
+                        saveSortMode: selection.writeSortMode,
                         discoverChildren,
                         childPollMs: 15000,
-                        send: async (prompt) => {
+                        openTerminal: session.rpc?.canvas?.open ? async () => {
+                            try {
+                                await session.rpc.canvas.open({ canvasId: 'terminal', instanceId: 'companion-workspace-terminal', input: { title: 'Workspace terminal' } });
+                            } catch {
+                                throw new Error('This host could not open Terminal from the board. Open the Terminal canvas directly in this session.');
+                            }
+                        } : undefined,
+                        send: async (prompt, targetSessionId = null) => {
+                            if (targetSessionId) {
+                                const sendToPeer = session.rpc?.management?.message;
+                                if (!sendToPeer) throw new Error('This host does not expose session-management messaging. The request was not sent to the parent chat.');
+                                const result = await sendToPeer({ targetSessionId, message: prompt });
+                                if (!result?.accepted) throw new Error(`The selected session ${targetSessionId} did not accept the request. The request was not sent to the parent chat.`);
+                                return true;
+                            }
                             await session.send({ prompt });
                             return true;
                         },
@@ -307,11 +325,17 @@ session.on?.('session.context_changed', (event) => {
 });
 // A step the board sent starts when the session takes its message into a turn, and stops when that turn ends.
 session.on?.('user.message', (event) => {
-    for (const entry of servers.values()) entry.began(event?.data?.content);
+    if (event?.agentId || event?.checkpoint || event?.data?.isAutopilotContinuation) return;
+    for (const entry of servers.values()) entry.began(event?.data?.content, event?.data);
 });
-session.on?.('session.idle', () => {
+session.on?.('session.idle', (event) => {
+    if (event?.agentId || event?.checkpoint) return;
     for (const entry of servers.values()) {
-        entry.settle();
+        entry.settle(undefined, event?.data);
         entry.refreshChildren();
     }
+});
+session.on?.('session.autopilot_stopped', (event) => {
+    if (event?.agentId || event?.checkpoint) return;
+    for (const entry of servers.values()) void entry.stopAutopilot(event?.data);
 });

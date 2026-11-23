@@ -41,7 +41,7 @@ describe('docs consistency', () => {
       // The website's provider reference lists every provider once, with its `aiProvider` value in
       // backticks, in the table under "How each one is reached". Those values must be exactly the enum.
       const providersDoc = read('apps/website/src/content/docs/docs/reference/configuration.mdx');
-      const reached = providersDoc.match(/^## How each one is reached\n+((?:\|[^\n]*\n)+)/m);
+      const reached = providersDoc.match(/^## How each one is reached(?:\r?\n)+((?:\|[^\n]*\n)+)/m);
       expect(reached).not.toBeNull();
       const documented = [...reached![1].matchAll(/\(`([a-z-]+)`\)\s*\|/g)].map((m) => m[1]);
       expect([...documented].sort()).toEqual([...enumValues].sort());
@@ -209,7 +209,7 @@ describe('docs consistency', () => {
       'apps/copilot-canvas/README.md',
     ];
     const block = (rel: string) =>
-      read(rel).match(/<!-- other-products:start -->\n([\s\S]*?)<!-- other-products:end -->/)?.[1] ?? '';
+      read(rel).match(/<!-- other-products:start -->\r?\n([\s\S]*?)<!-- other-products:end -->/)?.[1] ?? '';
 
     it('is present and identical in every product README', () => {
       const [first, ...rest] = READMES.map(block);
@@ -352,7 +352,7 @@ describe('docs consistency', () => {
           else open = { kind: 'highlight', title: heading[2], raw: [] };
         } else if (/^- /.test(line)) {
           close();
-          const bold = line.match(/^- \*\*(.+?)\*\*(.*)$/);
+          const bold = line.match(/^- \*\*(.+?)\*\*(.*)\r?$/);
           if (!bold) problems.push(`"${line.slice(2, 50)}": a bullet starts with a bold title`);
           else open = { kind: 'bullet', title: bold[1], raw: [bold[2]] };
         } else if (open && (open.kind === 'bullet' || /highlights/i.test(section))) {

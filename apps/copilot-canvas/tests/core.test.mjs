@@ -2,16 +2,37 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { countTaskCheckboxes, listTasks, phaseProgress } from '../com.github.copilot/extensions/speckit-companion/tasks.mjs';
 import { buildSnapshot, deriveStepBadges, findSpec, listSpecFolders, readSpecDetail, readTemplates, recordLive, scanSpec, specStatusLabel } from '../com.github.copilot/extensions/speckit-companion/specs-core.mjs';
-import { buildSpecRow, isWritten, parseSpecContext, phaseTimings, recordLiveIn, sortSpecs, statusFromSteps, timingSummaryText } from '../com.github.copilot/extensions/speckit-companion/spec-rules.mjs';
+import { buildSpecRow, isWritten, parseSpecContext, parseWorkspaceSettings, phaseTimings, recordLiveIn, sortSpecs, statusFromSteps, timingSummaryText } from '../com.github.copilot/extensions/speckit-companion/spec-rules.mjs';
 import { INSTALL_COMMAND, OPEN_NOTE, PROMPTS_DIR, availableCommands, buildAskPrompt, buildInstallPrompt, buildPrompt, buildSpecifyPrompt, buildStepPreamble, commandInstructions, commandPattern, commandSetFor, detectCommandSet, instructionsSentence, nextSpecNumber, openStatus, resolveCommand, resolveSpecify, runInstructionsDoc, specifyChoices, specifyInstructionsName, stepInstructionsName, writeRunInstructions, writerPath } from '../com.github.copilot/extensions/speckit-companion/prompts.mjs';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 const GRAMMAR = join(REPO, 'apps/vscode/tests/fixtures/task-grammar');
 const TEAMBOARD = join(REPO, 'apps/vscode/webview/src/spec-viewer/__fixtures__/teamboard/041-profile-photo-upload');
+
+describe('workspace settings', () => {
+    it('parses JSONC without changing comment markers or commas inside strings', () => {
+        const raw = '\ufeff{\n' +
+            '  // leading comment\r\n' +
+            '  "url": "https://example.test/a,}",\n' +
+            '  "quoted": "a \\"//still text\\" \\\\ path", /* block\n comment */\n' +
+            '  "array": [1, 2,],\n' +
+            '}';
+        assert.deepEqual(parseWorkspaceSettings(raw), {
+            url: 'https://example.test/a,}',
+            quoted: 'a "//still text" \\ path',
+            array: [1, 2],
+        });
+    });
+
+    it('rejects unterminated comments and malformed JSON', () => {
+        assert.throws(() => parseWorkspaceSettings('{ /* never closed'), SyntaxError);
+        assert.throws(() => parseWorkspaceSettings('{"key": invalid,}'), SyntaxError);
+    });
+});
 
 describe('task parsing', () => {
     const expected = JSON.parse(readFileSync(join(GRAMMAR, 'expected.json'), 'utf8'));
@@ -128,8 +149,36 @@ describe('prompts', () => {
 
     it('falls back to the stock commands when Companion is not installed', () => {
         assert.equal(buildPrompt('plan', 'specs/042-x', 'speckit'), '/speckit.plan specs/042-x');
-        assert.deepEqual(availableCommands('speckit'), ['plan', 'tasks', 'implement']);
+        assert.deepEqual(availableCommands('speckit'), ['plan', 'tasks', 'implement', 'clarify', 'checklist', 'analyze', 'converge', 'taskstoissues']);
         assert.throws(() => buildPrompt('resume', 'specs/042-x', 'speckit'));
+    });
+
+    it('uses the stock converge command for either workflow and resolves its installed spelling', () => {
+        const root = mkdtempSync(join(tmpdir(), 'canvas-converge-'));
+        mkdirSync(join(root, '.agents/skills/speckit-converge'), { recursive: true });
+        writeFileSync(join(root, '.agents/skills/speckit-converge/SKILL.md'), '# Converge');
+        for (const set of ['speckit', 'companion']) {
+            assert.equal(buildPrompt('converge', 'specs/042-x', set), '/speckit.converge Converge the feature in specs/042-x. If that is not the feature you resolve for this run, stop and say so instead of changing its tasks.');
+            const spelling = resolveCommand(root, 'converge', set);
+            assert.equal(spelling.name, 'speckit-converge');
+            assert.equal(buildPrompt('converge', 'specs/042-x', set, spelling).split('\n')[0], '/speckit-converge Converge the feature in specs/042-x. If that is not the feature you resolve for this run, stop and say so instead of changing its tasks.');
+        }
+    });
+
+    it('uses the stock optional commands even for a Companion workflow', () => {
+        for (const command of ['clarify', 'checklist', 'analyze']) {
+            assert.equal(buildPrompt(command, 'specs/042-x', 'companion'), `/speckit.${command} specs/042-x`);
+        }
+    });
+
+    it('uses the installed GitHub extension command for issue creation', () => {
+        const root = mkdtempSync(join(tmpdir(), 'canvas-github-issues-'));
+        mkdirSync(join(root, '.specify', 'extensions', 'github'), { recursive: true });
+        mkdirSync(join(root, '.github', 'skills', 'speckit-github-taskstoissues'), { recursive: true });
+        writeFileSync(join(root, '.github', 'skills', 'speckit-github-taskstoissues', 'SKILL.md'), '# Issues');
+        const spelling = resolveCommand(root, 'taskstoissues', 'companion');
+        assert.equal(spelling.name, 'speckit-github-taskstoissues');
+        assert.match(buildPrompt('taskstoissues', 'specs/042-x', 'companion', spelling), /^\/speckit-github-taskstoissues Create the issues from specs\/042-x\/tasks\.md/);
     });
 
     it('points at the command body only when the project registers neither spelling of the slash command', () => {
@@ -533,6 +582,14 @@ describe('numbering a new spec', () => {
         assert.equal(nextSpecNumber(root, ['specs', 'docs/specs', 'missing']), '021');
     });
 
+    it('counts spec folders in globbed configured directories', () => {
+        const root = withFolders('003-a');
+        mkdirSync(join(root, 'apps/board/specs/101-sample'), { recursive: true });
+        mkdirSync(join(root, 'apps/other/specs/105-second'), { recursive: true });
+        assert.equal(nextSpecNumber(root, ['apps/*/specs']), '106');
+        assert.equal(nextSpecNumber(root, ['apps/*/specs/*']), '106');
+    });
+
     it('names the number in the New spec prompt, after the command and before the instructions sentence', () => {
         const root = withFolders('_03_demo-living', '041-profile-photo');
         for (const workflow of ['companion', 'speckit', 'auto']) {
@@ -567,14 +624,14 @@ describe('context writer path', () => {
         writeFileSync(join(withScript, '.specify/extensions/companion/scripts/write-context.py'), '');
         assert.equal(writerPath(withScript), '.specify/extensions/companion/scripts/write-context.py');
         const without = writerPath(workspace({ companion: false }));
-        assert.match(without, /apps\/speckit-extension\/scripts\/write-context\.py$/);
-        assert.ok(without.startsWith('/'));
+        assert.match(without, /apps[\\/]speckit-extension[\\/]scripts[\\/]write-context\.py$/);
+        assert.ok(isAbsolute(without));
         assert.ok(existsSync(without));
     });
 
     it('names the checkout script in a stock run\'s preamble when the workspace has none', () => {
         const { preamble } = buildSpecifyPrompt({ description: 'x', workflow: 'speckit', root: workspace({ companion: false }), now: AT });
-        assert.match(preamble, /python3 "\/[^"]+apps\/speckit-extension\/scripts\/write-context\.py"/);
+        assert.match(preamble, /python3 "[^"]+apps[\\/]speckit-extension[\\/]scripts[\\/]write-context\.py"/);
     });
 });
 
@@ -659,25 +716,27 @@ describe('run instruction files', () => {
         assert.deepEqual(readdirSync(join(root, PROMPTS_DIR)).sort(), ['plan-042-x.md', 'tasks-042-x.md']);
     });
 
-    it('refuses to write when .speckit-companion or prompts leads outside the project through a symlink', () => {
+    it('refuses to write when .speckit-companion or prompts leads outside the project through a symlink', (t) => {
         const outside = mkdtempSync(join(tmpdir(), 'canvas-outside-'));
         const viaHome = workspace({ companion: false });
-        symlinkSync(outside, join(viaHome, '.speckit-companion'));
+        try { symlinkSync(outside, join(viaHome, '.speckit-companion'), process.platform === 'win32' ? 'junction' : 'dir'); }
+        catch (error) { if (error.code === 'EPERM') return t.skip('Creating symlinks requires OS permission'); throw error; }
         assert.throws(() => writeRunInstructions(viaHome, 'plan-042-x.md', 'x'), /`\.speckit-companion` leads outside the project/);
         const viaPrompts = workspace({ companion: false });
         mkdirSync(join(viaPrompts, '.speckit-companion'));
-        symlinkSync(outside, join(viaPrompts, '.speckit-companion/prompts'));
+        symlinkSync(outside, join(viaPrompts, '.speckit-companion/prompts'), process.platform === 'win32' ? 'junction' : 'dir');
         assert.throws(() => writeRunInstructions(viaPrompts, 'plan-042-x.md', 'x'), /`\.speckit-companion\/prompts` leads outside the project/);
         assert.deepEqual(readdirSync(outside), [], 'nothing was written outside');
         assert.ok(!existsSync(join(viaPrompts, '.speckit-companion/.gitignore')), 'and nothing beside the refused folder');
     });
 
-    it('replaces a symlinked file instead of writing through it', () => {
+    it('replaces a symlinked file instead of writing through it', (t) => {
         const outside = mkdtempSync(join(tmpdir(), 'canvas-outside-'));
         writeFileSync(join(outside, 'target.md'), 'untouched');
         const root = workspace({ companion: false });
         mkdirSync(join(root, PROMPTS_DIR), { recursive: true });
-        symlinkSync(join(outside, 'target.md'), join(root, PROMPTS_DIR, 'plan-042-x.md'));
+        try { symlinkSync(join(outside, 'target.md'), join(root, PROMPTS_DIR, 'plan-042-x.md')); }
+        catch (error) { if (error.code === 'EPERM') return t.skip('Creating symlinks requires OS permission'); throw error; }
         writeRunInstructions(root, 'plan-042-x.md', 'new');
         assert.equal(readFileSync(join(outside, 'target.md'), 'utf8'), 'untouched');
         assert.equal(readFileSync(join(root, PROMPTS_DIR, 'plan-042-x.md'), 'utf8'), 'new');
@@ -691,7 +750,7 @@ describe('installing Companion from the board', () => {
     });
 
     it('uses the command the spec-kit extension README gives, from the pinned companion-latest download', () => {
-        const readme = readFileSync(join(REPO, 'apps/speckit-extension/README.md'), 'utf8');
+        const readme = readFileSync(join(REPO, 'apps/speckit-extension/README.md'), 'utf8').replace(/\r\n/g, '\n');
         assert.ok(readme.includes(`\n${INSTALL_COMMAND}\n`), 'the README carries the same line');
         assert.match(INSTALL_COMMAND, /\/releases\/download\/companion-latest\/companion\.zip/);
         assert.doesNotMatch(INSTALL_COMMAND, /\/releases\/latest/);
@@ -754,7 +813,8 @@ describe('shared rules the Claude Code mod bundles', () => {
             tasksText: readFileSync(join(dir, 'tasks.md'), 'utf8'),
             updatedAt: fromDisk.updatedAt,
         });
-        assert.deepEqual(fromText, fromDisk);
+        const { sortName, source, ...shared } = fromDisk;
+        assert.deepEqual(fromText, shared);
     });
 
     it('sorts by last recorded activity before file time, and reads a broken record as none', () => {
