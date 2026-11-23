@@ -139,6 +139,12 @@ Use **More tools (…) → Product work** to capture a business plan or epic wit
 
 Select **Keep a copy for comparison** before recording a decision to retain the reviewed bytes under `.speckit-companion/artifact-reviews/` in this checkout. When the file changes, **Compare with current** shows both revisions. Images render side by side when space permits; text and prototypes remain source only. Leave the option off for files you do not want to retain after editing or removing them.
 
+### Needs your decision
+
+Open **Decisions** on the board to see cloud gate records under `.speckit-companion/cloud-gates/` for the selected checkout and branch. Paused gates appear first. Each row links to the GitHub issue and the evidence at its recorded commit, plus the receipt comment when one was recorded. **Refresh decisions** rereads this checkout only; an empty inbox does not mean there are no gates elsewhere.
+
+Make the decision on GitHub. The trusted run owner consumes it manually. For an **Uncertain** record, reconcile with that owner and do not retry. Companion never submits a decision or advances a gate. It marks evidence stale when it can read the local file and its bytes differ, and says when it could not check. Matching bytes are not confirmation that the gate is still paused or that GitHub has accepted a decision.
+
 On Tasks, **Create issues** previews the GitHub repository, tasks file and delivery command. Generic delivery requires one `origin` URL that points directly to `github.com`. Spec Kit 1.4.3 uses the bundled GitHub extension for this action; install it in **Workflow Builder → Integrations** if the command is missing. The board also offers reviewed setup for GitHub Project Lifecycle Sync and GHP, but won't install another delivery owner while one is enabled. Installing either blocks generic **Create issues**; configure its GitHub target separately and use that extension's lifecycle. The board rechecks the destination, file and command before sending the request to Copilot; the preview itself does not write to GitHub.
 
 ## Project files, bugs and ideas

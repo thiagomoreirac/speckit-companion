@@ -150,6 +150,17 @@ button { font: inherit; color: inherit; }
 .board-state { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: .2rem .55rem; font-size: .8rem; }
 .board-state[data-tone="ready"] { border-color: var(--success); }
 .board-state[data-tone="reviewing"] { border-color: var(--review); }
+.decisions-page { max-width: 76ch; margin-inline: auto; }
+.decisions-page section { margin-block-start: 1.1rem; }
+.decision-scope, .decision-evidence, .decision-check { font-size: .85rem; }
+.decision-notices { padding-inline-start: 1.4rem; }
+.decision-list { list-style: none; padding: 0; margin: 0; }
+.decision-row { border-block-start: 1px solid var(--border); padding-block: .7rem; }
+.decision-row-heading { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; }
+.decision-row-heading h4 { margin: 0; }
+.decision-evidence { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .2rem .55rem; margin-block: .55rem; }
+.decision-evidence dd { margin: 0; }
+.decision-check[data-check="stale"] { font-weight: 600; }
 .board-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
 .board-subsection { padding: .8rem; margin: .75rem 0; border: 1px solid var(--border); border-radius: .5rem; min-width: 0; }
 .board-subsection summary, .product-record summary { cursor: pointer; color: var(--text-primary); }

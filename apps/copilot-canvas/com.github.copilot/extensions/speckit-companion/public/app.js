@@ -4,6 +4,7 @@ import { fuzzyMatch, normalize } from '/fuzzy-match.mjs';
 import { createSettingsPage } from '/settings.js';
 import { createEcosystemView } from '/ecosystem.js';
 import { createRoutinesPage } from '/routines.js';
+import { createDecisionsPage } from '/decisions.js';
 
 const params = new URLSearchParams(location.search);
 const token = params.get('token') ?? '';
@@ -162,6 +163,8 @@ const linkedWorkPanel = $('linked-work-panel');
 const linkedWorkToggle = $('linked-work-toggle');
 const routinesPanel = $('routines-panel');
 const routinesToggle = $('routines-toggle');
+const decisionsPanel = $('decisions-panel');
+const decisionsToggle = $('decisions-toggle');
 const boardTools = $('board-tools');
 const toolsToggle = $('board-tools-toggle');
 const specsReturn = $('specs-return');
@@ -187,9 +190,10 @@ const ecosystem = createEcosystemView({
     openReport: (kind, slug) => showReport(kind, slug),
 });
 const routines = createRoutinesPage({ api, el, root: () => state.snapshot?.root, notify: toast, sendResult: reportSend });
+const decisions = createDecisionsPage({ api, el, panel: decisionsPanel, root: () => state.snapshot?.root });
 
 function showBoardPanel(active) {
-    for (const [panel, toggle] of [[els.workflowPanel, els.workflowToggle], [els.projectPanel, els.projectToggle], [settingsPanel, settingsToggle], [linkedWorkPanel, linkedWorkToggle], [routinesPanel, routinesToggle]]) {
+    for (const [panel, toggle] of [[els.workflowPanel, els.workflowToggle], [els.projectPanel, els.projectToggle], [settingsPanel, settingsToggle], [linkedWorkPanel, linkedWorkToggle], [routinesPanel, routinesToggle], [decisionsPanel, decisionsToggle]]) {
         panel.hidden = panel !== active;
         toggle.setAttribute('aria-expanded', String(panel === active));
     }
@@ -235,6 +239,12 @@ function bindBoardTool(toggle, panel, onOpen) {
 bindBoardTool(settingsToggle, settingsPanel, () => settingsPage.open());
 bindBoardTool(linkedWorkToggle, linkedWorkPanel, () => linkedWorkPanel.replaceChildren(ecosystem.linkedWork()));
 bindBoardTool(routinesToggle, routinesPanel, () => routines.open(routinesPanel));
+decisionsToggle.addEventListener('click', () => {
+    const open = decisionsPanel.hidden;
+    closeBoardTools();
+    showBoardPanel(open ? decisionsPanel : null);
+    if (open) decisions.open(true);
+});
 
 const TOAST_MS = 4000;
 
@@ -1311,6 +1321,7 @@ function applySnapshot(snapshot) {
     if (rootChanged && !els.workflowPanel.hidden) showWorkflowView(workflowView);
     if (rootChanged && !linkedWorkPanel.hidden) linkedWorkPanel.replaceChildren(ecosystem.linkedWork());
     if (rootChanged && !routinesPanel.hidden) routines.open(routinesPanel);
+    if (rootChanged && !decisionsPanel.hidden) decisions.open();
     const boundSessionChanged = previous?.boundSession?.sessionId !== snapshot.boundSession?.sessionId
         || previous?.boundSession?.name !== snapshot.boundSession?.name;
     if (!els.newSpec.hidden && (rootChanged || (extensionIntakeRoute(entryKind) && boundSessionChanged))) refreshNewEntryExtension();

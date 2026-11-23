@@ -14,6 +14,7 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 - **Carry product ideas into delivery.** Triage bugs and ideas in Companion, derive epics from plans, and review updates before applying them to existing work.
 - **Prepare recurring routines.** Draft schedules for commands, agents, GitHub Actions, and Copilot Automations, then review setup with the scheduler that owns them.
 - **Hand off dedicated cloud work.** Start from an exact published spec, bug, or Ready idea without changing the session that owns your board.
+- **See what needs your decision.** Open **Decisions** to review paused cloud gates and their GitHub receipts for this checkout.
 
 ### Fixed
 

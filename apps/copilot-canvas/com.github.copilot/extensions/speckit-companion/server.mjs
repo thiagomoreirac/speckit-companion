@@ -27,6 +27,7 @@ import { ensureCacheFolder } from './vendor/report-host.mjs';
 import { listTriage, productUpdateDraft, productUpdates, recordProductUpdate, saveTriage } from './product-work.mjs';
 import { archiveRoutine, routineHandoff, routineInventory, routineManagement, saveRoutine } from './routines.mjs';
 import { dedicatedWorkHandoff } from './work-handoff.mjs';
+import { cloudGateInbox } from './cloud-gates.mjs';
 import { ALL_SORT_MODES, comparators } from './vendor/specs-sort.mjs';
 import { FORCE_STATUS_CHOICES, forceSpecContextStatus, lifecycleFallback, reactivateSpecContext, setSpecContextStatus, updateSpecContextStrict } from './vendor/spec-lifecycle.mjs';
 
@@ -37,6 +38,7 @@ const ASSETS = {
     '/settings.js': ['settings.js', 'text/javascript; charset=utf-8'],
     '/ecosystem.js': ['ecosystem.js', 'text/javascript; charset=utf-8'],
     '/routines.js': ['routines.js', 'text/javascript; charset=utf-8'],
+    '/decisions.js': ['decisions.js', 'text/javascript; charset=utf-8'],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
     '/viewer.css': ['../vendor/viewer.css', 'text/css; charset=utf-8'],
     '/states-select.mjs': ['../vendor/states-select.mjs', 'text/javascript; charset=utf-8'],
@@ -1288,6 +1290,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'GET' && pathname === '/api/routines') return sendJson(res, 200, {
             root: state.root, canHandoff: state.root === state.workingDirectory || Boolean(state.bound?.sessionId), ...routineInventory(state.root),
         });
+        if (req.method === 'GET' && pathname === '/api/decisions') return sendJson(res, 200, cloudGateInbox(state.root));
         if (req.method === 'GET' && (pathname === '/api/discovery' || pathname === '/api/product-change')) {
             const { reason, setup, revision, target } = intakeTarget(pathname === '/api/discovery' ? 'prespec' : 'pdac-product');
             return sendJson(res, 200, { root: state.root, reason, setup, revision, target });
