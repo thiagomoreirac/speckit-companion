@@ -331,6 +331,11 @@ Agent actions: in chat ask "what specs are still open?" and "show me the related
 - [ ] Capture a synthetic idea with **Save to canvas**, mark it **Ready**, and review an update to a demo business plan. Open its epic and linked spec from **Product work**. No chat turn should start for capture, triage, or applying the plan update.
 - [ ] Save and archive a draft under **Routines**. Confirm that there is no new live automation and that the draft names the native management destination.
 
+### Cloud decisions
+
+- [ ] In a disposable checkout, use the synthetic receipts from `apps/copilot-canvas/tests/decisions.test.mjs`. Open **Decisions** at normal and narrow widths. Confirm that receipt links lead to the recorded issue and commit, stale evidence is explicit, and the canvas cannot submit a decision.
+- [ ] Ask the board to prepare dedicated work on a published test record. Verify that the handoff names the selected item and exact base commit and that preparing it neither starts a session nor sends a command.
+
 ## Recipe: Website pages
 
 ```bash
