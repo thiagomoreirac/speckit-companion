@@ -21,6 +21,45 @@ function spec(root, id, title) {
 }
 
 describe('repository root selection', () => {
+    it('saves the shared sort mode separately for each repository', async () => {
+        const base = temp('canvas-sort-');
+        const first = join(base, 'first');
+        const second = join(base, 'second');
+        spec(first, '001-one', 'One');
+        spec(first, '002-two', 'Two');
+        spec(second, '003-three', 'Three');
+        writeFileSync(join(first, 'specs', '001-one', '.spec-context.json'), JSON.stringify({ specName: 'Zebra', currentStep: 'specify', status: 'specified', history: [] }));
+        writeFileSync(join(first, 'specs', '002-two', '.spec-context.json'), JSON.stringify({ specName: 'Apple', currentStep: 'plan', status: 'planned', history: [] }));
+        const selection = rootSelection(base);
+        const options = { root: first, saveRoot: selection.write, clearRoot: selection.clear, readSortMode: selection.sortMode, saveSortMode: selection.writeSortMode };
+        let board = await createSpecServer(options);
+        const post = (path, body) => fetch(new URL(path, board.url), {
+            method: 'POST', headers: { 'x-speckit-token': board.token, 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const snapshot = () => fetch(new URL('/api/snapshot', board.url), { headers: { 'x-speckit-token': board.token } }).then(r => r.json());
+        try {
+            assert.equal((await snapshot()).sortMode, 'recent');
+            let response = await post('/api/sort', { mode: 'name' });
+            assert.deepEqual((await response.json()).specs.map(s => s.name), ['002-two', '001-one']);
+            response = await post('/api/sort', { mode: 'status' });
+            assert.deepEqual((await response.json()).specs.map(s => s.name), ['001-one', '002-two']);
+            assert.equal((await post('/api/sort', { mode: 'bad' })).status, 400);
+            await post('/api/root', { root: second });
+            assert.equal((await snapshot()).sortMode, 'recent');
+            await post('/api/sort', { mode: 'number' });
+            await post('/api/root', { root: first });
+            assert.equal((await snapshot()).sortMode, 'status');
+            selection.clear();
+            await board.close();
+            board = await createSpecServer(options);
+            assert.equal((await snapshot()).sortMode, 'status');
+            assert.equal(selection.sortMode(second), 'number');
+        } finally {
+            await board.close();
+            rmSync(base, { recursive: true, force: true });
+        }
+    });
+
     it('starts the native picker at the main worktree, falling back to the current directory', async () => {
         const base = temp('canvas-picker-start-');
         const tree = join(base, 'tree');
@@ -421,22 +460,25 @@ describe('coordinator-bound source session', () => {
         }
     });
 
-    it('rejects a moved selected worktree while a run is in flight without changing the saved list', async () => {
+    it('rejects a moved selected worktree reported busy without changing the saved list', async () => {
         const base = temp('canvas-coordinated-busy-');
         const [first, moved] = ['first', 'moved'].map(name => join(base, name));
         spec(first, '001-a', 'First');
         spec(moved, '002-b', 'Moved');
         const selection = rootSelection(base);
         const board = await createSpecServer({ root: first, saveRoot: selection.write, saveCoordinatedSessions: selection.writeSessions, send: async () => true });
-        const item = { sessionId: 'one', cwd: first, name: 'First' };
+        const item = { sessionId: 'one', cwd: first, name: 'First', activity: 'idle' };
         try {
             board.updateCoordinatedSessions([item]);
             board.selectCoordinatedSession('one');
             await board.run('001-a', 'plan');
-            assert.throws(() => board.updateCoordinatedSessions([{ ...item, cwd: moved }]), /current spec step/);
+            board.updateCoordinatedSessions([{ ...item, activity: 'busy' }]);
+            assert.throws(() => board.updateCoordinatedSessions([{ ...item, cwd: moved, activity: 'busy' }]), /selected session is busy/);
             assert.equal(board.snapshot.root, first);
-            assert.deepEqual(selection.sessions(), [item]);
-            assert.throws(() => board.selectCoordinatedSession('one'), /current spec step/);
+            assert.deepEqual(selection.sessions(), [{ ...item, activity: 'busy' }]);
+            board.updateCoordinatedSessions([{ ...item, activity: 'idle' }]);
+            board.updateCoordinatedSessions([{ ...item, cwd: moved, activity: 'idle' }]);
+            assert.equal(board.snapshot.root, moved);
         } finally {
             await board.close();
             rmSync(base, { recursive: true });
@@ -589,7 +631,7 @@ describe('parent chat following owned sessions', () => {
             assert.throws(() => board.selectChild(undefined), /not a session owned/);
             board.selectChild('c2');
             assert.equal(board.snapshot.root, treeB);
-            assert.equal(board.snapshot.rootSource, 'selected');
+            assert.equal(board.snapshot.rootSource, 'bound');
             assert.deepEqual(saved, [treeB]);
         } finally {
             await board.close();
@@ -698,7 +740,7 @@ describe('parent chat following owned sessions', () => {
         const link = join(base, 'link');
         repo(real);
         spec(real, '001-a', 'A');
-        symlinkSync(real, link);
+        symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
         const logs = [];
         const server = await createSpecServer({ root: validateRoot(real), workingDirectory: link, log: message => logs.push(message) });
         try {

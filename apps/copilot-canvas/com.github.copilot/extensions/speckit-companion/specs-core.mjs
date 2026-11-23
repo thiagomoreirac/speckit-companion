@@ -1,7 +1,9 @@
 // Reads spec folders off disk and hands what it read to the shared rules in spec-rules.mjs.
 
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, basename, relative, sep } from 'node:path';
+import { readdirSync, readFileSync, statSync, existsSync, globSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join, basename, isAbsolute, relative, sep } from 'node:path';
+import { inspectSettings, settingValues } from './settings.mjs';
 import { listTasks, phaseProgress } from './tasks.mjs';
 import { renderMarkdown, setCurrentTask, setHasSpecContext, setTaskSummaries } from './vendor/viewer-markdown.mjs';
 import { renderOverview } from './overview.mjs';
@@ -11,7 +13,6 @@ import {
     currentTask,
     isSpecFolder,
     parseSpecContext,
-    parseSpecDirsSetting,
     pickFeatureSpecName,
     recordLiveIn,
     writtenDocs,
@@ -32,8 +33,14 @@ export function featureSpecName(specDir) {
 
 /** The spec directories to scan: `speckit.specDirectories` from workspace settings when set, else the defaults. */
 export function resolveSpecDirs(root) {
-    const raw = readText(join(root, '.vscode', 'settings.json'));
-    return (raw != null && parseSpecDirsSetting(raw)) || DEFAULT_SPEC_DIRS;
+    return (settingValues(inspectSettings(root)).specDirectories ?? DEFAULT_SPEC_DIRS).map(dir => dir.replaceAll('\\', '/').replace(/\/+$/, ''));
+}
+
+const GLOB = /[*?[\]{}]/;
+export function specWatchBase(pattern) {
+    const parts = pattern.split('/');
+    const wildcard = parts.findIndex(part => GLOB.test(part));
+    return wildcard < 0 ? pattern : parts.slice(0, wildcard).join('/') || '.';
 }
 
 function holdsSpec(dir) {
@@ -46,8 +53,27 @@ function holdsSpec(dir) {
 
 /** Every spec folder under the spec directories, as root-relative POSIX ids. */
 export function listSpecFolders(root, specDirs = DEFAULT_SPEC_DIRS) {
-    const ids = [];
+    const ids = new Set();
+    const settings = settingValues(inspectSettings(root));
+    const exclusions = (settings.customWorkflows ?? []).flatMap(w => (w.steering ?? []).map(s => s.path.replaceAll('\\', '/').replace(/\/+$/, '')));
+    const realRoot = realpathSync(root);
+    const add = id => {
+        id = id.split(sep).join('/');
+        if (exclusions.some(p => id === p || id.startsWith(`${p}/`))) return;
+        const path = join(root, id);
+        let real;
+        try { real = realpathSync(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+        const rel = relative(realRoot, real);
+        if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return;
+        if (!holdsSpec(path)) return;
+        ids.add(id);
+    };
     for (const specDir of specDirs) {
+        if (GLOB.test(specDir)) {
+            const pattern = GLOB.test(specDir.split('/').at(-1)) ? specDir : `${specDir}/*`;
+            for (const match of globSync(pattern, { cwd: root, exclude: ['**/node_modules', '**/.git'] })) add(match);
+            continue;
+        }
         const base = join(root, specDir);
         let entries;
         try {
@@ -57,11 +83,10 @@ export function listSpecFolders(root, specDirs = DEFAULT_SPEC_DIRS) {
         }
         for (const entry of entries) {
             if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-            const dir = join(base, entry.name);
-            if (holdsSpec(dir)) ids.push(relative(root, dir).split(sep).join('/'));
+            add(relative(root, join(base, entry.name)));
         }
     }
-    return ids;
+    return [...ids];
 }
 
 export function readSpecContext(dir) {
@@ -103,9 +128,10 @@ export function readTemplates(root) {
 export function scanSpec(root, id, templates = readTemplates(root)) {
     const dir = join(root, id);
     const specFile = featureSpecName(dir);
+    const ctx = readSpecContext(dir);
     const texts = { spec: readText(join(dir, specFile)), plan: readText(join(dir, 'plan.md')), tasks: readText(join(dir, 'tasks.md')) };
     const files = { spec: texts.spec != null ? specFile : null, plan: texts.plan != null ? 'plan.md' : null, tasks: texts.tasks != null ? 'tasks.md' : null };
-    return buildSpecRow({ id, ctx: readSpecContext(dir), specText: texts.spec, files, written: writtenDocs(texts, templates), tasksText: texts.tasks, updatedAt: latestMtime(dir), recordLive: recordLive(root) });
+    return { ...buildSpecRow({ id, ctx, specText: texts.spec, files, written: writtenDocs(texts, templates), tasksText: texts.tasks, updatedAt: latestMtime(dir), recordLive: recordLive(root) }), sortName: typeof ctx?.specName === 'string' ? ctx.specName : null, source: typeof ctx?.source === 'string' ? ctx.source : null };
 }
 
 /** The repository's name, even from a linked worktree (the Copilot app runs sessions in one). */
@@ -126,7 +152,7 @@ export function buildSnapshot(root, specDirs = resolveSpecDirs(root)) {
         root,
         repoName: repoName(root),
         specDirs,
-        missingSpecDirectories: !specDirs.some(dir => statSync(join(root, dir), { throwIfNoEntry: false })?.isDirectory()),
+        missingSpecDirectories: !specDirs.some(dir => GLOB.test(dir) ? globSync(dir, { cwd: root }).length > 0 : statSync(join(root, dir), { throwIfNoEntry: false })?.isDirectory()),
         specs: sortSpecs(listSpecFolders(root, specDirs).map(id => scanSpec(root, id, templates))),
     };
 }
@@ -171,7 +197,7 @@ export function readSpecDetail(root, id, { html = true } = {}) {
     setTaskSummaries(ctx.task_summaries && typeof ctx.task_summaries === 'object' ? ctx.task_summaries : null);
     const documents = listDocuments(dir, featureSpecName(dir)).map(doc => {
         const raw = readText(join(dir, doc.fileName));
-        return html ? { ...doc, html: renderMarkdown(raw ?? '') } : doc;
+        return html ? { ...doc, html: renderMarkdown(raw ?? ''), version: raw === null ? null : createHash('sha256').update(raw).digest('hex') } : doc;
     });
     const overviewHtml = html ? renderOverview(ctx, root, { steps: spec.steps, boardTimed: !recordLive(root) }) : undefined;
     const tasksText = spec.files.tasks ? readText(join(dir, 'tasks.md')) ?? '' : '';
@@ -187,7 +213,16 @@ export function readSpecDetail(root, id, { html = true } = {}) {
         phases: phaseProgress(tasksText),
         overviewHtml,
         timing: stepTiming(ctx),
+        customPhaseRuns: Array.isArray(ctx.customPhaseRuns) ? ctx.customPhaseRuns : [],
+        checkpointStatus: ctx.checkpointStatus && typeof ctx.checkpointStatus === 'object' && !Array.isArray(ctx.checkpointStatus)
+            ? Object.fromEntries(Object.entries(ctx.checkpointStatus).filter(([, status]) => ['pending', 'completed', 'skipped'].includes(status)))
+            : {},
         history,
+        reviewComments: (Array.isArray(ctx.reviewComments) ? ctx.reviewComments : []).filter(c =>
+            c && typeof c.id === 'string' && typeof c.doc === 'string' && typeof c.comment === 'string' &&
+            ['pending', 'applied'].includes(c.status) && c.anchor &&
+            typeof c.anchor.blockText === 'string' && Number.isInteger(c.anchor.line) &&
+            (c.anchor.heading === null || typeof c.anchor.heading === 'string')),
         intent: typeof ctx.intent === 'string' ? ctx.intent : null,
         approach: typeof ctx.approach === 'string' ? ctx.approach : null,
         decisions: list('decisions'),

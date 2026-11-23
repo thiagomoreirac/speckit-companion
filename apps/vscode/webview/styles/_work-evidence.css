@@ -1,0 +1,109 @@
+.work-evidence {
+    padding: 8px 16px;
+    border-block-end: 1px solid var(--vscode-widget-border, transparent);
+    color: var(--sk-text-body);
+    overflow-wrap: anywhere;
+}
+
+.work-evidence summary {
+    width: fit-content;
+    cursor: pointer;
+    color: var(--sk-text-primary);
+    font-weight: 600;
+}
+
+.work-evidence__body {
+    max-block-size: min(65vh, 620px);
+    overflow: auto;
+    padding: 8px 2px 4px;
+}
+
+.work-evidence h3 { margin: 16px 0 4px; }
+.work-evidence p { margin-block: 4px; }
+
+.work-evidence__fields {
+    display: grid;
+    gap: 8px;
+    margin-block-start: 8px;
+}
+
+.work-evidence label { display: grid; gap: 4px; }
+.work-evidence .work-evidence__check { display: flex; gap: 8px; align-items: center; }
+.work-evidence__comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 8px; }
+.work-evidence__comparison h4 { margin-block: 8px; }
+
+.work-evidence :is(input, select, textarea, button) {
+    font: inherit;
+    padding: 4px 8px;
+    min-inline-size: 0;
+    border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
+    border-radius: 3px;
+}
+
+.work-evidence :is(input, select, textarea) {
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+}
+
+.work-evidence button {
+    color: var(--vscode-button-secondaryForeground, var(--sk-text-primary));
+    background: var(--vscode-button-secondaryBackground, transparent);
+    cursor: pointer;
+}
+
+.work-evidence button:hover:not(:disabled) {
+    background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.work-evidence button:disabled { opacity: 0.65; cursor: default; }
+.work-evidence :focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+.work-evidence__actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.work-evidence__entities {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+    gap: 8px;
+}
+
+.work-evidence__entities > section {
+    padding: 8px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+    border-radius: 4px;
+}
+
+.work-evidence__entities h4 { margin: 0; }
+
+.work-evidence__wireflow {
+    margin-block: 8px;
+    padding: 8px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+    border-radius: 4px;
+    overflow: auto;
+}
+
+.work-evidence__wireflow h5 { margin: 4px 0; font-size: inherit; }
+.work-evidence__wireflow :is(ol, ul) { padding-inline-start: 1.5em; }
+.work-evidence__wireflow :is(th, td) { padding: 2px 6px; text-align: start; }
+.work-evidence__wireflow-label {
+    display: inline-block;
+    max-inline-size: 100%;
+    padding-inline: 4px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+    border-radius: 3px;
+}
+
+.work-evidence pre {
+    overflow: auto;
+    max-block-size: 30vh;
+    margin: 0;
+    padding: 8px;
+    background: var(--vscode-textCodeBlock-background);
+}
+
+.work-evidence img { max-inline-size: 100%; max-block-size: 32vh; object-fit: contain; }

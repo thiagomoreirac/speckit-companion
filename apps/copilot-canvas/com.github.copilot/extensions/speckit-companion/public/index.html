@@ -17,10 +17,25 @@
             <p class="brand-sub" id="repo-line">Loading specs…</p>
         </div>
         <span class="live" id="live" data-state="connecting"><span class="live-dot" aria-hidden="true"></span><span id="live-label">Connecting</span></span>
-        <button class="btn btn-quiet" id="new-spec-toggle" type="button" aria-expanded="false" aria-controls="new-spec">New spec</button>
+        <button class="btn btn-quiet" type="button" data-report-kind="bugs" aria-expanded="false" aria-controls="reports-panel">Bugs</button>
+        <button class="btn btn-quiet" type="button" data-report-kind="ideas" aria-expanded="false" aria-controls="reports-panel">Ideas</button>
+        <button class="btn btn-quiet" id="new-spec-toggle" type="button" aria-expanded="false" aria-controls="new-spec">New</button>
         <button class="btn btn-icon" id="refresh" type="button" title="Re-read every spec folder" aria-label="Refresh">
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71M13.25 2.25v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
+        <details class="board-tools" id="board-tools">
+            <summary class="btn btn-icon" id="board-tools-toggle" aria-label="More tools" title="More tools">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="13" cy="8" r="1.25"/></svg>
+            </summary>
+            <div class="board-tools-list">
+                <button class="btn btn-quiet" id="specs-return" type="button" hidden>Back to specs</button>
+                <button class="btn btn-quiet" id="project-toggle" type="button" aria-expanded="false" aria-controls="project-panel">Project files</button>
+                <button class="btn btn-quiet" id="workflow-toggle" type="button" aria-expanded="false" aria-controls="workflow-panel">Workflow Builder</button>
+                <button class="btn btn-quiet" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">Settings</button>
+                <button class="btn btn-quiet" id="linked-work-toggle" type="button" aria-expanded="false" aria-controls="linked-work-panel">Product work</button>
+                <button class="btn btn-quiet" id="routines-toggle" type="button" aria-expanded="false" aria-controls="routines-panel">Routines</button>
+            </div>
+        </details>
     </header>
 
     <form class="new-spec" id="repository-form">
@@ -35,6 +50,7 @@
             <button class="btn btn-quiet" type="button" id="repository-follow" hidden>Follow session</button>
         </div>
         <p id="repository-warning" role="status" hidden></p>
+        <p id="settings-warning" class="settings-warning" role="alert" hidden></p>
         <div id="repository-children" role="group" aria-label="Sessions owned by this chat" hidden>
             <p id="repository-children-hint"></p>
             <ul id="repository-children-list"></ul>
@@ -42,25 +58,163 @@
     </form>
 
     <form class="new-spec" id="new-spec" hidden>
-        <label for="new-spec-text">Describe the feature. Specify creates the spec folder and writes <code>spec.md</code>.</label>
-        <div class="segmented new-spec-workflow" id="new-spec-workflow" role="radiogroup" aria-label="Workflow" aria-describedby="new-spec-hint"></div>
-        <p class="new-spec-hint" id="new-spec-hint"></p>
-        <div id="new-spec-install" hidden></div>
-        <div class="new-spec-row">
-            <textarea id="new-spec-text" rows="2" placeholder="Let people export their board as CSV" required></textarea>
-            <button class="btn btn-primary" type="submit">Specify</button>
+        <div class="new-entry-type">
+            <label for="new-entry-kind">Type</label>
+            <select class="search" id="new-entry-kind">
+                <option value="spec">Spec</option>
+                <option value="bugs">Bug</option>
+                <option value="ideas">Idea</option>
+                <option value="prespec">Pre-Spec Cards</option>
+                <option value="business-plan">Business plan</option>
+                <option value="epic">Epic</option>
+                <option value="product-change">Product Change</option>
+            </select>
+        </div>
+        <label for="new-spec-text">Description</label>
+        <textarea id="new-spec-text" rows="2" aria-describedby="new-entry-help" required></textarea>
+        <p class="new-spec-hint" id="new-entry-help"></p>
+        <div class="new-entry-fields" id="new-product-change-fields" hidden>
+            <label for="new-product-change-name">Change name</label>
+            <input class="search" id="new-product-change-name" type="text" maxlength="80" pattern="[a-z0-9]+(?:\x2d[a-z0-9]+)*" autocomplete="off" spellcheck="false" aria-describedby="new-product-change-hint" disabled>
+            <p class="new-spec-hint" id="new-product-change-hint">Use lowercase letters, digits and hyphens, for example <code>share-saved-views</code>.</p>
+        </div>
+        <div class="new-entry-fields" id="new-spec-fields">
+            <div class="segmented new-spec-workflow" id="new-spec-workflow" role="radiogroup" aria-label="Workflow" aria-describedby="new-spec-hint"></div>
+            <p class="new-spec-hint" id="new-spec-hint"></p>
+            <div id="new-spec-install" hidden></div>
+        </div>
+        <div class="new-entry-fields" id="new-report-fields" hidden>
+            <label for="report-title">Title for a canvas draft (optional)</label>
+            <input class="search" id="report-title" type="text" maxlength="160">
+            <label for="report-extra">Additional context (optional)</label>
+            <textarea id="report-extra" rows="2" maxlength="20000"></textarea>
+            <label for="report-slug">Folder name (optional)</label>
+            <input class="search" id="report-slug" type="text" maxlength="40">
+        </div>
+        <div class="new-entry-fields" id="new-intake-status" hidden>
+            <p class="new-spec-hint" id="new-report-status" role="status"></p>
+            <button class="btn btn-quiet" id="new-report-extension" type="button" hidden></button>
+        </div>
+        <div class="new-entry-fields" id="new-work-fields" hidden>
+            <label for="new-work-title">Title</label>
+            <input class="search" id="new-work-title" maxlength="160">
+            <label for="new-work-outcome">Expected outcome (optional)</label>
+            <textarea id="new-work-outcome" rows="2" maxlength="3000"></textarea>
+            <div class="new-entry-fields" id="new-epic-fields" hidden>
+                <label for="new-epic-parent">Business plan (optional)</label>
+                <select class="search" id="new-epic-parent"></select>
+                <fieldset id="new-epic-dependencies"></fieldset>
+                <p id="new-epic-status" role="status"></p>
+            </div>
+        </div>
+        <div id="new-work-source" class="ecosystem-actions" hidden>
+            <span id="new-source-label" role="status"></span>
+            <button class="btn btn-quiet" type="button" id="new-source-clear">Unlink source</button>
+        </div>
+        <div class="ecosystem-actions">
+            <button class="btn btn-primary" id="new-entry-submit" type="submit">Create spec</button>
+            <button class="btn btn-quiet" id="new-report-capture" type="button" hidden>Save to canvas</button>
         </div>
     </form>
 
+    <section id="settings-panel" class="settings-panel" aria-labelledby="settings-title" hidden>
+        <form id="settings-form">
+            <header class="settings-heading">
+                <div><h2 id="settings-title" tabindex="-1">Settings</h2><p>Save Companion settings to <code>.vscode/settings.json</code> in the selected repository.</p></div>
+                <div class="settings-actions">
+                    <button class="btn btn-quiet" id="settings-reload" type="button">Reload</button>
+                    <button class="btn btn-primary" id="settings-save" type="submit" disabled>Save changes</button>
+                </div>
+            </header>
+            <p id="settings-status" role="status"></p>
+            <fieldset id="settings-fields" aria-label="Companion settings"></fieldset>
+            <section class="settings-section" aria-labelledby="terminal-title">
+                <h3 id="terminal-title">Terminal</h3>
+                <p>Copilot has its own Terminal canvas. VS Code shell integration settings do not apply here.</p>
+                <button class="btn btn-quiet" id="settings-terminal" type="button" disabled>Open Terminal</button>
+                <p id="settings-terminal-hint"></p>
+            </section>
+        </form>
+    </section>
+    <section id="linked-work-panel" class="ecosystem-page" aria-label="Product work" hidden></section>
+    <section id="routines-panel" class="ecosystem-page" aria-label="Routines" hidden></section>
+    <section id="workflow-panel" class="workflow-panel" aria-label="Workflow Builder" hidden>
+        <nav class="ecosystem-actions" aria-label="Workflow Builder views">
+            <button class="btn btn-quiet" type="button" id="workflow-graph-view" aria-pressed="true">Pipeline</button>
+            <button class="btn btn-quiet" type="button" id="workflow-integrations-view" aria-pressed="false">Integrations</button>
+        </nav>
+        <iframe id="workflow-frame" title="Workflow Builder"></iframe>
+        <section id="integrations-panel" class="ecosystem-panel" aria-label="Spec Kit integrations" hidden></section>
+    </section>
+    <section id="project-panel" class="project-panel" aria-label="Project files" hidden>
+        <aside class="project-list">
+            <div class="project-list-heading"><h2>Project files</h2><button class="btn btn-quiet" type="button" id="project-refresh">Refresh</button></div>
+            <p>Instructions, agents, skills and Spec Kit files in this repository.</p>
+            <div id="project-groups"></div>
+            <form id="project-create" class="report-create">
+                <h3>Create project guidance</h3>
+                <label for="project-create-kind">Type</label>
+                <select class="search" id="project-create-kind">
+                    <option value="instruction">Instruction</option>
+                    <option value="agent">Agent</option>
+                    <option value="skill">Skill</option>
+                </select>
+                <label for="project-create-description">What should it do?</label>
+                <textarea id="project-create-description" rows="3" maxlength="20000" required></textarea>
+                <button class="btn btn-quiet" type="submit" id="project-create-button">Ask Copilot to create</button>
+            </form>
+        </aside>
+        <div class="project-editor">
+            <p id="project-empty">Choose a file to read or edit it.</p>
+            <div id="project-document" hidden>
+                <h2 id="project-path"></h2>
+                <p id="project-status" role="status" aria-live="polite"></p>
+                <label class="sr-only" for="project-content">File contents</label>
+                <textarea id="project-content" spellcheck="false"></textarea>
+                <div class="project-actions">
+                    <button class="btn btn-quiet" type="button" id="project-refine">Refine with Copilot</button>
+                    <button class="btn btn-quiet" type="button" id="project-discard">Discard edits</button>
+                    <button class="btn btn-primary" type="button" id="project-save">Save</button>
+                </div>
+            </div>
+        </div>
+    </section>
+    <section id="reports-panel" class="project-panel" aria-labelledby="reports-title" hidden>
+        <aside class="project-list">
+            <div class="project-list-heading"><h2 id="reports-title">Bugs</h2><button class="btn btn-quiet" type="button" id="reports-refresh">Refresh</button></div>
+            <p id="reports-extension" role="status"></p>
+            <button class="btn btn-quiet" id="reports-extension-action" type="button" hidden></button>
+            <div id="reports-list"></div>
+        </aside>
+        <div class="project-editor report-detail" id="report-detail">
+            <p>Choose a report to read its stages.</p>
+        </div>
+    </section>
     <div class="layout" id="layout" data-view="board">
         <aside class="board" aria-label="Specs">
             <div class="board-tools">
                 <input class="search" id="search" type="search" placeholder="Search by name or number" aria-label="Search specs" autocomplete="off">
+                <label class="sr-only" for="spec-sort">Sort specs</label>
+                <select class="search" id="spec-sort">
+                    <option value="recent">Recent activity</option>
+                    <option value="number">Number</option>
+                    <option value="name">Name</option>
+                    <option value="dateCreated">Date created</option>
+                    <option value="dateModified">Date modified</option>
+                    <option value="status">Pipeline step</option>
+                </select>
                 <div class="segmented" role="radiogroup" aria-label="Filter specs">
                     <button type="button" role="radio" data-filter="active" aria-checked="true">Active <span class="count" id="count-active">0</span></button>
                     <button type="button" role="radio" data-filter="done" aria-checked="false">Done <span class="count" id="count-done">0</span></button>
                     <button type="button" role="radio" data-filter="all" aria-checked="false">All <span class="count" id="count-all">0</span></button>
                 </div>
+                <label class="sr-only" for="closed-filter">Show closed specs</label>
+                <select class="search" id="closed-filter" hidden>
+                    <option value="all">All done specs</option>
+                    <option value="completed">Completed only</option>
+                    <option value="archived">Archived only</option>
+                </select>
+                <div class="lifecycle-bulk" id="lifecycle-bulk" aria-label="Bulk lifecycle actions" hidden></div>
             </div>
             <ul class="spec-list" id="spec-list" aria-label="Spec list"></ul>
             <p class="list-empty" id="list-empty" hidden>No specs match.</p>

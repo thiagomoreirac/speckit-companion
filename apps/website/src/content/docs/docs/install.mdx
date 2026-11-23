@@ -98,6 +98,14 @@ Next: the [Quickstart](/docs/start/your-first-spec).
 
 Here Companion is a board that opens as a canvas beside the chat. You don't need the VS Code extension.
 
+For the no-copy setup, open **Customize → Install** in the Copilot app, find **SpecKit Companion**, install it, and start a new session. Open the board in the session that owns the repository. Under **More tools (…) → Workflow Builder → Integrations**, select **Set up CLI in this repository** if there is no local CLI. This installs the pinned Spec Kit 1.4.3 into `.venv` using the host's Python; it does not change your global tools. A new project can select **Initialize Spec Kit for Copilot**. On Windows, choose **Initialize with Bash scripts** instead if you need a Bash-only extension and have Bash available. Neither option converts an existing Spec Kit project.
+
+Review the source, target repository and package effects before applying each setup. A Copilot-initialized project can install Companion, Bugs, Ideas, GitHub delivery, the Lean preset, the Full SDD Cycle workflow, and the Guided Bug Fix and Idea Assessment bundles. The board verifies downloaded archives against pinned SHA-256 digests before registering them. Reviewed third-party setup includes Data Model Diagram, Spec Kit Preview, Pre-Spec Cards, OKR Bets and its separate preset, Illustrate, Charter, PDaC, PDaC Product, DocGuard, Wireframe, Fyloss Figma, and one of GitHub Project Lifecycle Sync or GHP. Data Model Diagram requires a Bash-capable session and Spec Kit's Bash scripts. Third-party runtime tools and project data are not set up by these installs. Check [what each integration can change](/docs/copilot-app/#workflow-builder) before enabling hooks in an active project. A project may need a new session to discover installed skills. Keep `.venv` out of Git; commit reviewed project files, not the local environment.
+
+Before using the Fyloss Figma 3.1.1 hooks, configure one Figma Design file in the owning Copilot session. Snapshot generation uses the Figma REST API and requires a personal access token with `file_content:read` and `file_metadata:read` for a single file. Follow [Fyloss's credential storage guide](https://github.com/Fyloss/spec-kit-figma/blob/07c1f331104702874267e1f3e96b7c9a3d615f72/docs/CREDENTIALS.md); never put the token in chat, in the board, or in the repository. For richer design context, sign in to the official Figma MCP server under **Customize → MCP**. That sign-in does not replace the REST token.
+
+For a manual installation instead:
+
 <Steps>
 
 1. **Copy the board in**

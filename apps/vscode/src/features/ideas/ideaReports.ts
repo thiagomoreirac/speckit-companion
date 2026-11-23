@@ -5,35 +5,17 @@ import { ConfigKeys } from '../../core/constants';
 import { getProjectRoot } from '../../core/projectRoot';
 import {
     ReportFile,
-    ReportFolder,
     ReportSet,
-    knownValue,
     readReportFolder,
-    readReportFolders,
     reportDirectoryOf,
 } from '../reports/reportSet';
-import { buildIdeaDecision } from '../reports/ideaDecision';
-import { IDEA_STAGES, IDEA_VERDICTS, IdeaStage, IdeaVerdict } from './ideaValues';
+import { IdeaStage, IdeaVerdict } from './ideaValues';
+import { IDEA_SET_BASE, IDEAS_DIR, readIdeaReportsAt, resolveIdeasDir, toIdeaReport } from './ideaReportModel';
 
 export { IDEA_RATINGS, IDEA_RATING_TONES, IDEA_STAGES, IDEA_VERDICTS } from './ideaValues';
 export type { IdeaRating, IdeaStage, IdeaTone, IdeaVerdict } from './ideaValues';
 
-export const IDEAS_DIR = path.join('.specify', 'assessments');
-
-/** The configured assessments folder relative to `root`, or the default when it is empty, not text, or leaves the project. */
-export function resolveIdeasDir(root: string | undefined, configured: unknown): string {
-    if (typeof configured !== 'string' || configured.trim() === '') return IDEAS_DIR;
-    const value = configured.trim();
-    let relative = value;
-    if (path.isAbsolute(value)) {
-        if (!root) return IDEAS_DIR;
-        relative = path.relative(root, value);
-    }
-    const normal = path.normalize(relative).replace(/[\\/]+$/, '');
-    if (normal === '' || normal === '.' || path.isAbsolute(normal) || path.win32.isAbsolute(normal)) return IDEAS_DIR;
-    if (normal.split(/[\\/]/).includes('..')) return IDEAS_DIR;
-    return normal;
-}
+export { IDEAS_DIR, resolveIdeasDir } from './ideaReportModel';
 
 /** The folder the Ideas pane reads, relative to the project root. */
 export function ideasDir(root: string | undefined = getProjectRoot()): string {
@@ -42,21 +24,10 @@ export function ideasDir(root: string | undefined = getProjectRoot()): string {
 }
 
 export const IDEA_SET: ReportSet<IdeaStage> = {
-    id: 'ideas',
+    ...IDEA_SET_BASE,
     get dir() {
         return ideasDir();
     },
-    kinds: IDEA_STAGES,
-    labels: { intake: 'Intake', research: 'Research', problem: 'Problem', concept: 'Concept', decision: 'Decision' },
-    titlePrefixes: {
-        intake: 'Idea Intake:',
-        research: 'Idea Research:',
-        problem: 'Problem Definition:',
-        concept: 'Concept:',
-        decision: 'Decision:',
-    },
-    panelPrefix: 'Idea',
-    fallbackBadge: 'IDEA',
 };
 
 export type IdeaState = 'assessing' | 'decided';
@@ -77,32 +48,6 @@ export interface IdeaReport {
     state: IdeaState;
 }
 
-function revisitOf(report: IdeaReportFile): IdeaStage | undefined {
-    try {
-        const closing = buildIdeaDecision(fs.readFileSync(report.path, 'utf-8'))?.closing;
-        return closing?.verdict === 'needs-clarification' ? closing.revisit : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-function toIdeaReport(folder: ReportFolder<IdeaStage>): IdeaReport {
-    const { slug, directory, title, reports, stages } = folder;
-    const verdict = knownValue(IDEA_VERDICTS, folder.fields.decision.get('verdict'));
-    const revisit = verdict === 'needs-clarification' ? revisitOf(reports.decision) : undefined;
-    return {
-        slug,
-        directory,
-        title,
-        reports,
-        stages,
-        latestStage: stages[stages.length - 1],
-        verdict,
-        ...(revisit && { revisit }),
-        state: stages.includes('decision') ? 'decided' : 'assessing',
-    };
-}
-
 export function readIdeaReport(directory: string): IdeaReport | undefined {
     const folder = readReportFolder(IDEA_SET, directory);
     return folder ? toIdeaReport(folder) : undefined;
@@ -110,7 +55,7 @@ export function readIdeaReport(directory: string): IdeaReport | undefined {
 
 /** Every idea under the configured assessments folder of `workspaceRoot`, ordered by slug. Empty when the folder is absent. */
 export function readIdeaReports(workspaceRoot: string): IdeaReport[] {
-    return readReportFolders({ ...IDEA_SET, dir: ideasDir(workspaceRoot) }, workspaceRoot).map(toIdeaReport);
+    return readIdeaReportsAt(workspaceRoot, ideasDir(workspaceRoot));
 }
 
 export function ideaDirectoryOf(filePath: string): string | undefined {

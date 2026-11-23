@@ -5,9 +5,11 @@
 import type * as Contract from 'speckit-viewer/contract/viewer';
 import type { ViewerState } from '../core/types/specContext';
 import type { ReportNav } from '../features/reports/reportPageModel';
+import type { WorkEvidenceRequest, WorkEvidenceResponse } from './workEvidence';
 
 export * from 'speckit-viewer/contract/viewer';
 export { updateBannerText } from './installBannerBody';
 
 export type NavState = Contract.NavState<ReportNav>;
-export type ExtensionToViewerMessage = Contract.ExtensionToViewerMessage<ViewerState, ReportNav>;
+export type ExtensionToViewerMessage = Contract.ExtensionToViewerMessage<ViewerState, ReportNav> | WorkEvidenceResponse;
+export type ViewerToExtensionMessage = Contract.ViewerToExtensionMessage | WorkEvidenceRequest;

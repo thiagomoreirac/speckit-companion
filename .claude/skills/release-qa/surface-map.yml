@@ -19,6 +19,7 @@ checks:
   # scripted: `tooling/scripts/desktop-check.mjs` drives a real VS Code window with a stand-in assistant; no eyes needed. `steps` are the step names that decide the check; `grade-scripted.py` reads them from `.desktop-check/results.<theme>.json`. `themes: both` also needs each step in the dark run.
   themes: { kind: scripted, run: "npm run check:desktop", steps: [sidebar-panes, narrow-panel-spec, narrow-panel-tasks, nav-n7], themes: both, what: "the sidebar, the viewer on Spec and Tasks at a narrow width, and the rail hold their layout in Quiet Light and in Dark Modern; colour and contrast are judged by looking at the `.dark.png` pictures" }
   nav-matrix: { kind: scripted, run: "npm run check:desktop", steps: [nav-n1, nav-n2, nav-n3, nav-n4, nav-n5, nav-n6, nav-n7, nav-n8, nav-n9, nav-n10, nav-n11, nav-n12, nav-n13, nav-n14, nav-n15, nav-links, nav-empty-record], what: "sidebar and viewer navigation, rows N1 to N15, the Links section and the empty-record tab title" }
+  work-evidence: { kind: scripted, run: "npm run check:desktop", steps: [linked-work-evidence], what: "the viewer links a product plan, previews an entity diagram, records a local decision and compares the reviewed and current revisions" }
   narrow-panel: { kind: scripted, run: "npm run check:desktop", steps: [narrow-panel-spec, narrow-panel-tasks], what: "the viewer in a narrow column: header, rail and footer buttons neither clip nor overflow on Spec and on Tasks" }
   popups: { kind: scripted, run: "npm run check:desktop", steps: [create-issues-confirm, create-issues-cancel, popup-provider-changed], what: "the messages the scripted flows raise appear once and their buttons act; a message the diff touches that no step raises gets one desktop check of its own (grep the changed files for `showInformationMessage|showWarningMessage|showErrorMessage`)" }
   provider-dispatch: { kind: scripted, run: "npm run check:desktop", steps: [provider-dispatch, bug-next-step, converge-sends], what: "a footer button, Fix bug and Converge each reach the terminal with their command; the first-start provider picker is captured by `npm run shots`" }
@@ -33,6 +34,7 @@ checks:
   canvas-open: { kind: desktop, recipe: "Copilot canvas pass › Bare open", what: "open the canvas three times without editing anything: the board checks pass on the first open, the board renders on the next two, and the sandbox `git status --short` never changes" }
   mod-terminal: { kind: desktop, recipe: "Claude Code mod pass", what: "start `claude --plugin-dir ./apps/claude-mod` in a project with specs in a terminal at least 144 columns wide: the band names the latest spec, the pane opens beside the transcript, `/spec` lists specs and switching one updates both, and checking a task in its tasks.md ticks the band within a few seconds" }
   canvas-new-spec: { kind: desktop, recipe: "Copilot canvas pass › Full run", what: "New spec once per workflow (stock Spec Kit and Companion); the chat receives the matching command each time, in the spelling the project registers, plus one sentence naming the run-instructions file" }
+  canvas-workspaces: { kind: desktop, recipe: "Copilot canvas pass › Evidence, product work and routines", what: "open a preview and a missing artifact, review a native idea update and its product lineage, and save a routine draft without scheduling it" }
   site-pages: { kind: desktop, recipe: "Website pages", what: "serve with `npm run preview` in apps/website and look at each changed page in a browser" }
 
 # Runs on every release whatever the diff says.
@@ -41,7 +43,7 @@ baseline: [vscode-run, terminal-run, first-open, stock-workspace, multi-root, th
 surfaces:
   - name: webview and feature UI
     paths: ["apps/vscode/webview/**", "apps/vscode/src/features/**"]
-    checks: [jest, clips-check, nav-matrix, themes, narrow-panel, popups]
+    checks: [jest, clips-check, nav-matrix, themes, narrow-panel, popups, work-evidence]
 
   - name: viewer library
     paths: ["packages/viewer/**"]
@@ -57,7 +59,7 @@ surfaces:
 
   - name: Copilot canvas
     paths: ["apps/copilot-canvas/**", ".github/extensions/**"]
-    checks: [canvas-tests, canvas-open, canvas-new-spec]
+    checks: [canvas-tests, canvas-open, canvas-new-spec, canvas-workspaces]
 
   - name: Claude Code mod
     paths: ["apps/claude-mod/**", ".claude-plugin/**", "apps/copilot-canvas/com.github.copilot/extensions/speckit-companion/spec-rules.mjs"]

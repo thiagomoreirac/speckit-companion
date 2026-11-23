@@ -4,13 +4,23 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 
 ## [Unreleased]
 
+### Added
+
+- **Converge from the board.** Check an implemented or completed spec against its code. <!-- area: copilot-app -->
+- **Work from document tabs.** Clarify a spec, check a plan, or analyze tasks. <!-- area: copilot-app -->
+- **See and review evidence in tabs.** Preview artifacts, see review status, generate missing evidence, and compare the exact revisions you choose to keep.
+- **Build and set up workflows.** Edit nodes and hooks, inspect catalogs, and review hook effects before installing extensions, presets, workflows, or bundles.
+- **Preview delivery before creating issues.** Check the destination repository, tasks and delivery owner before sending a GitHub issue request.
+- **Carry product ideas into delivery.** Triage bugs and ideas in Companion, derive epics from plans, and review updates before applying them to existing work.
+- **Prepare recurring routines.** Draft schedules for commands, agents, GitHub Actions, and Copilot Automations, then review setup with the scheduler that owns them.
+
 ### Fixed
 
-- **Choose coordinated sessions from a list.** The coordinating agent maintains the session options and updates the selected worktree. <!-- area: copilot-app -->
-- **Project chats can select their repository.** Browse for a checkout or enter its path; the board remembers it and watches its specs. <!-- area: copilot-app -->
+- **Keep commands in the selected session.** Child dispatch uses session management and never falls back to the parent chat. <!-- area: copilot-app -->
+- **Stop on invalid settings or unavailable workflows.** The board shows the problem instead of dispatching with stock defaults. <!-- area: copilot-app -->
+- **Choose an owned session or checkout.** Pick the worktree to watch, or let a Project chat follow its only session. <!-- area: copilot-app -->
 - **The board follows each session's worktree.** Without a saved choice, each session's board moves to its own working directory when the runtime reports a change. <!-- area: copilot-app -->
 - **A coordinator can bind a child session's worktree.** The agent passes the child's id and path from its session details, and the board keeps it through ordinary buttons. <!-- area: copilot-app -->
-- **A Project chat shows its session's worktree.** With session management on, the board follows the only session the chat owns and lists several for you to pick. <!-- area: copilot-app -->
 
 ## [0.2.2] - 2026-11-12
 

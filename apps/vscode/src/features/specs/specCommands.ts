@@ -24,6 +24,7 @@ import { readSpecContextSyncSafe } from './specContextReader';
 import { resolveDispatchForRoot } from './profileDispatch';
 import { dispatchStep } from './dispatchStep';
 import { startStep, setStatus, forceStatus, reactivate } from './stepLifecycle';
+import { FORCE_STATUS_CHOICES } from './specLifecycleMutations';
 import { updateSelectionContextKeys } from './selectionContextKeys';
 import { track as trackTerminal } from './terminalStepTracker';
 import { isCompanionInstalled } from '../settings/companionPresetReconciler';
@@ -75,18 +76,6 @@ function resolveSpecDirArg(target: SpecTreeItem | string | undefined): string | 
     const ws = getProjectRoot();
     return ws ? path.join(ws, target.specPath || `specs/${target.label}`) : undefined;
 }
-
-// Statuses the force-status picker offers; the transient `tasking` and the out-of-band `draft`/`archived` are excluded.
-const FORCE_STATUS_CHOICES: Status[] = [
-    'specifying',
-    'specified',
-    'planning',
-    'planned',
-    'ready-to-implement',
-    'implementing',
-    'implemented',
-    'completed',
-];
 
 /**
  * Register SpecKit workflow commands (create, specify, plan, tasks, etc.)

@@ -18,6 +18,7 @@ import 'highlight.js/styles/github-dark.min.css';
 import '../packages/viewer/dist/styles/viewer.css';
 import '../packages/viewer/dist/styles/themes/vscode.css';
 import '../apps/vscode/webview/styles/_install-banner.css';
+import '../apps/vscode/webview/styles/_work-evidence.css';
 // The builder panel rides the shared tokens rather than the viewer's owned
 // palette, so it needs both files to render the way the panel does.
 import '../apps/vscode/webview/styles/tokens.css';

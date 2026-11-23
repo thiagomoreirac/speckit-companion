@@ -135,11 +135,7 @@ export const steps = (
  * directly after two frames — no smooth scrolling, because a capture taken
  * mid-animation is a different frame every time.
  *
- * Name the target either by `headingId` (a markdown heading's slug, whose
- * `offsetTop` is measured inside the reading column) or by `selector` (any
- * element, used for the Overview's dossier sections, which have no ids and
- * whose `offsetTop` is measured from the top of the capture box and so already
- * counts the page header).
+ * Name the target by its markdown slug, or use a selector for a dossier section.
  */
 export function ScrollTo({
     headingId,
@@ -166,7 +162,10 @@ export function ScrollTo({
                     : selector
                       ? document.querySelector<HTMLElement>(selector)
                       : null;
-                if (area && target) area.scrollTop = Math.max(0, target.offsetTop - offset);
+                if (area && target) {
+                    const distance = target.getBoundingClientRect().top - area.getBoundingClientRect().top;
+                    area.scrollTo({ top: Math.max(0, area.scrollTop + distance - offset), behavior: 'instant' });
+                }
             });
         });
         return () => {

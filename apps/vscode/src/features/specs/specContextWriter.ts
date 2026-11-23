@@ -247,8 +247,8 @@ function stopLockRefresh(lock: string): void {
     }
 }
 
-/** Returns our token, or null when the write should proceed unlocked. */
-async function acquireContextLock(target: string): Promise<string | null> {
+/** Returns the token, or null when the caller must decide whether to fail closed. */
+async function acquireContextLock(target: string, failClosed = false): Promise<string | null> {
     const lock = specContextLockPath(target);
     if (!(await ensureLockDir(target, path.dirname(lock)))) {
         return null;
@@ -280,7 +280,7 @@ async function acquireContextLock(target: string): Promise<string | null> {
         }
         if (Date.now() >= giveUpAt) {
             console.warn(
-                `[spec-context] Waited ${lockTiming.maxWaitMs}ms for the write lock on ${target}; recording without it.`
+                `[spec-context] Waited ${lockTiming.maxWaitMs}ms for the write lock on ${target}; ${failClosed ? 'aborting this write.' : 'recording without it.'}`
             );
             return null;
         }
@@ -513,6 +513,27 @@ export async function updateSpecContext(
     mutate: (ctx: SpecContext) => SpecContext,
     fallback: SpecContext
 ): Promise<SpecContext> {
+    return enqueueSpecContextUpdate(specDir, mutate, fallback, false);
+}
+
+/**
+ * Same read/merge/append-only writer, but fail closed when its cross-process
+ * lock cannot be acquired. Use for explicit user lifecycle actions.
+ */
+export async function updateSpecContextStrict(
+    specDir: string,
+    mutate: (ctx: SpecContext) => SpecContext,
+    fallback: SpecContext
+): Promise<SpecContext> {
+    return enqueueSpecContextUpdate(specDir, mutate, fallback, true);
+}
+
+function enqueueSpecContextUpdate(
+    specDir: string,
+    mutate: (ctx: SpecContext) => SpecContext,
+    fallback: SpecContext,
+    requireLock: boolean
+): Promise<SpecContext> {
     const target = path.join(specDir, SPEC_CONTEXT_FILENAME);
     // Chain key is the RESOLVED absolute path, so two specDir strings that reach
     // the same file (relative vs absolute, `..` segments) share one queue.
@@ -522,9 +543,7 @@ export async function updateSpecContext(
     // prior and chains behind it. `prior` never rejects (see `tail`), so a
     // failed predecessor still lets us run.
     const prior = writeChains.get(key) ?? Promise.resolve();
-    const result = prior.then(() =>
-        runSpecContextUpdate(target, mutate, fallback)
-    );
+    const result = prior.then(() => runSpecContextUpdate(target, mutate, fallback, requireLock));
     const tail = result.then(
         () => undefined,
         () => undefined
@@ -544,13 +563,17 @@ export async function updateSpecContext(
 async function runSpecContextUpdate(
     target: string,
     mutate: (ctx: SpecContext) => SpecContext,
-    fallback: SpecContext
+    fallback: SpecContext,
+    requireLock: boolean
 ): Promise<SpecContext> {
     // The lock spans read → mutate → publish, as the capture script's does, so a
     // script write can't land in the middle and be overwritten by the copy read
     // before it. It publishes directly rather than through `writeSpecContext`,
     // which would take the same lock again and deadlock behind itself.
-    const token = await acquireContextLock(target);
+    const token = await acquireContextLock(target, requireLock);
+    if (requireLock && !token) {
+        throw new Error(`Could not acquire the cross-process lock for ${target}; no changes were saved.`);
+    }
     try {
         let current: SpecContext;
         try {

@@ -379,9 +379,53 @@ function pickFeatureSpecName(folderName, fileNames) {
 function isSpecFolder(fileNames) {
   return fileNames.some((n) => n.endsWith(".md") || n === ".spec-context.json");
 }
+function parseWorkspaceSettings(raw) {
+  const chars = raw.replace(/^\uFEFF/, "").split("");
+  let quoted = false;
+  let escaped = false;
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') quoted = false;
+      continue;
+    }
+    if (c === '"') quoted = true;
+    else if (c === "/" && chars[i + 1] === "/") {
+      while (i < chars.length && chars[i] !== "\n" && chars[i] !== "\r") chars[i++] = " ";
+    } else if (c === "/" && chars[i + 1] === "*") {
+      chars[i++] = " ";
+      chars[i++] = " ";
+      while (i < chars.length && !(chars[i] === "*" && chars[i + 1] === "/")) {
+        if (chars[i] !== "\n" && chars[i] !== "\r") chars[i] = " ";
+        i++;
+      }
+      if (i >= chars.length) throw new SyntaxError("Unterminated comment in workspace settings.");
+      chars[i++] = " ";
+      chars[i] = " ";
+    }
+  }
+  quoted = false;
+  escaped = false;
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") {
+      let next = i + 1;
+      while (/\s/.test(chars[next] ?? "")) next++;
+      if (chars[next] === "]" || chars[next] === "}") chars[i] = " ";
+    }
+  }
+  return JSON.parse(chars.join(""));
+}
 function parseSpecDirsSetting(raw) {
   try {
-    const settings = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[}\]])/g, "$1"));
+    const settings = parseWorkspaceSettings(raw);
     const dirs = settings["speckit.specDirectories"];
     if (Array.isArray(dirs) && dirs.length > 0) {
       return dirs.filter((d) => typeof d === "string" && !/[*?[\]{}]/.test(d));
@@ -585,6 +629,7 @@ export {
   listTasks,
   parseSpecContext,
   parseSpecDirsSetting,
+  parseWorkspaceSettings,
   phaseProgress,
   phaseTimings,
   pickFeatureSpecName,

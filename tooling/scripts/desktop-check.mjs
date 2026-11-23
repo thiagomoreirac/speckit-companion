@@ -295,9 +295,9 @@ function pane(title) {
     return page.locator('.pane', { has: page.locator(`.pane-header h3.title:text-is("${title}")`) });
 }
 
-async function row(paneTitle, text) {
+async function row(paneTitle, text, timeout = 15000) {
     const item = pane(paneTitle).locator('.monaco-list-row', { hasText: text }).first();
-    await item.waitFor({ timeout: 15000 });
+    await item.waitFor({ timeout });
     return item;
 }
 
@@ -438,7 +438,7 @@ async function step(name, what, run, { needs, shots, record, check } = {}) {
         result.note = (await run()) ?? '';
         result.ok = true;
     } catch (error) {
-        result.note = String(error?.message ?? error).split('\n')[0];
+        result.note = String(error?.message ?? error).split('\n').filter(Boolean).slice(0, 3).join(' ');
     }
     result.shot = await shot(name).catch(() => undefined);
     results.push(result);
@@ -480,10 +480,12 @@ if (SHOTS && !SANDBOX && (!ONLY.length || ONLY.includes('provider-picker'))) {
 
 const built = buildProject();
 const { root } = built;
+let launchFailed = true;
 
 try {
     await launch(built);
     await page.locator('.activitybar a.action-label[aria-label^="SpecKit"]').first().click();
+    launchFailed = false;
     const sidebar = (await page.locator('.part.sidebar').boundingBox())?.width ?? 300;
     /** Drags the side bar out until the editor column is about this wide. */
     const editorWidth = async (width) => {
@@ -783,6 +785,39 @@ try {
         }
         return 'rich-spec-stories, rich-spec-scenarios, rich-spec-tasks, rich-overview, rich-overview-verified, rich-sidebar-specs, rich-sidebar-bugs, rich-sidebar-ideas, rich-sidebar-steering';
     }, { needs: 'fixtures', shots: true });
+
+    await step('linked-work-evidence', 'A spec links a plan, previews an ER diagram and compares it with the reviewed revision', async () => {
+        const folder = join(built.project, 'specs', '041-profile-photo-upload');
+        writeFileSync(join(folder, 'schema.mmd'), 'erDiagram\n  MEMBER ||--|| AVATAR : owns\n');
+        const completed = await row('Specs', 'Completed', 60000);
+        if ((await completed.getAttribute('aria-expanded')) === 'false') {
+            await completed.locator('.monaco-tl-twistie').click();
+        }
+        await (await row('Specs', 'Profile photo upload')).click();
+        const work = webview().locator('.work-evidence');
+        await work.getByText('Linked work and evidence', { exact: true }).click();
+        await work.getByText('Create and link a work record', { exact: true }).click();
+        await work.getByLabel('Title', { exact: true }).fill('Improve member profiles');
+        await work.getByLabel('Description', { exact: true }).fill('Make profile photos easier to manage.');
+        await work.getByRole('button', { name: 'Create and link', exact: true }).click();
+        await work.getByText('Improve member profiles (business plan)', { exact: true }).waitFor();
+        await work.getByText('Create and link a work record', { exact: true }).click();
+        await work.getByRole('region', { name: 'Evidence', exact: true }).getByRole('combobox').selectOption({ label: 'schema.mmd' });
+        await work.locator('[aria-label="Entity relationship preview"]').waitFor();
+        await work.getByRole('checkbox', { name: 'Keep a copy for comparison' }).check();
+        await work.getByRole('button', { name: 'Approve artifact' }).click();
+        await page.locator('.monaco-dialog-box .monaco-button', { hasText: 'Approve artifact' }).click();
+        await work.getByText('This revision', { exact: false }).waitFor();
+        writeFileSync(join(folder, 'schema.mmd'), 'erDiagram\n  MEMBER ||--o{ AVATAR : has_versions\n');
+        await work.getByRole('button', { name: 'Refresh artifact', exact: true }).click();
+        await work.getByRole('button', { name: /Compare with current/ }).click();
+        const comparison = work.getByRole('region', { name: 'Artifact revision comparison', exact: true });
+        await expectText(comparison.getByLabel('Reviewed revision source', { exact: true }), /MEMBER \|\|--\|\| AVATAR : owns/);
+        const current = comparison.getByLabel('Current revision source', { exact: true });
+        await expectText(current, /MEMBER \|\|--o\{ AVATAR : has_versions/);
+        await current.scrollIntoViewIfNeeded();
+        await capture('linked-work-evidence', { target: 'editor' });
+    }, { needs: 'fixtures', check: true });
 
     await step('shot-overview-regions', 'Each region of a finished run\'s Overview is on the page', async () => {
         await clear();
@@ -2451,7 +2486,15 @@ try {
 } finally {
     writeFileSync(join(OUT, `results.${THEME}.json`), JSON.stringify(results, null, 2));
     await app?.close().catch(() => undefined);
-    rmSync(root, { recursive: true, force: true });
+    if ((launchFailed || results.some(result => !result.ok)) && existsSync(join(built.user, 'logs'))) {
+        cpSync(join(built.user, 'logs'), join(OUT, `logs.${THEME}`), { recursive: true });
+    }
+    try {
+        rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+        if (error.code !== 'EBUSY' && error.code !== 'EPERM') throw error;
+        console.warn(`Could not remove disposable VS Code profile ${root}: ${error.message}`);
+    }
 }
 
 if (SHEET) {

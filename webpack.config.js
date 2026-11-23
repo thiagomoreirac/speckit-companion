@@ -158,6 +158,7 @@ const specViewerConfig = {
       patterns: [
         // Copy spec-viewer CSS to webview output
         { from: 'apps/vscode/webview/styles/spec-viewer.css', to: 'spec-viewer.css' },
+        { from: 'apps/vscode/webview/styles/_work-evidence.css', to: '_work-evidence.css' },
         // The viewer package's built, scoped stylesheet and its themes (for @import resolution)
         { from: 'packages/viewer/dist/styles', to: 'viewer' },
         // The install banner the viewer and the spec editor share

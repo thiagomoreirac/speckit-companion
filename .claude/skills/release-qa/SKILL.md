@@ -325,6 +325,12 @@ Then once more with the stock workflow, however the canvas exposes the choice: N
 
 Agent actions: in chat ask "what specs are still open?" and "show me the related docs spec". The board should follow (`list_specs`, `focus_spec`). Screenshot. Light shot if the app has a theme toggle; otherwise skip and say so.
 
+### Evidence, product work and routines
+
+- [ ] In a spec with evidence, use the Evidence subtabs at normal and narrow widths. Open a graphical artifact and an empty category; confirm their status and next action are visible. Cancel a review before saving, then verify a recorded decision does not advance a paused engine gate.
+- [ ] Capture a synthetic idea with **Save to canvas**, mark it **Ready**, and review an update to a demo business plan. Open its epic and linked spec from **Product work**. No chat turn should start for capture, triage, or applying the plan update.
+- [ ] Save and archive a draft under **Routines**. Confirm that there is no new live automation and that the draft names the native management destination.
+
 ## Recipe: Website pages
 
 ```bash
