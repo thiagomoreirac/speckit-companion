@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { githubDeliveryTarget } from './workspace.mjs';
 
 const sha = /^[0-9a-f]{40}$/;
@@ -9,13 +10,20 @@ export function dedicatedWorkHandoff(root, kind, id, path) {
         pathPart.test(part) && !part.endsWith('.') && part.toLowerCase() !== '.git')) {
         throw new Error('This work item does not have a supported repository-relative path.');
     }
-    const { target: repository } = githubDeliveryTarget(root);
+    const env = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_(?:DIR|COMMON_DIR|WORK_TREE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CONFIG|CONFIG_COUNT|CONFIG_PARAMETERS|CONFIG_KEY_\d+|CONFIG_VALUE_\d+)$/i.test(name))),
+        GIT_NO_LAZY_FETCH: '1',
+        GIT_ALLOW_PROTOCOL: '',
+    };
+    const readGit = (...args) => execFileSync('git', ['--no-pager', '--no-optional-locks', '--no-replace-objects', '--literal-pathspecs', ...args], {
+        cwd: root, env, encoding: 'utf8', windowsHide: true, timeout: 2000, maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const git = (...args) => readGit(...args).replace(/\r?\n$/, '');
+    const { target: repository } = githubDeliveryTarget(root, readGit);
     if (!repository) throw new Error('Choose a checkout with one direct github.com origin before starting dedicated work.');
-    const git = (...args) => execFileSync('git', ['--no-pager', '--no-optional-locks', '--literal-pathspecs', ...args], {
-        cwd: root, encoding: 'utf8', windowsHide: true, timeout: 2000, maxBuffer: 8192, stdio: ['ignore', 'pipe', 'ignore'],
-    }).trimEnd();
     let ref, revision, tracked, entry;
     try {
+        if (realpathSync(git('rev-parse', '--show-toplevel')) !== realpathSync(root)) throw new Error('Not at repository root');
         ref = git('symbolic-ref', 'HEAD');
         if (!ref.startsWith('refs/heads/')) throw new Error('Not on a branch');
         revision = git('rev-parse', '--verify', 'HEAD');
