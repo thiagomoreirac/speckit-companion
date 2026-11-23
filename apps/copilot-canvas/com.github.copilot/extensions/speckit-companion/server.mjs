@@ -15,6 +15,7 @@ import { BUSY, recordStep, updateReviewRecord } from './run-record.mjs';
 import { addComment, buildReviewComment, editComment, markApplied, pendingForDoc, refinementPrompt, removeComment } from './vendor/review-comments.mjs';
 import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { githubDeliveryTarget, validateRepositoryRoot, validateRoot } from './workspace.mjs';
+import { decisionContext } from './decision-context.mjs';
 import { pickFolder } from './folder-picker.mjs';
 import { artifactReviews, codeRevision, compareEvidence, entityDiagram, evidenceInventory, impactPrompt, linkedMarker, listWork, projectPath, readEvidence, recordArtifactReview, writeWork, writeWorkLink } from './vendor/work-evidence.mjs';
 import { wireflowPreview } from './vendor/wireflow-preview.mjs';
@@ -877,8 +878,11 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         const startedAt = new Date(now());
         const preamble = customStep || settings.aiContextInstructions === false ? null : buildStepPreamble(command, spec.id, state.root, set, startedAt, writer());
         const file = preamble ? writeRunInstructions(state.root, stepInstructionsName(command, spec.id), runInstructionsDoc(line.split('\n')[0], preamble, spelling?.instructions)) : null;
-        const prompt = customStep ? `${customStep} ${spec.id}` : buildPrompt(command, spec.id, set, spelling, file);
+        let prompt = customStep ? `${customStep} ${spec.id}` : buildPrompt(command, spec.id, set, spelling, file);
         if (!STEP_COMMANDS.includes(command)) return deliver(spec.id, command, prompt, file);
+        const { context, note } = decisionContext(state.root, spec.id);
+        if (note) log(`[speckit-canvas] ${note}`);
+        if (context) prompt += `\n\n${context}`;
         // The run is known before the send, so a turn that starts while the send is still in flight finds it.
         const trackTurn = !state.bound?.sessionId;
         const earlier = state.runs.get(spec.id);

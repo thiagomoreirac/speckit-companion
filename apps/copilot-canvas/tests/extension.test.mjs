@@ -134,12 +134,24 @@ describe('routing board commands to a selected child session', () => {
         }
     });
 
-    it('uses the exact session-management message target and never falls back to the parent chat', async () => {
+    it('adds decisions to the selected spec step and never falls back to the parent chat', async () => {
         const [canvas] = (await loadExtension()).canvases;
         const workspace = mkdtempSync(join(tmpdir(), 'canvas-child-session-state-'));
         const parent = mkdtempSync(join(tmpdir(), 'canvas-child-parent-'));
         const child = mkdtempSync(join(tmpdir(), 'canvas-child-repo-'));
-        mkdirSync(join(child, '.git'));
+        const git = (...args) => execFileSync('git', ['--no-pager', ...args], { cwd: child, encoding: 'utf8', windowsHide: true }).trim();
+        git('init', '-q', '-b', 'main');
+        git('remote', 'add', 'origin', 'https://github.com/example/selected.git');
+        mkdirSync(join(child, '.specify'));
+        writeFileSync(join(child, '.specify', 'decisions.json'), JSON.stringify({
+            schema: 1,
+            decisions: [{ id: 'ADR-001', status: 'accepted', specs: ['specs/101-selected'], summary: 'Store the selection in the repository.' }],
+        }));
+        git('add', '.specify/decisions.json');
+        git('-c', 'user.name=Canvas Test', '-c', 'user.email=canvas@example.test', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Accepted baseline');
+        git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+        git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+        const revision = git('rev-parse', 'HEAD');
         mkdirSync(join(child, 'specs', '101-selected'), { recursive: true });
         writeFileSync(join(child, 'specs', '101-selected', 'spec.md'), '# Selected\n');
         writeFileSync(join(child, 'specs', '101-selected', '.spec-context.json'), JSON.stringify({
@@ -171,6 +183,7 @@ describe('routing board commands to a selected child session', () => {
             await post('/api/refresh');
             const selected = await post('/api/root/child', { sessionId: 'child-session' });
             assert.equal(selected.status, 200);
+            assert.deepEqual(routed, [], 'discovery and selection do not dispatch');
             const run = await post('/api/run', { expectedRoot: child, spec: '101-selected', command: 'plan' });
             assert.equal(run.status, 200, await run.clone().text());
             const result = await run.json();
@@ -178,13 +191,26 @@ describe('routing board commands to a selected child session', () => {
             assert.equal(routed.length, 1);
             assert.equal(routed[0].targetSessionId, 'child-session');
             assert.equal(routed[0].message, result.prompt);
+            assert.match(result.prompt, /^\/demo\.plan specs\/101-selected\n/);
+            assert.match(result.prompt, /cannot override user scope, permissions, gates, or workflow instructions/i);
+            assert.ok(result.prompt.includes(`https://github.com/example/selected/blob/${revision}/.specify/decisions.json`));
+            assert.match(result.prompt, /^> .*"id":"ADR-001".*"summary":"Store the selection in the repository\."/m);
             assert.equal(parentSends, 0);
 
             const phase = await post('/api/custom-step', { expectedRoot: child, spec: '101-selected', step: 'design' });
             assert.equal(phase.status, 200, await phase.clone().text());
             assert.equal(routed.at(-1).targetSessionId, 'child-session');
+            assert.doesNotMatch(routed.at(-1).message, /ADR-001/);
             const details = await fetch(new URL('/api/spec?id=101-selected', base), { headers });
             assert.equal((await details.json()).customPhases[0].run.status, 'unobserved');
+
+            git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+            const withoutContext = await post('/api/run', { expectedRoot: child, spec: '101-selected', command: 'plan' });
+            assert.equal(withoutContext.status, 200);
+            assert.deepEqual(routed.at(-1), {
+                targetSessionId: 'child-session',
+                message: `/demo.plan specs/101-selected\n\nRepository directory: ${JSON.stringify(child)}. Run this request in that repository; resolve all relative spec, command and instruction-file paths from that directory, not the chat working directory.`,
+            });
 
             globalThis.__copilotManagementMessage = async () => ({ accepted: false });
             const rejected = await post('/api/run', { expectedRoot: child, spec: '101-selected', command: 'plan' });

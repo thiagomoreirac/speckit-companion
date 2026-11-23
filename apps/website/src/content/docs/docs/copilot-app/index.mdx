@@ -77,6 +77,30 @@ The board spells each command the way your project registers it: `/speckit-plan`
 
 For a spec with a run record, use a document's **Add comment** button to save a review note on a line. Edit or remove notes in place, then use **Refine notes** to send the pending notes to the chat as targeted edits; the board marks them applied after the send succeeds. If there is no chat, copy the prompt instead and the notes stay pending. Notes that cannot be reattached to a changed document remain at the bottom of its tab.
 
+### Carry accepted decisions into a step
+
+When you run **Plan**, **Tasks**, or **Implement** for a selected spec, Companion can quote matching architecture decision records (ADRs) in that session's command. Each quote names the ADR and links to the exact Git revision it came from. These are references, not instructions: they cannot change the run's scope, permissions, gates, or workflow.
+
+Keep the decisions you want Companion to cite in `.specify/decisions.json` and review them on the repository's default branch. For example:
+
+```json
+{
+  "schema": 1,
+  "decisions": [
+    {
+      "id": "ADR-001",
+      "status": "accepted",
+      "specs": ["specs/101-roster"],
+      "summary": "Use the existing roster store rather than introducing a second store."
+    }
+  ]
+}
+```
+
+Give each decision a unique, stable `ADR-` ID followed by up to 40 uppercase letters, digits or hyphens, starting with a letter or digit. List up to 12 exact repository-relative spec folder paths with `/` separators, using ASCII letters, digits, underscores, hyphens or dots (no globs). Use a single-line summary of at most 400 characters. Only `accepted` records are sent. Keep `proposed` or `rejected` records out of the handoff by setting that status; when replacing an older decision, set its status to `superseded` and set `supersededBy` to the new ADR ID. Duplicate IDs and malformed records are ignored. The file is limited to 32 KiB and 64 records, and each command quotes only the first four exact matches in file order.
+
+Companion reads from the selected checkout's cached `origin/HEAD` target, not its checked-out branch or uncommitted files. It requires a direct `github.com` origin and a remote-tracking ref mapped from the default branch. The cache may lag behind GitHub; Companion does not fetch, check for freshness, or update Git references. With no catalog or no matching decisions, the command is unchanged. If Companion cannot verify the baseline or read the catalog, it logs why it skipped decision context and still sends the ordinary command.
+
 ## Workflow Builder
 
 Open **More tools (…) → Workflow Builder** to see the same pipeline graph used in VS Code. In a project with Companion installed, edit nodes, rearrange phases, attach hooks, choose a workflow, and preview or build the resulting commands. The builder runs the installed extension's scripts and needs Python on the extension host. Saving a node creates a project copy; returning to the shipped node keeps that copy under `.speckit-companion/workflow-backups` and offers Undo. File edits are refused if the file changed since it was opened.

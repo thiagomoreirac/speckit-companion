@@ -7,7 +7,7 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 ### Added
 
 - **Converge from the board.** Check an implemented or completed spec against its code. <!-- area: copilot-app -->
-- **Work from document tabs.** Clarify a spec, check a plan, or analyze tasks. <!-- area: copilot-app -->
+- **Run commands with the right context.** Clarify a spec, check a plan, or analyze tasks, and give **Plan**, **Tasks**, and **Implement** scoped, accepted decisions.
 - **See and review evidence in tabs.** Preview artifacts, see review status, generate missing evidence, and compare the exact revisions you choose to keep.
 - **Build and set up workflows.** Edit nodes and hooks, inspect catalogs, and review hook effects before installing extensions, presets, workflows, or bundles.
 - **Preview delivery before creating issues.** Check the destination repository, tasks and delivery owner before sending a GitHub issue request.
