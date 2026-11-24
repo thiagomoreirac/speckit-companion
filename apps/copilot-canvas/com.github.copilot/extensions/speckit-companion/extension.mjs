@@ -3,8 +3,9 @@
 
 import { joinSession, createCanvas, CanvasError } from '@github/copilot-sdk/extension';
 import { createSpecServer } from './server.mjs';
-import { CANVAS_DESCRIPTION, SPEC_COMMANDS, SYSTEM_RULE, openStatus } from './prompts.mjs';
+import { CANVAS_DESCRIPTION, SPEC_COMMANDS, SYSTEM_RULE, dedicatedWorkPrompt, openStatus } from './prompts.mjs';
 import { linkedDraftStorage, rootSelection, validateRepositoryRoot, validateRoot } from './workspace.mjs';
+import { createDedicatedWork } from './work-handoff.mjs';
 
 const CANVAS_ID = 'speckit-spec-board';
 const servers = new Map();
@@ -32,6 +33,20 @@ const specInput = {
     },
     required: ['spec'],
 };
+
+const coordinatedSessionSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        sessionId: { type: 'string', minLength: 1 },
+        cwd: { type: 'string', minLength: 1, description: 'Actual worktree directory only if accessible from the board host.' },
+        name: { type: 'string', minLength: 1 },
+        activity: { type: 'string', enum: ['busy', 'idle', 'unknown'] },
+        url: { type: 'string', description: 'Exact canonical ghapp://sessions/ link from app tools. Required when cwd is omitted.' },
+    },
+    required: ['sessionId', 'name'],
+};
+const requestIdSchema = { type: 'string', minLength: 36, maxLength: 36 };
 
 function followDirectory(entry, directory) {
     try {
@@ -113,24 +128,14 @@ const session = await joinSession({
                 },
                 {
                     name: 'update_coordinated_sessions',
-                    description: 'Coordinator only: replace the complete list of your own nonarchived app sessions, including idle sessions, using scoped get_sessions_status and get_session for exact ids, names, worktree directories and activity. Refresh after create, resume, switch, archive, activity or worktree changes. The board cannot verify ownership; never supply unrelated sessions or guess a latest session. The user chooses a source; commands are sent to that exact session through session management, without child-turn progress tracking.',
+                    description: 'Coordinator only: replace the complete list of your own nonarchived app sessions, including idle sessions, using scoped get_sessions_status and get_session. Include cwd only for worktrees accessible from this board; otherwise use the exact app URL. Refresh after external create, resume, switch, archive, activity or worktree changes. For a claimed dedicated work request use finish_dedicated_work instead. Never supply unrelated sessions or guess a latest session.',
                     inputSchema: {
                         type: 'object',
                         additionalProperties: false,
                         properties: {
                             sessions: {
                                 type: 'array',
-                                items: {
-                                    type: 'object',
-                                    additionalProperties: false,
-                                    properties: {
-                                        sessionId: { type: 'string', minLength: 1 },
-                                        cwd: { type: 'string', minLength: 1 },
-                                        name: { type: 'string', minLength: 1 },
-                                        activity: { type: 'string', enum: ['busy', 'idle', 'unknown'] },
-                                    },
-                                    required: ['sessionId', 'cwd', 'name'],
-                                },
+                                items: coordinatedSessionSchema,
                             },
                         },
                         required: ['sessions'],
@@ -259,6 +264,34 @@ const session = await joinSession({
                     },
                 },
                 {
+                    name: 'claim_dedicated_work',
+                    description: 'Owning coordinator only: claim the exact request ID sent by the board after user confirmation. Returns the pinned handoff and previous assignment, if any. Never create work if the claim fails.',
+                    inputSchema: { type: 'object', additionalProperties: false, properties: { requestId: requestIdSchema }, required: ['requestId'] },
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).claimDedicatedWork(ctx.input.requestId);
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
+                    name: 'finish_dedicated_work',
+                    description: 'Owning coordinator only: confirm the claimed request after verifying your exact child, assigned work item, isolated branch and starting revision. Updates the picker in place. Report blocked instead if verification failed and no unresolved allocation exists. Omit cwd for open-only children; the canonical app URL is required.',
+                    inputSchema: {
+                        type: 'object', additionalProperties: false,
+                        properties: { requestId: requestIdSchema, session: coordinatedSessionSchema, baseRevision: { type: 'string' }, blocked: { type: 'string', minLength: 1, maxLength: 300 } },
+                        required: ['requestId'],
+                    },
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).finishDedicatedWork(ctx.input);
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
                     name: 'refresh',
                     description: 'Re-read every spec folder and update the board.',
                     handler: (ctx) => ({ count: serverFor(ctx).rescan().specs.length }),
@@ -287,6 +320,14 @@ const session = await joinSession({
                         bound: savedRoot ? selection.source() : null,
                         coordinatedSessions: selection.sessions(),
                         saveCoordinatedSessions: (sessions, root, source) => selection.writeSessions(sessions, root, source),
+                        dedicatedWork: session.workspacePath && typeof session.send === 'function' ? createDedicatedWork({
+                            storage: selection,
+                            send: requestId => session.send({ prompt: dedicatedWorkPrompt(requestId, ctx.instanceId) }),
+                            changed: () => {
+                                const sessions = selection.sessions();
+                                for (const board of servers.values()) board.dedicatedWorkChanged(sessions);
+                            },
+                        }) : undefined,
                         saveRoot: (root, source) => selection.write(root, source),
                         linkedDraft: linkedDraftStorage(session.workspacePath, ctx.instanceId),
                         clearRoot: () => selection.clear(),

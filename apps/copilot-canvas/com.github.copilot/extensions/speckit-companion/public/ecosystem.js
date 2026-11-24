@@ -9,7 +9,8 @@ export function createEcosystemView({ el, api, root, notify, sendResult, openSpe
     }
     function confirm(title, copy, action) {
         return new Promise(resolve => {
-            const dialog = el('dialog', { class: 'ecosystem-dialog', 'aria-label': title }, el('h3', {}, title), el('p', {}, copy),
+            const dialog = el('dialog', { class: 'ecosystem-dialog', 'aria-label': title }, el('h3', {}, title),
+                typeof copy === 'string' ? el('p', {}, copy) : copy,
                 el('div', { class: 'ecosystem-actions' }, button('Cancel', () => dialog.close()), button(action, () => dialog.close('yes'))));
             dialog.addEventListener('close', () => {
                 resolve(dialog.returnValue === 'yes');
@@ -32,6 +33,121 @@ export function createEcosystemView({ el, api, root, notify, sendResult, openSpe
             status.setAttribute('role', 'alert');
             status.textContent = error.message;
         });
+    }
+    async function extensionSetup(item, info, opener) {
+        const title = `${item.setup.name} setup`;
+        const body = el('div', {}, el('p', { role: 'status' }, 'Reading the installed extension…'));
+        const dialog = el('dialog', { class: 'ecosystem-dialog extension-setup', 'aria-label': title },
+            el('h3', {}, title), body, el('div', { class: 'ecosystem-actions' }, button('Close setup', () => dialog.close())));
+        dialog.addEventListener('close', () => dialog.remove(), { once: true });
+        document.body.append(dialog);
+        dialog.showModal();
+        const guard = () => {
+            if (!dialog.open || !opener.isConnected || root() !== info.root) throw new Error('The repository or Integrations view changed. Reopen setup.');
+        };
+        const load = async () => {
+            guard();
+            const data = await api('/api/integrations/config', { id: item.id });
+            guard();
+            if (data.root !== info.root) throw new Error('The repository changed. Reopen setup.');
+            return data;
+        };
+        const statusText = { set: 'Set in project file', unset: 'Not set in project file', invalid: 'Invalid in project file',
+            unchecked: 'Project value not checked', 'host-only': 'Configure outside Companion; not checked' };
+        const needsSetup = files => files.some(file => (file.required && file.present === false) ||
+            file.fields?.some(field => field.required && ['unset', 'invalid'].includes(field.status)));
+        const hookNotes = el('p', { role: 'status' });
+        function fileSection(file) {
+            const controls = new Map();
+            const summary = el('div', {},
+                el('p', {}, el('code', {}, file.path), ` · ${file.required ? 'Required file' : 'Optional file'}`,
+                    file.present == null ? '' : file.present ? ' · Exists' : ' · Not present'),
+                file.description ? el('p', {}, file.description) : null,
+                file.template ? el('p', {}, 'Template: ', el('code', {}, file.template), ' in the extension folder.') : null,
+                file.templateUnavailable ? el('p', {}, 'The declared template could not be located safely.') : null,
+                file.problem || file.reason ? el('p', {}, file.problem || file.reason) : null);
+            const section = el('section', { class: 'extension-config-file', 'aria-label': file.name }, summary);
+            const form = el('form', { class: 'extension-config-form' });
+            const fields = (required, heading) => {
+                const entries = file.fields?.filter(field => field.required === required) ?? [];
+                if (!entries.length) return null;
+                return el('fieldset', {}, el('legend', {}, heading), entries.map(field => {
+                    const text = el('small', {}, statusText[field.status], field.description ? ` · ${field.description}` : '');
+                    if (!file.canEdit || field.hostOnly) return el('p', {}, el('strong', {}, field.title), ' · ', text);
+                    const select = field.choices || field.type === 'boolean';
+                    const choices = field.choices ?? ['true', 'false'];
+                    const control = select ? el('select', { class: 'search' },
+                        el('option', { value: '' }, 'Leave unchanged'),
+                        choices.map(value => el('option', { value }, !field.choices ? value === 'true' ? 'Yes' : 'No' : value)))
+                        : el('input', { class: 'search', type: field.type === 'string' ? 'text' : 'number',
+                            placeholder: 'Leave unchanged', autocomplete: 'off',
+                            minlength: field.minLength, maxlength: field.type === 'string' ? field.maxLength ?? 512 : null,
+                            min: field.minimum, max: field.maximum, step: field.type === 'integer' ? '1' : field.type === 'number' ? 'any' : null });
+                    controls.set(field.key, { control, type: field.type });
+                    return el('div', { class: 'extension-config-field' }, el('label', {}, el('strong', {}, field.title), control, text));
+                }));
+            };
+            form.append(...[fields(true, 'Required setup'), fields(false, 'Optional settings')].filter(Boolean));
+            if (file.canEdit) {
+                const status = el('p', { role: 'alert' });
+                const review = el('button', { class: 'btn btn-quiet', type: 'submit' }, 'Review changes');
+                form.addEventListener('submit', async event => {
+                    event.preventDefault();
+                    status.textContent = '';
+                    review.disabled = true;
+                    try {
+                        guard();
+                        const changes = Object.fromEntries([...controls].filter(([, { control }]) => control.value !== '')
+                            .map(([key, { control, type }]) => [key, type === 'boolean' ? control.value === 'true' :
+                                ['number', 'integer'].includes(type) ? control.valueAsNumber : control.value]));
+                        const preview = await api('/api/integrations/config/preview', { id: item.id, file: file.name, revision: file.revision, changes });
+                        guard();
+                        if (preview.root !== info.root) throw new Error('The repository changed. Review setup again.');
+                        if (!await confirm('Review extension settings', el('div', {},
+                            el('p', {}, `${preview.creates ? 'Create' : 'Update'} `, el('code', {}, preview.path), ' in the selected checkout.'),
+                            list(...preview.changes.map(change => el('li', {}, el('strong', {}, change.title), change.replaces ? ' · Replace with ' : ' · Set to ',
+                                el('code', {}, JSON.stringify(change.value))))),
+                            el('p', {}, 'Saving does not run the extension or change its hooks.')), 'Save settings')) return;
+                        guard();
+                        await api('/api/integrations/config/save', { token: preview.token });
+                        notify(`Saved ${file.name}.`);
+                        const current = await load();
+                        const refreshed = current.files.find(entry => entry.name === file.name);
+                        if (!refreshed) throw new Error('The file is no longer declared. Reopen setup.');
+                        const next = fileSection(refreshed);
+                        section.replaceWith(next);
+                        next.querySelector('button')?.focus();
+                        hookNotes.textContent = current.hooks.some(hook => hook.enabled) && needsSetup(current.files) ?
+                            'Required project settings are missing or invalid. Check setup before running an enabled hook.' : '';
+                    } catch (error) {
+                        status.textContent = error.message;
+                    } finally {
+                        review.disabled = false;
+                    }
+                });
+                form.append(el('p', {}, 'Leave a field blank to keep its current project value. Existing values are not displayed.'), status, review);
+            }
+            section.append(form);
+            return section;
+        }
+        try {
+            const data = await load();
+            hookNotes.textContent = data.hooks.some(hook => hook.enabled) && needsSetup(data.files) ?
+                'Required project settings are missing or invalid. Check setup before running an enabled hook.' : '';
+            body.replaceChildren(
+                el('p', {}, data.enabled ? 'Enabled in Spec Kit' : 'Not enabled in Spec Kit', ' · Execution host not checked'),
+                !info.localSetup ? el('p', {}, 'Read-only here. Open the owning Copilot session to edit project settings.') : '',
+                ...(data.files.length ? data.files.map(fileSection) : [el('p', {},
+                    data.problem ?? 'This extension does not declare a project config file. Follow the extension’s setup instructions.')]),
+                ...(data.docs ? [el('p', {}, el('a', { href: data.docs, target: '_blank', rel: 'noopener noreferrer' }, 'Extension documentation'))] : []),
+                el('h4', {}, 'Hooks'),
+                data.hooks.length ? list(...data.hooks.map(hook => el('li', {}, el('code', {}, hook.phase),
+                    ` · ${hook.enabled} enabled, ${hook.disabled} disabled in project`))) :
+                    el('p', {}, data.known ? 'No configured hook bindings found for this extension.' : 'Project hook bindings could not be checked.'),
+                hookNotes);
+        } catch (error) {
+            body.replaceChildren(el('p', { role: 'alert' }, error.message));
+        }
     }
     function integrations(pane) {
         render(pane, async () => {
@@ -99,6 +215,18 @@ export function createEcosystemView({ el, api, root, notify, sendResult, openSpe
                     resolved.replaceChildren(el('p', { role: 'alert' }, error.message));
                 }
             };
+            const installed = info.packages.find(group => group.kind === 'extension').installed;
+            const packageLabel = item => `${item.id}${item.version ? ` ${item.version}` : ''}`;
+            const extensionRow = item => {
+                const name = item.setup.name === item.id ? packageLabel(item) : `${item.setup.name} · ${packageLabel(item)}`;
+                const action = !info.localSetup && item.setup.mode === 'configure' ? 'View setup' :
+                    { configure: 'Configure', view: 'View setup', manual: 'Manual setup' }[item.setup.mode];
+                const control = button(action, () => extensionSetup(item, info, control));
+                control.setAttribute('aria-label', `${action}: ${item.setup.name}`);
+                return el('li', { class: 'extension-setup-row' }, el('div', {},
+                    el('strong', {}, name), el('small', {}, item.enabled ? 'Enabled in Spec Kit' : 'Not enabled in Spec Kit',
+                        item.priority == null ? '' : ` · Priority ${item.priority}`)), control);
+            };
             return [
                 el('h3', {}, 'Spec Kit integrations'),
                 el('p', {}, `Compatibility baseline: ${info.baseline}. ${info.cli ? `Local CLI found; active integration: ${info.provider ?? 'not configured'}.` : 'No CLI found in .venv.'}`),
@@ -106,8 +234,9 @@ export function createEcosystemView({ el, api, root, notify, sendResult, openSpe
                 info.localSetup && info.cli && info.provider === 'copilot' && !info.hasBashPrerequisites ?
                     el('p', {}, 'Data Model Diagram requires a Spec Kit project initialized with Bash scripts.') : null,
                 el('h4', {}, 'Installed packages'),
-                list(...info.packages.map(group => el('li', {}, `${group.kind}: ${group.installed.map(item =>
-                    `${item.id}${item.version ? ` ${item.version}` : ''}${item.enabled ? '' : ' (disabled)'}${item.priority === null || item.priority === undefined ? '' : ` · priority ${item.priority}`}`).join(', ') || 'None'}`))),
+                installed.length ? list(...installed.map(extensionRow)) : el('p', {}, 'No extensions registered.'),
+                list(...info.packages.filter(group => group.kind !== 'extension').map(group => el('li', {}, `${group.kind}: ${group.installed.map(item =>
+                    `${packageLabel(item)}${item.enabled ? '' : ' (disabled)'}${item.priority === null || item.priority === undefined ? '' : ` · priority ${item.priority}`}`).join(', ') || 'None'}`))),
                 el('h4', {}, 'Resolved Spec Kit artifacts'),
                 el('p', {}, 'Inspect the command layers, template sources and hook bindings Spec Kit resolves for this checkout. This does not run a hook or predict what a chat session will execute.'),
                 info.localSetup && info.cli ? button('Inspect resolved artifacts', inspect) : el('p', {}, 'Requires a repository-local Spec Kit CLI in the owning session.'),

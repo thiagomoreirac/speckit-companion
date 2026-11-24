@@ -475,18 +475,29 @@ function renderChildren() {
 
 function renderCoordinatedSessions() {
     const sessions = state.snapshot.coordinatedSessions ?? [];
+    const local = sessions.filter(session => session.cwd);
+    const openOnly = sessions.filter(session => !session.cwd);
     const bound = state.snapshot.boundSession;
-    const missing = bound && !sessions.some(session => session.sessionId === bound.sessionId);
+    const selected = bound && local.find(session => session.sessionId === bound.sessionId);
+    const missing = bound && !selected;
+    const moved = selected && selected.cwd !== state.snapshot.root;
     els.coordinatedSession.replaceChildren(el('option', { value: '', text: 'Choose a coordinated session' }));
     if (missing) els.coordinatedSession.append(el('option', { value: bound.sessionId, text: `${bound.name} (unavailable)` }));
-    for (const session of sessions) {
+    for (const session of local) {
         els.coordinatedSession.append(el('option', { value: session.sessionId, text: `${session.name}${session.activity ? ` · ${session.activity}` : ''}` }));
     }
-    els.coordinatedSession.value = bound?.sessionId ?? '';
+    els.coordinatedSession.value = moved ? '' : bound?.sessionId ?? '';
     els.coordinatedHint.textContent = missing
         ? 'The selected session is not in the latest list. Its last repository remains open; ask the coordinator to refresh or disconnect.'
-        : bound ? 'Commands are sent to this selected session when the host permits session management.'
-            : sessions.length ? 'The coordinator maintains this list; choose a session to route commands to it.' : 'Ask the coordinator to update the session list.';
+        : moved ? 'The selected session moved. Select it again to show its current checkout.'
+            : bound ? 'Commands are sent to this selected session when the host permits session management.'
+            : local.length ? 'Choose a session to show its checkout and route commands to it.'
+                : openOnly.length ? 'Open these sessions in Copilot; this board cannot read their checkouts.'
+                    : 'Start dedicated work from a work item, or ask the coordinator to refresh the session list.';
+    const links = $('coordinated-open-only');
+    links.replaceChildren(...openOnly.map(session => el('li', {}, session.name, ' · ',
+        el('a', { href: session.url, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open session: ${session.name}` }, 'Open session'))));
+    links.hidden = !openOnly.length;
 }
 
 function renderBoard() {
@@ -652,6 +663,60 @@ async function confirmIssues(specId) {
     dialog.addEventListener('close', () => dialog.remove());
     document.body.append(dialog);
     dialog.showModal();
+}
+
+async function confirmDedicatedWork(kind, id) {
+    try {
+        const preview = await api(`/api/dedicated-work?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
+        if (state.snapshot?.root !== preview.root) throw new Error('The repository changed. Review the dedicated work request again.');
+        const { handoff } = preview;
+        const dialog = el('dialog', { class: 'confirm-dialog', 'aria-label': 'Start dedicated work' });
+        const cancel = el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => dialog.close() }, 'Cancel');
+        const start = el('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+            start.disabled = true;
+            try {
+                if (state.snapshot?.root !== preview.root) throw new Error('The repository changed. Review the dedicated work request again.');
+                await api('/api/dedicated-work', { kind, id, version: preview.version });
+                dialog.close();
+            } catch (error) {
+                dialog.close();
+                toast(error.message);
+            }
+        } }, 'Start dedicated work');
+        dialog.append(el('h2', {}, 'Start dedicated work'),
+            el('p', {}, handoff.repository, ' · ', handoff.baseBranch, ' · ', el('code', { title: handoff.baseRevision }, handoff.baseRevision.slice(0, 12))),
+            el('p', {}, 'Published record: ', el('code', {}, handoff.item.path)),
+            el('p', {}, 'Copilot verifies and creates or reuses an isolated session for this item. Your board stays on this checkout. This does not publish changes or open a pull request.'),
+            el('div', { class: 'confirm-actions' }, cancel, start));
+        dialog.addEventListener('close', () => dialog.remove(), { once: true });
+        document.body.append(dialog);
+        dialog.showModal();
+    } catch (error) {
+        toast(error.message);
+    }
+}
+
+function updateDedicatedWorkControl(control) {
+    const row = state.snapshot?.dedicatedWork?.find(entry => entry.kind === control.dataset.kind && entry.id === control.dataset.id);
+    const listed = row?.session && state.snapshot.coordinatedSessions.find(session => session.sessionId === row.session.sessionId);
+    control.querySelector('button').disabled = ['requested', 'verifying', 'delivering-unknown'].includes(row?.status);
+    control.querySelector('[role=status]').textContent = ({
+        requested: 'Requested. Waiting for the coordinator.',
+        verifying: 'The coordinator is verifying the session.',
+        'delivering-unknown': 'Delivery could not be confirmed. Check the coordinator chat before retrying.',
+        blocked: row?.detail,
+        confirmed: !listed ? 'The assigned session is not in the latest list.' : listed.cwd
+            ? `${listed.name} is listed under Coordinated session.`
+            : `${listed.name} is listed under Coordinated session as an Open session link.`,
+    })[row?.status] ?? '';
+}
+
+function dedicatedWorkControl(kind, id) {
+    const control = el('div', { class: 'report-actions', dataset: { dedicatedWork: '', kind, id } },
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => confirmDedicatedWork(kind, id) }, 'Start dedicated work'),
+        el('span', { role: 'status' }));
+    updateDedicatedWorkControl(control);
+    return control;
 }
 
 function confirmCheckpoint(specId, checkpoint) {
@@ -1195,7 +1260,8 @@ function renderDetail() {
         },
     }, tab.label, tab.count ? el('span', { class: 'count' }, tab.count) : null)));
 
-    const header = el('div', { class: 'detail-header' }, head, renderRail(spec.steps), renderNext(spec), tabBar);
+    const header = el('div', { class: 'detail-header' }, head, renderRail(spec.steps), renderNext(spec),
+        spec.files.spec ? dedicatedWorkControl('spec', spec.id) : null, tabBar);
     if (currentHeader) {
         currentHeader.replaceWith(header);
     } else {
@@ -1334,6 +1400,7 @@ function applySnapshot(snapshot) {
         state.selected = snapshot.selected ?? snapshot.specs.find(s => !s.done)?.id ?? snapshot.specs[0]?.id ?? null;
     }
     renderBoard();
+    for (const control of document.querySelectorAll('[data-dedicated-work]')) updateDedicatedWorkControl(control);
     loadDetail();
 }
 
@@ -1348,6 +1415,13 @@ function connect() {
         els.liveLabel.textContent = 'Reconnecting';
     });
     source.addEventListener('snapshot', (event) => applySnapshot(JSON.parse(event.data)));
+    source.addEventListener('dedicated-work', (event) => {
+        const { root, coordinatedSessions, dedicatedWork } = JSON.parse(event.data);
+        if (root !== state.snapshot?.root) return;
+        Object.assign(state.snapshot, { coordinatedSessions, dedicatedWork });
+        renderCoordinatedSessions();
+        for (const control of document.querySelectorAll('[data-dedicated-work]')) updateDedicatedWorkControl(control);
+    });
     source.addEventListener('work-error', event => toast(JSON.parse(event.data).message));
     source.addEventListener('settings-changed', event => {
         settingsPage.diskChanged(JSON.parse(event.data));
@@ -2072,7 +2146,8 @@ function renderReports() {
         el('summary', {}, 'Companion triage'), el('p', {}, 'Your triage is separate from the Spec Kit assessment and workflow decisions.'), triage);
     els.reportDetail.replaceChildren(el('header', { class: 'board-heading' }, el('h2', {}, item.title),
         el('span', { class: 'board-state', 'data-tone': saved?.status }, triageLabels[saved?.status] ?? 'Not triaged')),
-        tabs, body, questions, buttons, linked, triagePanel, !isBug && canDerive ? ideaUpdatePane(item) : null);
+        tabs, body, questions, buttons, isBug || saved?.status === 'ready' ? dedicatedWorkControl(isBug ? 'bug' : 'idea', item.slug) : null,
+        linked, triagePanel, !isBug && canDerive ? ideaUpdatePane(item) : null);
 }
 
 async function refreshReports() {

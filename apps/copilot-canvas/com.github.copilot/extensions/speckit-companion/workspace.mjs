@@ -130,6 +130,21 @@ export function rootSelection(workspacePath) {
             delete data.source;
             save({ ...data, ...(root ? { root } : {}), ...(source ? { source } : {}), coordinatedSessions });
         },
+        dedicatedWork() {
+            const { dedicatedWork } = load();
+            return Array.isArray(dedicatedWork) ? dedicatedWork : [];
+        },
+        writeDedicatedWork(dedicatedWork, confirmed) {
+            const data = load();
+            if (confirmed) {
+                const sessions = Array.isArray(data.coordinatedSessions) ? data.coordinatedSessions : [];
+                const previous = sessions.findIndex(row => row.sessionId === confirmed.sessionId);
+                if (previous < 0) sessions.push(confirmed);
+                else sessions[previous] = confirmed;
+                data.coordinatedSessions = sessions;
+            }
+            save({ ...data, dedicatedWork });
+        },
         sortMode(root) {
             return load().sortModes?.[root] ?? 'recent';
         },

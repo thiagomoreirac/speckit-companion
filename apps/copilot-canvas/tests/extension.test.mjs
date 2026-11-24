@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CANVAS_DESCRIPTION, OPEN_NOTE, SYSTEM_RULE } from '../com.github.copilot/extensions/speckit-companion/prompts.mjs';
+import { rootSelection } from '../com.github.copilot/extensions/speckit-companion/workspace.mjs';
 
 // extension.mjs joins a Copilot session on import, so it is loaded once against the stub SDK (tests/sdk-stub) and we read what it registered.
 async function loadExtension() {
@@ -76,7 +77,7 @@ describe('how the board learns that a chat turn started and ended', () => {
     });
 });
 
-describe('routing board commands to a selected child session', () => {
+describe('preparing published dedicated work', () => {
     it('prepares distinct immutable work-item handoffs without starting, sending, or substituting work', async () => {
         const [canvas] = (await loadExtension()).canvases;
         const root = mkdtempSync(join(tmpdir(), 'canvas-work-handoff-'));
@@ -133,7 +134,253 @@ describe('routing board commands to a selected child session', () => {
             rmSync(root, { recursive: true, force: true });
         }
     });
+});
 
+describe('starting dedicated work from the board', () => {
+    const item = { kind: 'spec', id: 'specs/001-roster' };
+    const remoteId = '98817a45-8ca5-4097-be5a-e8f275f16625';
+    const remote = { sessionId: remoteId, name: 'Cloud roster', url: `ghapp://sessions/${remoteId}`, activity: 'idle' };
+    async function setup(t, workItem = item) {
+        const [canvas] = (await loadExtension()).canvases;
+        const base = realpathSync(mkdtempSync(join(tmpdir(), 'dedicated-picker-')));
+        const root = join(base, 'repository');
+        const workspace = join(base, 'session');
+        if (workItem.kind === 'spec') {
+            mkdirSync(join(root, workItem.id), { recursive: true });
+            writeFileSync(join(root, workItem.id, 'spec.md'), '# Roster\n');
+        } else {
+            const dir = join(root, '.speckit-companion', 'bug-triage');
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, `${workItem.id}.json`), JSON.stringify({
+                schema: 1, id: workItem.id, captured: true, status: 'reviewing', title: 'Roster bug', description: 'Synthetic bug',
+            }));
+        }
+        const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+        git('init', '-q', '-b', 'main');
+        git('config', 'core.hooksPath', join(base, 'no-hooks'));
+        git('remote', 'add', 'origin', 'https://github.com/example/roster.git');
+        git('add', '--', '.');
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Baseline');
+        const baseRevision = git('rev-parse', 'HEAD');
+        git('update-ref', 'refs/remotes/origin/main', baseRevision);
+        const selection = rootSelection(workspace);
+        const prompts = [];
+        const peer = [];
+        globalThis.__copilotWorkspacePath = workspace;
+        globalThis.__copilotManagementList = async () => ({ sessions: [] });
+        globalThis.__copilotOnSend = ({ prompt }) => prompts.push(prompt);
+        globalThis.__copilotManagementMessage = message => { peer.push(message); return { accepted: true }; };
+        const panels = new Map();
+        t.after(async () => {
+            for (const ctx of panels.values()) await canvas.onClose(ctx);
+            globalThis.__copilotWorkspacePath = undefined;
+            delete globalThis.__copilotManagementList;
+            delete globalThis.__copilotOnSend;
+            delete globalThis.__copilotManagementMessage;
+            rmSync(base, { recursive: true, force: true });
+        });
+        async function open(instanceId, workingDirectory = root) {
+            const ctx = { instanceId, input: null, session: { workingDirectory } };
+            const { url } = await canvas.open(ctx);
+            panels.set(instanceId, ctx);
+            const api = (path, body) => fetch(new URL(path, url), {
+                method: body ? 'POST' : 'GET',
+                headers: { 'x-speckit-token': new URL(url).searchParams.get('token'), 'content-type': 'application/json' },
+                body: body ? JSON.stringify(body) : undefined,
+            });
+            return {
+                url, api,
+                preview: () => api(`/api/dedicated-work?kind=${workItem.kind}&id=${encodeURIComponent(workItem.id)}`),
+                start: version => api('/api/dedicated-work', { ...workItem, expectedRoot: root, version }),
+                snapshot: async () => (await api('/api/snapshot')).json(),
+                action: (name, input) => canvas.actions.find(action => action.name === name).handler({ ...ctx, input }),
+                close: async () => { await canvas.onClose(ctx); panels.delete(instanceId); },
+            };
+        }
+        return { open, root, base, git, baseRevision, selection, prompts, peer,
+            requestId: () => prompts.at(-1)?.match(/^SpecKit Companion dedicated work request: ([0-9a-f-]+)/)?.[1] };
+    }
+
+    it('claims one exact request across panels; publishes a verified local checkout without changing the selection', async t => {
+        const { open, base, root, git, baseRevision, selection, prompts, peer, requestId } = await setup(t);
+        const existing = { sessionId: 'current-child', name: 'Current child', cwd: root };
+        selection.writeSessions([existing], root, { sessionId: existing.sessionId, name: existing.name });
+        const first = await open('dedicated-local', base);
+        const second = await open('dedicated-second', base);
+        const { version, handoff } = await (await first.preview()).json();
+        const secondVersion = (await (await second.preview()).json()).version;
+        assert.equal(handoff.baseRevision, baseRevision);
+        assert.equal(handoff.item.path, `${item.id}/spec.md`);
+        assert.equal(prompts.length, 0);
+        assert.equal((await first.start(secondVersion)).status, 400, 'preview belongs to this panel');
+        assert.equal((await first.api('/api/dedicated-work', { ...item, expectedRoot: base, version })).status, 400);
+        const requests = await Promise.all([first.start(version), second.start(secondVersion)]);
+        for (const response of requests) {
+            assert.equal(response.status, 202);
+            assert.equal((await response.json()).status, 'requested');
+        }
+        assert.equal(prompts.length, 1);
+        assert.equal(peer.length, 0, 'dedicated work goes to the coordinator, not the selected peer');
+        const id = requestId();
+        const claim = first.action('claim_dedicated_work', { requestId: id });
+        assert.equal(claim.assignedSession, null);
+        assert.deepEqual(claim.item, handoff.item);
+        assert.throws(() => second.action('claim_dedicated_work', { requestId: id }), /already been claimed/);
+        assert.deepEqual((await second.snapshot()).coordinatedSessions, [existing]);
+        assert.throws(() => first.action('finish_dedicated_work', { requestId: id, session: remote, baseRevision: '0'.repeat(40) }), /starting revision/);
+        assert.throws(() => first.action('finish_dedicated_work', { requestId: id, session: { ...remote, cwd: root }, baseRevision }), /separate branch/);
+        const cwd = join(base, 'isolated');
+        git('worktree', 'add', '-q', '-b', 'dedicated/roster', cwd, baseRevision);
+        const child = { ...remote, name: 'Local roster', cwd };
+        assert.equal(first.action('finish_dedicated_work', { requestId: id, session: child, baseRevision }).status, 'confirmed');
+        const restored = await second.snapshot();
+        assert.deepEqual(restored.coordinatedSessions, [existing, child]);
+        assert.equal(restored.root, root);
+        assert.equal(restored.boundSession.sessionId, existing.sessionId);
+        await first.close();
+        const reopened = await open('dedicated-local', base);
+        assert.deepEqual((await reopened.snapshot()).coordinatedSessions, [existing, child]);
+        assert.equal((await reopened.snapshot()).dedicatedWork[0].status, 'confirmed');
+        await reopened.action('run_step', { spec: item.id, command: 'plan' });
+        assert.equal(peer[0].targetSessionId, existing.sessionId);
+        assert.equal(prompts.length, 1, 'ordinary Plan does not start another session');
+    });
+
+    it('keeps remote children open-only and refreshes a reuse without adding a duplicate or changing root', async t => {
+        const { open, root, baseRevision, requestId } = await setup(t);
+        const board = await open('dedicated-remote');
+        const { version } = await (await board.preview()).json();
+        await board.start(version);
+        const confirm = session => board.action('finish_dedicated_work', { requestId: requestId(), session, baseRevision });
+        assert.throws(() => confirm(remote), /Claim the exact outstanding request/);
+        board.action('claim_dedicated_work', { requestId: requestId() });
+        assert.throws(() => confirm({ ...remote, url: 'https://example.invalid/session' }), /canonical app link/);
+        assert.throws(() => confirm({ ...remote, url: `${remote.url}?other=true` }), /canonical app link/);
+        confirm(remote);
+        assert.equal((await board.api('/api/root/coordinated', { sessionId: remoteId })).status, 400);
+        await board.start(version);
+        const reuse = board.action('claim_dedicated_work', { requestId: requestId() });
+        assert.deepEqual(reuse.assignedSession, remote);
+        assert.equal(reuse.assignedRevision, baseRevision);
+        const wrongId = '005550b6-f36c-4d56-a6cd-81785f117f74';
+        assert.throws(() => confirm({ ...remote, sessionId: wrongId, url: `ghapp://sessions/${wrongId}` }), /already assigned/);
+        const refreshed = { ...remote, name: 'Verified roster', activity: 'busy' };
+        confirm(refreshed);
+        const snapshot = await board.snapshot();
+        assert.deepEqual(snapshot.coordinatedSessions, [refreshed]);
+        assert.equal(snapshot.root, root);
+        assert.equal(snapshot.boundSession, null);
+    });
+
+    it('does not auto-follow the only runtime child while starting or confirming dedicated bug work', async t => {
+        const { open, root, base, git, baseRevision, requestId } = await setup(t, { kind: 'bug', id: 'cancel' });
+        const board = await open('dedicated-bug');
+        const { version, handoff } = await (await board.preview()).json();
+        assert.equal(handoff.item.path, '.speckit-companion/bug-triage/cancel.json');
+        assert.equal((await board.start(version)).status, 202);
+        const cwd = join(base, 'isolated');
+        git('worktree', 'add', '-q', '-b', 'dedicated/bug', cwd, baseRevision);
+        globalThis.__copilotManagementList = async () => ({
+            sessions: [{ sessionId: remoteId, name: 'Dedicated bug', cwd, state: 'idle', parentSessionId: 'parent-session' }],
+        });
+        await board.api('/api/refresh', {});
+        assert.equal((await board.snapshot()).children.length, 1);
+        assert.equal((await board.snapshot()).root, root);
+        board.action('claim_dedicated_work', { requestId: requestId() });
+        board.action('finish_dedicated_work', { requestId: requestId(), session: { ...remote, name: 'Dedicated bug', cwd }, baseRevision });
+        await board.api('/api/refresh', {});
+        const confirmed = await board.snapshot();
+        assert.equal(confirmed.coordinatedSessions[0].sessionId, remoteId);
+        assert.equal(confirmed.root, root);
+        assert.equal(confirmed.boundSession, null);
+    });
+
+    it('reports unavailable coordination without changing the picker and does not resend uncertain delivery', async t => {
+        const { open, root, base, requestId, prompts } = await setup(t);
+        const board = await open('dedicated-blocked');
+        const { version } = await (await board.preview()).json();
+        const emit = globalThis.__copilotOnSend;
+        globalThis.__copilotOnSend = options => { emit(options); throw new Error('Acknowledgment lost'); };
+        assert.equal((await (await board.start(version)).json()).status, 'delivering-unknown');
+        await board.start(version);
+        assert.equal(prompts.length, 1);
+        const id = requestId();
+        board.action('claim_dedicated_work', { requestId: id });
+        board.action('finish_dedicated_work', { requestId: id, blocked: 'This host does not expose app coordination.' });
+        const snapshot = await board.snapshot();
+        assert.deepEqual(snapshot.coordinatedSessions, []);
+        assert.equal(snapshot.root, root);
+        assert.deepEqual(snapshot.dedicatedWork, [{ ...item, status: 'blocked', detail: 'This host does not expose app coordination.' }]);
+        globalThis.__copilotWorkspacePath = undefined;
+        const unsupported = await open('dedicated-unsupported');
+        assert.match((await (await unsupported.preview()).json()).error, /requires a Copilot session/);
+        assert.equal(prompts.length, 1);
+        const gitless = await open('dedicated-unowned', base);
+        assert.notEqual((await gitless.preview()).status, 200);
+    });
+
+    for (const local of [true, false]) {
+        it(`in Chromium, ${local ? 'adds a local picker option without a reload, checkout switch, or PR' : 'shows a cloud session as a link, not a picker option'}`, async t => {
+            const { chromium } = await import('playwright-core').catch(() => ({}));
+            const browser = chromium && (await chromium.launch({ channel: 'chrome', headless: true }).catch(() => null)
+                ?? await chromium.launch({ headless: true }).catch(() => null));
+            if (!browser) return t.skip('no Chrome to drive');
+            t.after(() => browser.close());
+            const { open, root, base, git, baseRevision, prompts, requestId } = await setup(t);
+            const board = await open('dedicated-browser');
+            const session = { ...remote };
+            if (local) {
+                session.name = 'Local roster';
+                session.cwd = join(base, 'isolated');
+                git('worktree', 'add', '-q', '-b', 'dedicated/roster', session.cwd, baseRevision);
+            }
+            const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+            t.after(() => page.close());
+            page.setDefaultTimeout(10000);
+            const pageErrors = [];
+            page.on('pageerror', error => pageErrors.push(error.message));
+            await page.goto(board.url, { waitUntil: 'domcontentloaded' });
+            let navigations = 0;
+            page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++; });
+            const picker = page.getByLabel('Coordinated session', { exact: true });
+            assert.equal(await picker.locator('option').count(), 1);
+            assert.equal(await picker.inputValue(), '');
+            const initiate = page.getByRole('button', { name: 'Start dedicated work', exact: true });
+            await initiate.click();
+            const dialog = page.getByRole('dialog', { name: 'Start dedicated work' });
+            await dialog.getByText(`${item.id}/spec.md`, { exact: true }).waitFor();
+            await dialog.getByRole('button', { name: 'Cancel' }).click();
+            assert.equal(prompts.length, 0);
+            await initiate.click();
+            const result = page.waitForResponse(response => response.url().endsWith('/api/dedicated-work') && response.request().method() === 'POST');
+            await dialog.getByRole('button', { name: 'Start dedicated work' }).click();
+            assert.equal((await (await result).json()).status, 'requested');
+            await page.getByText('Requested. Waiting for the coordinator.').waitFor();
+            assert.equal(await initiate.isDisabled(), true);
+            assert.equal(await picker.locator('option').count(), 1);
+            const id = requestId();
+            board.action('claim_dedicated_work', { requestId: id });
+            board.action('finish_dedicated_work', { requestId: id, session, baseRevision });
+            if (local) {
+                await page.getByText('Local roster is listed under Coordinated session.').waitFor();
+                assert.equal(await picker.locator(`option[value="${session.sessionId}"]`).textContent(), 'Local roster · idle');
+            } else {
+                await page.getByText('Cloud roster is listed under Coordinated session as an Open session link.').waitFor();
+                assert.equal(await page.getByRole('link', { name: 'Open session: Cloud roster' }).getAttribute('href'), session.url);
+            }
+            assert.equal(await picker.locator('option').count(), local ? 2 : 1);
+            assert.equal(await picker.inputValue(), '');
+            await page.locator('.detail-header').getByRole('heading', { name: 'Roster', exact: true }).waitFor();
+            const snapshot = await board.snapshot();
+            assert.equal(snapshot.root, root);
+            assert.equal(snapshot.boundSession, null);
+            assert.equal(navigations, 0);
+            assert.deepEqual(pageErrors, []);
+        });
+    }
+});
+
+describe('routing ordinary board commands to a selected child session', () => {
     it('adds decisions to the selected spec step and never falls back to the parent chat', async () => {
         const [canvas] = (await loadExtension()).canvases;
         const workspace = mkdtempSync(join(tmpdir(), 'canvas-child-session-state-'));

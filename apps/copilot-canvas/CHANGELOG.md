@@ -9,11 +9,11 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 - **Converge from the board.** Check an implemented or completed spec against its code. <!-- area: copilot-app -->
 - **Run commands with the right context.** Clarify a spec, check a plan, or analyze tasks, and give **Plan**, **Tasks**, and **Implement** scoped, accepted decisions.
 - **See and review evidence in tabs.** Preview artifacts, see review status, generate missing evidence, and compare the exact revisions you choose to keep.
-- **Build and set up workflows.** Edit nodes and hooks, inspect catalogs, and review hook effects before installing extensions, presets, workflows, or bundles.
+- **Build workflows and configure extensions.** Edit nodes and hooks, inspect package catalogs, review installs, and configure compatible extensions from **Integrations**.
 - **Preview delivery before creating issues.** Check the destination repository, tasks and delivery owner before sending a GitHub issue request.
 - **Carry product ideas into delivery.** Triage bugs and ideas in Companion, derive epics from plans, and review updates before applying them to existing work.
 - **Prepare recurring routines.** Draft schedules for commands, agents, GitHub Actions, and Copilot Automations, then review setup with the scheduler that owns them.
-- **Hand off dedicated cloud work.** Start from an exact published spec, bug, or Ready idea without changing the session that owns your board.
+- **Start work in a dedicated session.** Start from a published spec, bug, or Ready idea and see the verified session without switching your board.
 - **See what needs your decision.** Open **Decisions** to see this checkout's cloud gate records and follow their GitHub evidence and receipt links.
 
 ### Fixed

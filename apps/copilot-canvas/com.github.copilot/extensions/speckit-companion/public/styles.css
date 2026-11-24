@@ -189,6 +189,15 @@ button { font: inherit; color: inherit; }
 .ecosystem-list summary { cursor: pointer; color: var(--text-primary); }
 .ecosystem-dialog { max-width: min(34rem, 90%); padding: 1rem; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: .5rem; }
 .ecosystem-dialog p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.extension-setup { inline-size: min(34rem, 90%); overflow-wrap: anywhere; }
+.extension-setup-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
+.extension-setup-row small, .extension-config-field small { display: block; color: var(--text-body); }
+.extension-config-file { border-block-start: 1px solid var(--border); padding-block: .65rem; }
+.extension-config-form fieldset { min-inline-size: 0; margin: .6rem 0; padding: .5rem .75rem; border: 1px solid var(--border); border-radius: .35rem; }
+.extension-config-form legend { padding-inline: .25rem; font-weight: 600; }
+.extension-config-field + .extension-config-field { margin-block-start: .75rem; }
+.extension-config-field .search { display: block; margin: .2rem 0; width: 100%; }
+.extension-setup h4 { margin-block: .75rem .3rem; }
 .ecosystem-resolved { overflow-wrap: anywhere; }
 .ecosystem-resolved details { margin-block: .5rem; }
 .ecosystem-resolved summary { cursor: pointer; }
