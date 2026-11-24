@@ -13,7 +13,7 @@ export function createDecisionsPage({ api, el, panel, root }) {
     const content = el('div', {});
     panel.append(el('div', { class: 'ecosystem-panel decisions-page' },
         el('header', { class: 'board-heading' },
-            el('div', {}, heading, el('p', {}, 'Decisions happen on GitHub. The trusted run owner consumes them manually. Companion shows local records only, not live gate status.')),
+            el('div', {}, heading, el('p', {}, 'Decisions happen on GitHub. Companion shows local records only, not live gate status.')),
             refresh),
         content));
 

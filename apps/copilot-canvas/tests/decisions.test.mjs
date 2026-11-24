@@ -200,6 +200,7 @@ describe('local cloud gate inbox', () => {
             await toggle.click();
             const panel = page.getByRole('region', { name: 'Needs your decision' });
             const refresh = panel.getByRole('button', { name: 'Refresh decisions' });
+            await panel.getByText('Decisions happen on GitHub. Companion shows local records only, not live gate status.').waitFor();
             await panel.getByText('No cloud gate records are available in this checkout.').waitFor();
             assert.equal(await panel.getByRole('heading', { name: 'Needs your decision' }).evaluate(node => document.activeElement === node), true);
 
