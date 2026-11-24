@@ -55,7 +55,7 @@ export function createEcosystemView({ el, api, root, notify, sendResult, openSpe
         const statusText = { set: 'Set in project file', unset: 'Not set in project file', invalid: 'Invalid in project file',
             unchecked: 'Project value not checked', 'host-only': 'Configure outside Companion; not checked' };
         const needsSetup = files => files.some(file => (file.required && file.present === false) ||
-            file.fields?.some(field => field.required && ['unset', 'invalid'].includes(field.status)));
+            (file.present && file.fields?.some(field => field.required && ['unset', 'invalid'].includes(field.status))));
         const hookNotes = el('p', { role: 'status' });
         function fileSection(file) {
             const controls = new Map();
