@@ -48,7 +48,7 @@ describe('board page', { concurrency: false }, async () => {
         root = temp('canvas-page-');
         mkdirSync(join(root, 'specs'));
         for (const demo of ['_00_demo-specified', '_01_demo-planned', '_02_demo-tasked', '_03_demo-living']) {
-            cpSync(join(REPO, 'specs', demo), join(root, 'specs', demo), { recursive: true });
+            cpSync(join(REPO, 'tooling', 'fixtures', 'demo-project', 'specs', demo), join(root, 'specs', demo), { recursive: true });
         }
         const rich = join(root, 'specs', '041-profile-photo-upload');
         mkdirSync(join(rich, 'checklists'), { recursive: true });

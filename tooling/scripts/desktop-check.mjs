@@ -20,6 +20,9 @@ const arg = (name, fallback) => {
     return at > -1 ? process.argv[at + 1] : fallback;
 };
 const EXTENSION = resolve(arg('extension', join(HERE, '..', '..')));
+const DEMO_SPECS = join(EXTENSION, 'tooling', 'fixtures', 'demo-project', 'specs');
+const DESKTOP_SPECS = join(EXTENSION, 'tooling', 'fixtures', 'desktop-specs');
+const TOUR_SPECS = ['597-activation-funnel', '599-pipeline-doctor', '606-living-spec-validation', '609-living-spec-navigation', '620-converge-step', '634-stock-hooks-only'];
 const OUT = resolve(arg('out', join(EXTENSION, '.desktop-check')));
 const THEME = arg('theme', 'light');
 // A theme from an installed extension is copied into the window's own extensions folder, so the fresh profile can use it.
@@ -82,7 +85,7 @@ function addCompletedRun(project) {
 function addDemoSpecs(project) {
     const specs = join(project, 'specs');
     for (const spec of ['_00_demo-specified', '_01_demo-planned', '_02_demo-tasked', '_03_demo-living']) {
-        cpSync(join(EXTENSION, 'specs', spec), join(specs, spec), { recursive: true });
+        cpSync(join(DEMO_SPECS, spec), join(specs, spec), { recursive: true });
     }
     const rename = (folder, name, change = () => undefined) => {
         const file = join(specs, folder, '.spec-context.json');
@@ -130,9 +133,10 @@ function buildProject({ provider = 'claude' } = {}) {
             if (existsSync(from)) cpSync(from, join(project, '.specify'), { recursive: true });
         }
         for (const extension of ['bug', 'assess']) mkdirSync(join(project, '.specify', 'extensions', extension), { recursive: true });
-        for (const spec of ['_00_demo-specified', '_02_demo-tasked', '627-bugs-ideas-panes']) {
-            cpSync(join(EXTENSION, 'specs', spec), join(project, 'specs', spec), { recursive: true });
+        for (const spec of ['_00_demo-specified', '_02_demo-tasked']) {
+            cpSync(join(DEMO_SPECS, spec), join(project, 'specs', spec), { recursive: true });
         }
+        cpSync(join(DESKTOP_SPECS, '627-bugs-ideas-panes'), join(project, 'specs', '627-bugs-ideas-panes'), { recursive: true });
         addCompletedRun(project);
         // The Workflow Builder draws the Companion pipeline only when the Companion spec-kit extension is in the project.
         const companion = join(project, '.specify', 'extensions', 'companion');
@@ -703,8 +707,8 @@ try {
     }
 
     await step('shot-rich-specs', 'Finished specs from this repository: the stories as cards, the tasks with their files, the Overview, and a fuller sidebar', async () => {
-        for (const spec of ['597-activation-funnel', '599-pipeline-doctor', '606-living-spec-validation', '609-living-spec-navigation', '620-converge-step', '634-stock-hooks-only']) {
-            cpSync(join(EXTENSION, 'specs', spec), join(built.project, 'specs', spec), { recursive: true });
+        for (const spec of TOUR_SPECS) {
+            cpSync(join(DESKTOP_SPECS, spec), join(built.project, 'specs', spec), { recursive: true });
         }
         await clear();
         const completed = await row('Specs', 'Completed');
@@ -985,8 +989,8 @@ try {
     }, { needs: 'fixtures', shots: true });
 
     await step('shot-tall', 'In a narrow window as tall as the screen: the viewer, the tasks, each Overview region and each plan block, without the page\'s top bar', async () => {
-        for (const spec of ['597-activation-funnel', '599-pipeline-doctor', '606-living-spec-validation', '609-living-spec-navigation', '620-converge-step', '634-stock-hooks-only']) {
-            cpSync(join(EXTENSION, 'specs', spec), join(built.project, 'specs', spec), { recursive: true });
+        for (const spec of TOUR_SPECS) {
+            cpSync(join(DESKTOP_SPECS, spec), join(built.project, 'specs', spec), { recursive: true });
             // The tests a run's coverage names exist, so the Coverage region reads as it did in this repository.
             const context = JSON.parse(readFileSync(join(built.project, 'specs', spec, '.spec-context.json'), 'utf8'));
             for (const file of new Set(Object.values(context.coverage ?? {}).flatMap(entry => entry.tests ?? []).map(test => String(test).split('::')[0]))) {
@@ -1098,13 +1102,12 @@ try {
     // The scripted demo tour: one real window walked through slowly, with a beat logged for every click so the video can push in on it.
     // The tour fills the screen: VS Code maximised, so the extension has the room a person gives it.
     const TOUR_WINDOW = { ...(await app.evaluate(({ screen }) => screen.getPrimaryDisplay().workAreaSize)), maximize: true };
-    const TOUR_SPECS = ['597-activation-funnel', '599-pipeline-doctor', '606-living-spec-validation', '609-living-spec-navigation', '620-converge-step', '634-stock-hooks-only'];
     let tourReady = false;
     /** The finished specs from this repository, and a copy of every file a 634 task names, so a file chip opens real code. */
     const tourFixture = async () => {
         if (tourReady) return;
-        for (const spec of TOUR_SPECS) cpSync(join(EXTENSION, 'specs', spec), join(built.project, 'specs', spec), { recursive: true });
-        const named = new Set([...readFileSync(join(EXTENSION, 'specs', '634-stock-hooks-only', 'tasks.md'), 'utf8').matchAll(/`((?:apps|\.specify)\/[A-Za-z0-9_./-]+\.[a-z]+)`/g)].map(m => m[1]));
+        for (const spec of TOUR_SPECS) cpSync(join(DESKTOP_SPECS, spec), join(built.project, 'specs', spec), { recursive: true });
+        const named = new Set([...readFileSync(join(DESKTOP_SPECS, '634-stock-hooks-only', 'tasks.md'), 'utf8').matchAll(/`((?:apps|\.specify)\/[A-Za-z0-9_./-]+\.[a-z]+)`/g)].map(m => m[1]));
         for (const file of named) {
             const from = join(EXTENSION, file);
             if (!existsSync(from)) continue;

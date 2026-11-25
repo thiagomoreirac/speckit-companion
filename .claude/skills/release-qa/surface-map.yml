@@ -104,8 +104,12 @@ surfaces:
     checks: [clips-check, docs-build]
 
   - name: QA harness
-    paths: ["tooling/scripts/desktop-check.mjs", "tooling/scripts/lib/**"]
+    paths: ["tooling/scripts/desktop-check.mjs", "tooling/scripts/lib/**", "tooling/fixtures/desktop-specs/**"]
     checks: [nav-matrix, themes, narrow-panel, popups, provider-dispatch, builder, process-panes]
+
+  - name: Shared demo fixtures
+    paths: ["tooling/fixtures/demo-project/**"]
+    checks: [canvas-tests, mod-tests, clips-check, nav-matrix]
 
 # Changed paths that need no QA (not shipped, or covered by the baseline).
 ignore: [".claude/**", ".serena/**", "specs/**", "package-lock.json"]

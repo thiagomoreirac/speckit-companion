@@ -10,10 +10,10 @@ import lightTheme from '../dist/styles/themes/light.css?inline';
 import darkTheme from '../dist/styles/themes/dark.css?inline';
 import apUiTheme from '../dist/styles/themes/ap-ui.css?inline';
 
-import spec from '../../../specs/_02_demo-tasked/spec.md?raw';
-import plan from '../../../specs/_02_demo-tasked/plan.md?raw';
-import tasks from '../../../specs/_02_demo-tasked/tasks.md?raw';
-import recordRaw from '../../../specs/_02_demo-tasked/.spec-context.json?raw';
+import spec from '../../../tooling/fixtures/demo-project/specs/_02_demo-tasked/spec.md?raw';
+import plan from '../../../tooling/fixtures/demo-project/specs/_02_demo-tasked/plan.md?raw';
+import tasks from '../../../tooling/fixtures/demo-project/specs/_02_demo-tasked/tasks.md?raw';
+import recordRaw from '../../../tooling/fixtures/demo-project/specs/_02_demo-tasked/.spec-context.json?raw';
 
 const record = JSON.parse(recordRaw) as SpecContext;
 const texts: Record<string, string> = { spec, plan, tasks };

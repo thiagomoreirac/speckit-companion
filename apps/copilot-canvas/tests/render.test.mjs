@@ -17,7 +17,7 @@ describe('documents render through the VS Code viewer pipeline', () => {
     });
 
     it('renders user stories, task phases and checkboxes the way the viewer does', () => {
-        const detail = readSpecDetail(REPO, 'specs/_02_demo-tasked');
+        const detail = readSpecDetail(join(REPO, 'tooling', 'fixtures', 'demo-project'), 'specs/_02_demo-tasked');
         const tasks = detail.documents.find(d => d.type === 'tasks').html;
         assert.match(tasks, /class="task-item/);
         assert.match(tasks, /<input type="checkbox"/);

@@ -1,7 +1,1 @@
-<!-- SPECKIT START -->
-
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/120-reorder-sidebar-icons/plan.md`
-
-<!-- SPECKIT END -->
+See `AGENTS.md` and `CLAUDE.md` for the repository map, conventions, and validation commands.
