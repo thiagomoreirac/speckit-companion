@@ -5,7 +5,7 @@ import { digest, projectDirectory, projectPath } from './vendor/work-evidence.mj
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const MAX_BYTES = 64 * 1024;
-const areas = new Set(['bug-triage', 'idea-triage', 'product-updates', 'routine-drafts']);
+const areas = new Set(['bug-triage', 'idea-triage', 'product-updates', 'routine-drafts', 'delivery']);
 
 function directory(area) {
     if (!areas.has(area)) throw new Error('Unknown board record type.');

@@ -190,7 +190,7 @@ const ecosystem = createEcosystemView({
     openReport: (kind, slug) => showReport(kind, slug),
 });
 const routines = createRoutinesPage({ api, el, root: () => state.snapshot?.root, notify: toast, sendResult: reportSend });
-const decisions = createDecisionsPage({ api, el, panel: decisionsPanel, root: () => state.snapshot?.root });
+const decisions = createDecisionsPage({ api, el, panel: decisionsPanel, root: () => state.snapshot?.root, sendResult: reportSend });
 
 function showBoardPanel(active) {
     for (const [panel, toggle] of [[els.workflowPanel, els.workflowToggle], [els.projectPanel, els.projectToggle], [settingsPanel, settingsToggle], [linkedWorkPanel, linkedWorkToggle], [routinesPanel, routinesToggle], [decisionsPanel, decisionsToggle]]) {
@@ -423,6 +423,125 @@ function relativeTime(iso) {
     return 'just now';
 }
 
+const DELIVERY_STATE_META = {
+    queued: ['Queued', 'muted'],
+    assigned: ['Assigned', 'info'],
+    'in-progress': ['In progress', 'active'],
+    'awaiting-gate': ['Awaiting gate', 'review'],
+    'pr-open': ['PR open', 'info'],
+    merged: ['Merged', 'success'],
+    blocked: ['Blocked', 'active'],
+    expired: ['Session expired', 'active'],
+};
+
+function deliveryFor(kind, specOrId) {
+    const records = state.snapshot?.deliveryLedger ?? [];
+    const candidates = typeof specOrId === 'string'
+        ? [specOrId]
+        : [specOrId?.id, specOrId?.name, specOrId?.path].filter(Boolean);
+    return records.find(r => {
+        const rKind = r.kind ?? r.item?.kind;
+        if (rKind !== kind) return false;
+        const rId = r.itemId ?? r.item?.id;
+        const rPath = r.path ?? r.item?.path;
+        return candidates.includes(rId) || (rPath && candidates.includes(rPath));
+    }) ?? null;
+}
+
+function checkGlyph(checks) {
+    if (checks === 'passing') return ' ✓';
+    if (checks === 'failing') return ' ✗';
+    if (checks === 'pending') return ' …';
+    return '';
+}
+
+function renderDeliveryStrip(record) {
+    if (!record) return null;
+    const [label, tier] = DELIVERY_STATE_META[record.state] ?? [record.state, 'muted'];
+    return el('span', { class: 'delivery-strip' },
+        el('span', { class: `pill tier-${tier}` }, label),
+        record.pr ? el('span', { class: 'pill tier-muted', title: `PR #${record.pr.number} (${record.pr.state}${record.pr.checks ? `, checks ${record.pr.checks}` : ''})` },
+            `PR #${record.pr.number}${checkGlyph(record.pr.checks)}`) : null,
+        record.issue ? el('span', { class: 'pill tier-muted', title: `Issue #${record.issue.number}` }, `#${record.issue.number}`) : null,
+        record.autonomyMode === 'unattended' ? el('span', { class: 'pill tier-info', title: 'Policy-driven unattended autonomy mode' }, 'Unattended') : null);
+}
+
+function renderDeliveryPanel(spec, record) {
+    if (!record) return null;
+    const [label, tier] = DELIVERY_STATE_META[record.state] ?? [record.state, 'muted'];
+    const extLink = (href, text) => typeof href === 'string' && /^(?:https?|ghapp):\/\//i.test(href)
+        ? el('a', { class: 'btn btn-chip', href, target: '_blank', rel: 'noopener noreferrer' }, text)
+        : el('span', { class: 'pill tier-muted' }, text);
+    const expired = record.state === 'expired' || record.session?.status === 'expired';
+    const links = [
+        record.issue?.url ? extLink(record.issue.url, `Issue #${record.issue.number}`) : null,
+        record.pr?.url ? extLink(record.pr.url, `PR #${record.pr.number}${checkGlyph(record.pr.checks)}`) : null,
+        record.session?.url ? extLink(record.session.url, `Session: ${record.session.name}`) : record.session ? el('span', { class: 'pill tier-muted' }, `Session: ${record.session.name} (${record.session.status})`) : null,
+        record.gate ? el('span', { class: 'pill tier-review', title: `Gate ${record.gate.id}` }, `Gate ${record.gate.id} · ${record.gate.status}`) : null,
+    ].filter(Boolean);
+
+    const reconcileBtn = el('button', {
+        class: 'btn btn-chip',
+        type: 'button',
+        onclick: async event => {
+            const btn = event.currentTarget;
+            btn.disabled = true;
+            try {
+                await reportSend(await api('/api/decisions/reconcile-prompt', {
+                    branch: record.branch ?? null,
+                    issue: record.issue?.number ?? null,
+                    runId: record.gate?.id ?? null,
+                }), 'GitHub delivery reconciliation');
+            } catch (error) {
+                toast(error.message);
+            } finally {
+                btn.disabled = false;
+            }
+        },
+    }, 'Reconcile from GitHub');
+
+    const recoverBtn = expired ? el('button', {
+        class: 'btn btn-primary',
+        type: 'button',
+        onclick: () => confirmDeliveryRecovery('spec', record.itemId ?? record.item?.id ?? spec.id, record),
+    }, 'Recover expired session…') : null;
+
+    return el('section', { class: 'delivery-panel', 'aria-label': 'Delivery status' },
+        el('div', { class: 'delivery-panel__head' },
+            el('div', { class: 'head-pills' },
+                el('span', { class: `pill tier-${tier}` }, label),
+                el('span', { class: 'pill tier-muted' }, record.autonomyMode === 'unattended' ? 'Autonomy: Unattended' : 'Autonomy: Gated'),
+                record.branch ? el('code', { class: 'delivery-branch' }, record.branch) : null),
+            el('div', { class: 'delivery-panel__actions' }, reconcileBtn, recoverBtn)),
+        links.length ? el('div', { class: 'delivery-panel__links' }, links) : null);
+}
+
+function confirmDeliveryRecovery(kind, id, record) {
+    const expectedRoot = state.snapshot?.root;
+    const dialog = el('dialog', { class: 'confirm-dialog', 'aria-label': 'Recover expired session' });
+    const cancel = el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => dialog.close() }, 'Cancel');
+    const recover = el('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+        recover.disabled = true;
+        try {
+            if (state.snapshot?.root !== expectedRoot) throw new Error('The repository changed. Review delivery recovery again.');
+            const result = await api('/api/delivery/recover-prompt', { kind, id });
+            dialog.close();
+            await reportSend(result, 'expired session recovery');
+        } catch (error) {
+            dialog.close();
+            toast(error.message);
+        }
+    } }, 'Send recovery handoff');
+    dialog.append(
+        el('h2', {}, 'Recover expired session'),
+        el('p', {}, `Continue delivery for ${id}${record.branch ? ` on branch ${record.branch}` : ''}${record.pr ? ` (PR #${record.pr.number})` : ''} from its last committed state.`),
+        el('p', { class: 'command-hint' }, 'Copilot checks the existing branch and PR before creating a replacement session, avoiding duplicate branches or PRs.'),
+        el('div', { class: 'confirm-actions' }, cancel, recover));
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+}
+
 function statusPill(spec) {
     const tier = spec.status ? STATUS_TIERS[spec.status] ?? 'info' : 'muted';
     return el('span', { class: `pill tier-${tier}`, title: spec.status ? `Status: ${spec.statusLabel}` : 'No .spec-context.json: position read from the files' }, spec.statusLabel);
@@ -547,7 +666,8 @@ function renderBoard() {
             statusPill(spec),
             miniRail(spec.steps),
             spec.tasks && spec.tasks.total > 0 ? el('span', { class: 'card-tasks', title: 'Tasks done' }, `${spec.tasks.checked}/${spec.tasks.total}`) : null,
-            el('span', { class: 'card-time', title: cardTime(spec) ?? '' }, relativeTime(cardTime(spec))))))));
+            el('span', { class: 'card-time', title: cardTime(spec) ?? '' }, relativeTime(cardTime(spec)))),
+        renderDeliveryStrip(deliveryFor('spec', spec))))));
 }
 
 function renderLifecycleBulk({ active, completed, archived }) {
@@ -669,14 +789,28 @@ async function confirmDedicatedWork(kind, id) {
     try {
         const preview = await api(`/api/dedicated-work?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
         if (state.snapshot?.root !== preview.root) throw new Error('The repository changed. Review the dedicated work request again.');
-        const { handoff } = preview;
+        const { handoff, autonomyPolicy } = preview;
+        const policy = autonomyPolicy?.policy ?? autonomyPolicy;
+        const unattendedAllowed = Boolean(policy?.allowUnattended);
+        const defaultMode = policy?.defaultMode === 'unattended' && unattendedAllowed ? 'unattended' : 'gated';
+        const modeSelect = el('select', { class: 'search', 'aria-label': 'Autonomy mode' },
+            el('option', { value: 'gated' }, 'Gated (pause at human gates)'),
+            el('option', { value: 'unattended', disabled: !unattendedAllowed },
+                unattendedAllowed ? 'Unattended (policy-driven autopilot)' : 'Unattended (disabled by repository autonomy policy)'));
+        modeSelect.value = defaultMode;
+        const gatesSummary = Array.isArray(policy?.requiredGates) && policy.requiredGates.length
+            ? ` · required gates: ${policy.requiredGates.join(', ')}` : '';
+        const policyNote = unattendedAllowed
+            ? `Policy (${autonomyPolicy?.source ?? 'default'}): auto-merge ${policy.allowAutoMerge ? 'permitted' : 'forbidden'} · max concurrent sessions ${policy.maxConcurrentSessions}${gatesSummary}.`
+            : autonomyPolicy?.note ?? 'Repository autonomy policy restricts dedicated work to Gated mode.';
         const dialog = el('dialog', { class: 'confirm-dialog', 'aria-label': 'Start dedicated work' });
         const cancel = el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => dialog.close() }, 'Cancel');
         const start = el('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
             start.disabled = true;
             try {
                 if (state.snapshot?.root !== preview.root) throw new Error('The repository changed. Review the dedicated work request again.');
-                await api('/api/dedicated-work', { kind, id, version: preview.version });
+                const mode = modeSelect.value;
+                await api('/api/dedicated-work', { kind, id, version: preview.version, ...(mode !== 'gated' ? { autonomyMode: mode } : {}) });
                 dialog.close();
             } catch (error) {
                 dialog.close();
@@ -686,6 +820,8 @@ async function confirmDedicatedWork(kind, id) {
         dialog.append(el('h2', {}, 'Start dedicated work'),
             el('p', {}, handoff.repository, ' · ', handoff.baseBranch, ' · ', el('code', { title: handoff.baseRevision }, handoff.baseRevision.slice(0, 12))),
             el('p', {}, 'Published record: ', el('code', {}, handoff.item.path)),
+            el('label', { class: 'autonomy-field' }, el('span', {}, 'Autonomy mode'), modeSelect),
+            el('p', { class: 'command-hint' }, policyNote),
             el('p', {}, 'Copilot verifies and creates or reuses an isolated session for this item. Your board stays on this checkout. This does not publish changes or open a pull request.'),
             el('div', { class: 'confirm-actions' }, cancel, start));
         dialog.addEventListener('close', () => dialog.remove(), { once: true });
@@ -1261,6 +1397,7 @@ function renderDetail() {
     }, tab.label, tab.count ? el('span', { class: 'count' }, tab.count) : null)));
 
     const header = el('div', { class: 'detail-header' }, head, renderRail(spec.steps), renderNext(spec),
+        renderDeliveryPanel(spec, deliveryFor('spec', spec)),
         spec.files.spec ? dedicatedWorkControl('spec', spec.id) : null, tabBar);
     if (currentHeader) {
         currentHeader.replaceWith(header);
@@ -1416,11 +1553,22 @@ function connect() {
     });
     source.addEventListener('snapshot', (event) => applySnapshot(JSON.parse(event.data)));
     source.addEventListener('dedicated-work', (event) => {
-        const { root, coordinatedSessions, dedicatedWork } = JSON.parse(event.data);
+        const { root, coordinatedSessions, dedicatedWork, deliveryLedger } = JSON.parse(event.data);
         if (root !== state.snapshot?.root) return;
-        Object.assign(state.snapshot, { coordinatedSessions, dedicatedWork });
+        Object.assign(state.snapshot, { coordinatedSessions, dedicatedWork, ...(deliveryLedger ? { deliveryLedger } : {}) });
         renderCoordinatedSessions();
+        if (deliveryLedger) {
+            renderBoard();
+            if (state.detail) renderDetail();
+        }
         for (const control of document.querySelectorAll('[data-dedicated-work]')) updateDedicatedWorkControl(control);
+    });
+    source.addEventListener('delivery-changed', (event) => {
+        const { root, deliveryLedger } = JSON.parse(event.data);
+        if (root !== state.snapshot?.root) return;
+        state.snapshot.deliveryLedger = deliveryLedger;
+        renderBoard();
+        if (state.detail) renderDetail();
     });
     source.addEventListener('work-error', event => toast(JSON.parse(event.data).message));
     source.addEventListener('settings-changed', event => {

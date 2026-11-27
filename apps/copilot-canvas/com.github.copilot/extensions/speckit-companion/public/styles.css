@@ -859,3 +859,152 @@ button { font: inherit; color: inherit; }
 @container (max-width: 32rem) {
     .evidence-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.delivery-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+    margin-block-start: .35rem;
+    max-inline-size: 100%;
+}
+
+.delivery-panel {
+    display: grid;
+    gap: .5rem;
+    margin-block: .65rem;
+    padding: .65rem .75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    min-inline-size: 0;
+}
+
+.delivery-panel__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: .5rem;
+}
+
+.delivery-panel__links,
+.delivery-panel__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .35rem;
+}
+
+.delivery-branch {
+    font-family: var(--font-mono);
+    font-size: .78rem;
+    color: var(--text-body);
+    background: var(--bg-inset);
+    padding: .12rem .4rem;
+    border-radius: var(--radius-sm);
+    max-inline-size: 100%;
+    overflow-wrap: anywhere;
+}
+
+.autonomy-field {
+    display: grid;
+    gap: .3rem;
+    margin-block: .6rem;
+    color: var(--text-primary);
+    font-size: .88rem;
+}
+
+.autonomy-field select {
+    max-inline-size: 100%;
+    min-inline-size: 0;
+}
+
+.blueprint-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr));
+    gap: .75rem;
+    margin-block-start: .65rem;
+}
+
+.blueprint-card {
+    display: grid;
+    gap: .45rem;
+    padding: .75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    min-inline-size: 0;
+}
+
+.blueprint-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: .4rem;
+}
+
+.blueprint-summary {
+    margin: 0;
+    color: var(--text-body);
+    font-size: .88rem;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: .15rem .48rem;
+    border-radius: 1rem;
+    font-size: .76rem;
+    font-weight: 600;
+    background: var(--bg-inset);
+    color: var(--text-body);
+}
+
+.badge-done {
+    background: var(--success-subtle);
+    color: var(--success);
+}
+
+.badge-warn {
+    background: var(--warning-subtle);
+    color: var(--warning);
+}
+
+.decision-scope {
+    font-family: var(--font-mono);
+    font-size: .76rem;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.decision-list {
+    list-style: none;
+    padding: 0;
+    margin: .6rem 0;
+    display: grid;
+    gap: .6rem;
+}
+
+.decision-row {
+    display: grid;
+    gap: .4rem;
+    padding: .7rem .75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    min-inline-size: 0;
+}
+
+.decision-row-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .4rem;
+}
+
+.decision-evidence {
+    font-size: .82rem;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}

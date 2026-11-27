@@ -12,9 +12,9 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 - **Build workflows and configure extensions.** Edit nodes and hooks, inspect package catalogs, review installs, and configure compatible extensions from **Integrations**.
 - **Preview delivery before creating issues.** Check the destination repository, tasks and delivery owner before sending a GitHub issue request.
 - **Carry product ideas into delivery.** Triage bugs and ideas in Companion, derive epics from plans, and review updates before applying them to existing work.
-- **Prepare recurring routines.** Draft schedules for commands, agents, GitHub Actions, and Copilot Automations, then review setup with the scheduler that owns them.
-- **Start work in a dedicated session.** Start from a published spec, bug, or Ready idea and see the verified session without switching your board.
-- **See what needs your decision.** Open **Decisions** to see this checkout's cloud gate records and follow their GitHub evidence and receipt links.
+- **Prepare recurring routines.** Draft schedules and Cloud Autonomy Pack blueprints for commands, agents, Actions, and Copilot Automations before reviewing setup in chat.
+- **Track autonomous delivery per work item.** Start policy-governed gated or unattended sessions, view issue and PR status, and recover expired sessions from the board.
+- **See and promote multichannel decisions.** Inspect local and cross-branch cloud gates, reconcile status from GitHub, and propose accepted decisions for ADR promotion.
 
 ### Fixed
 
