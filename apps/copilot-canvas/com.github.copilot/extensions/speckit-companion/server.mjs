@@ -10,12 +10,12 @@ import { fileURLToPath } from 'node:url';
 import { buildSnapshot, findSpec, readSpecDetail, recordLive, resolveSpecDirs, specWatchBase } from './specs-core.mjs';
 import { customActions, customSteps, customWorkflowPhases, customWorkflows, targetCustomAction } from './custom-workflows.mjs';
 import { inspectSettings, saveSettings, settingValues, SETTINGS_PATH } from './settings.mjs';
-import { STEP_COMMANDS, availableCommands, buildAskPrompt, buildInstallPrompt, buildPrompt, buildSpecifyPrompt, buildStepPreamble, commandPattern, commandSetFor, detectCommandSet, resolveCommand, runInstructionsDoc, specifyChoices, stepInstructionsName, writeRunInstructions, writerPath } from './prompts.mjs';
+import { STEP_COMMANDS, availableCommands, buildAskPrompt, buildInstallPrompt, buildPrompt, buildSpecifyPrompt, buildStepPreamble, commandPattern, commandSetFor, deliveryReconcilePrompt, detectCommandSet, resolveCommand, runInstructionsDoc, specifyChoices, stepInstructionsName, writeRunInstructions, writerPath } from './prompts.mjs';
 import { BUSY, recordStep, updateReviewRecord } from './run-record.mjs';
 import { addComment, buildReviewComment, editComment, markApplied, pendingForDoc, refinementPrompt, removeComment } from './vendor/review-comments.mjs';
 import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { githubDeliveryTarget, validateRepositoryRoot, validateRoot } from './workspace.mjs';
-import { decisionContext } from './decision-context.mjs';
+import { decisionContext, decisionPromotionPrompt, previewDecisionPromotions } from './decision-context.mjs';
 import { pickFolder } from './folder-picker.mjs';
 import { artifactReviews, codeRevision, compareEvidence, entityDiagram, evidenceInventory, impactPrompt, linkedMarker, listWork, projectPath, readEvidence, recordArtifactReview, writeWork, writeWorkLink } from './vendor/work-evidence.mjs';
 import { wireflowPreview } from './vendor/wireflow-preview.mjs';
@@ -26,9 +26,12 @@ import { createProjectFiles } from './project-files.mjs';
 import { createReportPrompt, ideasDirectory, listReports, processExtensionPrompt, reportAction, reportAnswerPrompt, reportDetail } from './reports.mjs';
 import { ensureCacheFolder } from './vendor/report-host.mjs';
 import { listTriage, productUpdateDraft, productUpdates, recordProductUpdate, saveTriage } from './product-work.mjs';
-import { archiveRoutine, routineHandoff, routineInventory, routineManagement, saveRoutine } from './routines.mjs';
+import { archiveRoutine, routineHandoff, routineInventory, routineManagement, saveBlueprintRoutine, saveRoutine } from './routines.mjs';
+import { blueprintHandoff, listAutomationBlueprints } from './automation-blueprints.mjs';
 import { coordinatedSession, dedicatedWorkHandoff } from './work-handoff.mjs';
-import { cloudGateInbox } from './cloud-gates.mjs';
+import { deliveryLedgerForSnapshot, deliveryRecoveryPrompt, listDeliveryLedger, readDeliveryRecord, reconcileDeliveryRecord, recoverDeliverySession } from './delivery-ledger.mjs';
+import { readAutonomyPolicy, resolveAutonomyRequest } from './autonomy-policy.mjs';
+import { cloudGateInbox, decisionReconcilePrompt } from './cloud-gates.mjs';
 import { ALL_SORT_MODES, comparators } from './vendor/specs-sort.mjs';
 import { FORCE_STATUS_CHOICES, forceSpecContextStatus, lifecycleFallback, reactivateSpecContext, setSpecContextStatus, updateSpecContextStrict } from './vendor/spec-lifecycle.mjs';
 
@@ -88,7 +91,7 @@ function tokenMatches(given, expected) {
  * `send(prompt)` puts a prompt into the agent chat; it resolves to false when there is no session (dev mode).
  * `checkoutWriter` (null for none) is the context writer outside the workspace; `quietMs`, `ceilingMs` and the clock `now` bound a sent step with no word from the session.
  */
-export async function createSpecServer({ root, workingDirectory = root, manual = false, bound = null, coordinatedSessions = [], saveCoordinatedSessions, dedicatedWork, discoverChildren, childPollMs = 0, specDirs, saveRoot, clearRoot, linkedDraft, readSortMode, saveSortMode, browseFolder = pickFolder, openTerminal, send = async () => false, log = () => {}, checkoutWriter, quietMs = QUIET_MS, ceilingMs = CEILING_MS, now = Date.now }) {
+export async function createSpecServer({ root, workingDirectory = root, instanceId = null, manual = false, bound = null, coordinatedSessions = [], saveCoordinatedSessions, dedicatedWork, discoverChildren, childPollMs = 0, specDirs, saveRoot, clearRoot, linkedDraft, readSortMode, saveSortMode, browseFolder = pickFolder, openTerminal, send = async () => false, log = () => {}, checkoutWriter, quietMs = QUIET_MS, ceilingMs = CEILING_MS, now = Date.now }) {
     const canonical = directory => {
         try {
             return realpathSync(directory);
@@ -134,6 +137,9 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         workflowActions: 0,
         lifecycleActions: 0,
         reportTimer: null,
+        settingsTimer: null,
+        deliveryTimer: null,
+        decisionsTimer: null,
         sortModes: new Map(),
     };
 
@@ -208,7 +214,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             const byId = new Map(specs.map(spec => [spec.id, spec]));
             specs.splice(0, specs.length, ...order.map(row => byId.get(row.id)));
         }
-        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [], children: state.children, childNote: state.childNote, specs, sortMode, selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root, settings, projectWorkflows(settings).filter(w => customSteps(w).specify)), installPrompt: settings['companion.installPrompt'] !== false, settingsErrors: errors, lifecycleStatuses: FORCE_STATUS_CHOICES };
+        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [], deliveryLedger: deliveryLedgerForSnapshot(state.root), autonomyPolicy: readAutonomyPolicy(state.root), children: state.children, childNote: state.childNote, specs, sortMode, selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root, settings, projectWorkflows(settings).filter(w => customSteps(w).specify)), installPrompt: settings['companion.installPrompt'] !== false, settingsErrors: errors, lifecycleStatuses: FORCE_STATUS_CHOICES };
     }
 
     /** The step's document as it is on disk right now, so a later look can tell whether the run touched it. */
@@ -397,7 +403,24 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
 
     function dedicatedWorkChanged(sessions) {
         state.coordinatedSessions = sessions;
-        emit('dedicated-work', { root: state.root, coordinatedSessions: sessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [] });
+        emit('dedicated-work', { root: state.root, coordinatedSessions: sessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [], deliveryLedger: deliveryLedgerForSnapshot(state.root) });
+    }
+
+    function reconcileDelivery(input) {
+        const saved = reconcileDeliveryRecord(state.root, input, { now: () => new Date(now()).toISOString() });
+        const ledger = deliveryLedgerForSnapshot(state.root);
+        emit('delivery-changed', { root: state.root, deliveryLedger: ledger });
+        emit('snapshot', snapshot());
+        return saved;
+    }
+
+    function recoverDelivery(input) {
+        const saved = recoverDeliverySession(state.root, input, { now: () => new Date(now()).toISOString() });
+        dedicatedWork?.clearAssignment?.(saved.repository, saved.item.kind, saved.item.id);
+        const ledger = deliveryLedgerForSnapshot(state.root);
+        emit('delivery-changed', { root: state.root, deliveryLedger: ledger });
+        emit('snapshot', snapshot());
+        return saved;
     }
 
     /** Go back to following the session; the saved choice is removed first so a reload agrees. */
@@ -494,6 +517,8 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         clearTimeout(state.runTimer);
         clearTimeout(state.reportTimer);
         clearTimeout(state.settingsTimer);
+        clearTimeout(state.deliveryTimer);
+        clearTimeout(state.decisionsTimer);
         for (const watcher of state.watchers) watcher.close();
         state.watchers.clear();
         state.root = nextRoot;
@@ -663,6 +688,17 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         } catch (error) {
             log(`[speckit-canvas] ideas watcher unavailable: ${error.message}`);
         }
+        watchSpecDir('.speckit-companion/delivery', () => {
+            clearTimeout(state.deliveryTimer);
+            state.deliveryTimer = setTimeout(() => {
+                emit('delivery-changed', { root: state.root, deliveryLedger: deliveryLedgerForSnapshot(state.root) });
+                emit('snapshot', snapshot());
+            }, DEBOUNCE_MS);
+        });
+        watchSpecDir('.speckit-companion/cloud-gates', () => {
+            clearTimeout(state.decisionsTimer);
+            state.decisionsTimer = setTimeout(() => emit('decisions-changed', { root: state.root }), DEBOUNCE_MS);
+        });
         watchSpecDir('.vscode', (_event, name) => {
             if (name != null && String(name) !== 'settings.json') return;
             clearTimeout(state.settingsTimer);
@@ -1154,21 +1190,42 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         return record;
     }
 
-    function prepareDedicatedWork(kind, id) {
+    function activeDeliverySessionCount(root) {
+        try {
+            const { records } = listDeliveryLedger(root);
+            return records.filter(record => record.session && ['active', 'idle'].includes(record.session.status)).length;
+        } catch {
+            return 0;
+        }
+    }
+
+    function prepareDedicatedWork(kind, id, options = {}) {
         if (typeof id !== 'string' || !id || id.length > 320) throw new Error('Choose one existing work item.');
+        let handoff;
         if (kind === 'spec') {
             const spec = state.snapshot.specs.find(item => item.id === id);
             if (!spec?.files.spec) throw new Error('Choose the exact spec folder from this board.');
-            return dedicatedWorkHandoff(state.root, kind, id, `${id.split(sep).join('/')}/${spec.files.spec}`);
+            handoff = dedicatedWorkHandoff(state.root, kind, id, `${id.split(sep).join('/')}/${spec.files.spec}`);
+        } else {
+            if (kind !== 'bug' && kind !== 'idea') throw new Error('Choose a spec, bug, or ready idea.');
+            sourceRecord({ kind, id });
+            const area = `${kind}-triage`;
+            const path = `.speckit-companion/${area}/${id}.json`;
+            const saved = listTriage(state.root, `${kind}s`).find(row => row.id === id);
+            if (!saved) throw new Error('Save Companion triage for this report before handing it off.');
+            if (kind === 'idea' && saved.status !== 'ready') throw new Error('Mark the idea Ready in Companion before handing it off.');
+            handoff = dedicatedWorkHandoff(state.root, kind, id, path);
         }
-        if (kind !== 'bug' && kind !== 'idea') throw new Error('Choose a spec, bug, or ready idea.');
-        sourceRecord({ kind, id });
-        const area = `${kind}-triage`;
-        const path = `.speckit-companion/${area}/${id}.json`;
-        const saved = listTriage(state.root, `${kind}s`).find(row => row.id === id);
-        if (!saved) throw new Error('Save Companion triage for this report before handing it off.');
-        if (kind === 'idea' && saved.status !== 'ready') throw new Error('Mark the idea Ready in Companion before handing it off.');
-        return dedicatedWorkHandoff(state.root, kind, id, path);
+        if (options.autonomyMode !== undefined) {
+            const existing = readDeliveryRecord(state.root, kind, id);
+            const reusingExistingSession = Boolean(existing?.session && ['active', 'idle'].includes(existing.session.status));
+            const resolved = resolveAutonomyRequest(readAutonomyPolicy(state.root), options.autonomyMode, {
+                activeSessionsCount: activeDeliverySessionCount(state.root),
+                reusingExistingSession,
+            });
+            return { ...handoff, autonomyMode: resolved.autonomyMode, autonomyPolicy: resolved.policy };
+        }
+        return handoff;
     }
 
     function dedicatedWorkPreview(kind, id) {
@@ -1178,8 +1235,11 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             throw new Error('Open the repository in its owning session or select one of this coordinator’s worktrees.');
         }
         const handoff = prepareDedicatedWork(kind, id);
+        const autonomyPolicy = readAutonomyPolicy(state.root);
+        const existing = readDeliveryRecord(state.root, kind, id);
+        const activeSessionsCount = activeDeliverySessionCount(state.root);
         const version = createHash('sha256').update(JSON.stringify([state.token, state.rootRevision, state.root, handoff])).digest('hex');
-        return { root: state.root, version, handoff };
+        return { root: state.root, version, handoff, autonomyPolicy, activeSessionsCount, existingDelivery: existing };
     }
 
     function reviewedGate(spec, reference) {
@@ -1308,7 +1368,18 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'GET' && pathname === '/api/routines') return sendJson(res, 200, {
             root: state.root, canHandoff: state.root === state.workingDirectory || Boolean(state.bound?.sessionId), ...routineInventory(state.root),
         });
-        if (req.method === 'GET' && pathname === '/api/decisions') return sendJson(res, 200, cloudGateInbox(state.root));
+        if (req.method === 'GET' && pathname === '/api/routines/blueprints') return sendJson(res, 200, {
+            root: state.root, canHandoff: state.root === state.workingDirectory || Boolean(state.bound?.sessionId), ...listAutomationBlueprints(state.root),
+        });
+        if (req.method === 'GET' && pathname === '/api/decisions') return sendJson(res, 200, {
+            ...cloudGateInbox(state.root),
+            adrPromotions: previewDecisionPromotions(state.root),
+            canHandoff: state.root === state.workingDirectory || Boolean(state.bound?.sessionId),
+        });
+        if (req.method === 'GET' && pathname === '/api/decisions/promotions') return sendJson(res, 200, {
+            root: state.root,
+            ...previewDecisionPromotions(state.root),
+        });
         if (req.method === 'GET' && pathname === '/api/dedicated-work') {
             return sendJson(res, 200, dedicatedWorkPreview(url.searchParams.get('kind'), url.searchParams.get('id')));
         }
@@ -1327,6 +1398,12 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         }
         if (req.method === 'GET' && pathname === '/api/delivery') {
             return sendJson(res, 200, deliveryPreview(requireSpec(url.searchParams.get('id'))));
+        }
+        if (req.method === 'GET' && pathname === '/api/delivery/ledger') {
+            return sendJson(res, 200, { root: state.root, ...listDeliveryLedger(state.root) });
+        }
+        if (req.method === 'GET' && pathname === '/api/autonomy-policy') {
+            return sendJson(res, 200, { root: state.root, ...readAutonomyPolicy(state.root) });
         }
         if (req.method === 'GET' && pathname === '/api/evidence') {
             const { evidenceRole } = await import('./evidence-artifacts.mjs');
@@ -1419,12 +1496,14 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'POST') {
             const body = await readJson(req, ['/api/workflow', '/api/project-files/save', '/api/spec-file/save', '/api/settings'].includes(pathname) ? 1024 * 1024 : ['/api/report/create', '/api/project-files/create', '/api/reports/triage', '/api/work/apply-idea'].includes(pathname) ? 256 * 1024 : BODY_LIMIT);
             if (body.expectedRoot !== undefined && body.expectedRoot !== state.root) throw new Error('The repository changed. Refresh the board and try again.');
-            if (['/api/routines/save', '/api/routines/review', '/api/routines/archive', '/api/routines/manage'].includes(pathname)) {
+            if (['/api/routines/save', '/api/routines/save-blueprint', '/api/routines/review', '/api/routines/blueprint-review', '/api/routines/archive', '/api/routines/manage'].includes(pathname)) {
                 if (body.expectedRoot !== state.root) throw new Error('Reopen Routines for the selected repository.');
                 if (pathname.endsWith('/save')) return sendJson(res, 200, saveRoutine(state.root, body));
+                if (pathname.endsWith('/save-blueprint')) return sendJson(res, 200, saveBlueprintRoutine(state.root, body));
                 if (pathname.endsWith('/archive')) return sendJson(res, 200, archiveRoutine(state.root, body));
                 if (state.root !== state.workingDirectory && !state.bound?.sessionId) throw new Error('Open Routines in the session that owns this repository.');
                 if (pathname.endsWith('/manage')) return sendJson(res, 200, await deliver(null, 'routine inventory', routineManagement(state.root)));
+                if (pathname.endsWith('/blueprint-review')) return sendJson(res, 200, await deliver(null, 'automation blueprint review', blueprintHandoff(state.root, body)));
                 return sendJson(res, 200, await deliver(null, 'routine review', routineHandoff(state.root, body.id, body.revision)));
             }
             if (pathname === '/api/reports/triage') {
@@ -1680,9 +1759,49 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             }
             if (pathname === '/api/dedicated-work') {
                 if (body.expectedRoot !== state.root) throw new Error('The repository changed. Review the dedicated work request again.');
-                const { root, handoff, version } = dedicatedWorkPreview(body.kind, body.id);
+                const { root, handoff, version, autonomyPolicy, activeSessionsCount, existingDelivery } = dedicatedWorkPreview(body.kind, body.id);
                 if (body.version !== version) throw new Error('The handoff changed. Review the dedicated work request again.');
-                return sendJson(res, 202, await dedicatedWork.request(root, handoff));
+                const reusingExistingSession = Boolean(existingDelivery?.session && ['active', 'idle'].includes(existingDelivery.session.status));
+                const resolved = resolveAutonomyRequest(autonomyPolicy, body.autonomyMode, { activeSessionsCount, reusingExistingSession });
+                return sendJson(res, 202, await dedicatedWork.request(root, handoff, {
+                    autonomyMode: resolved.autonomyMode,
+                    autonomyPolicy: resolved.policy,
+                }));
+            }
+            if (pathname === '/api/decisions/reconcile-prompt' || pathname === '/api/decisions/promote-prompt') {
+                if (body.expectedRoot !== state.root) throw new Error('Reopen Decisions for the selected repository.');
+                if (state.root !== state.workingDirectory && !state.bound?.sessionId) {
+                    throw new Error('Open Decisions in the session that owns this repository.');
+                }
+                if (pathname.endsWith('/reconcile-prompt')) {
+                    return sendJson(res, 200, await deliver(null, 'decision reconcile', decisionReconcilePrompt(state.root, body)));
+                }
+                return sendJson(res, 200, await deliver(null, 'ADR promotion review', decisionPromotionPrompt(state.root, body.candidateIds)));
+            }
+            if (pathname === '/api/delivery/recover-prompt') {
+                if (body.expectedRoot !== state.root) throw new Error('Refresh the board for the selected repository.');
+                if (state.root !== state.workingDirectory && !state.bound?.sessionId) {
+                    throw new Error('Open the session that owns this repository to recover expired delivery work.');
+                }
+                return sendJson(res, 200, await deliver(null, 'delivery recovery', deliveryRecoveryPrompt(state.root, body.kind, body.id)));
+            }
+            if (pathname === '/api/delivery/reconcile') {
+                if (body.expectedRoot !== state.root) throw new Error('The repository changed. Refresh the delivery ledger and try again.');
+                return sendJson(res, 200, reconcileDelivery(body));
+            }
+            if (pathname === '/api/delivery/recover') {
+                if (body.expectedRoot !== state.root) throw new Error('The repository changed. Refresh the delivery ledger and try again.');
+                return sendJson(res, 200, recoverDelivery(body));
+            }
+            if (pathname === '/api/delivery/sync-prompt') {
+                if (body.expectedRoot !== state.root) throw new Error('The repository changed. Refresh the board and try again.');
+                if (state.root !== state.workingDirectory && !state.bound?.sessionId) {
+                    throw new Error('Open this repository in its owning session before reconciling from GitHub.');
+                }
+                const { target } = githubDeliveryTarget(state.root);
+                if (!target) throw new Error('Configure one direct github.com origin before reconciling delivery state.');
+                const item = body.kind && body.id ? { kind: body.kind, id: body.id } : null;
+                return sendJson(res, 200, await deliver(null, 'delivery reconcile', deliveryReconcilePrompt(instanceId ?? 'speckit-spec-board', target, item)));
             }
             if (pathname === '/api/refresh') {
                 await refreshChildren();
@@ -1821,7 +1940,13 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         updateCoordinatedSessions,
         selectCoordinatedSession,
         prepareDedicatedWork,
+        getAutonomyPolicy: () => ({ root: state.root, ...readAutonomyPolicy(state.root) }),
+        listAutomationBlueprints: () => ({ root: state.root, ...listAutomationBlueprints(state.root) }),
+        getMultichannelDecisions: () => ({ ...cloudGateInbox(state.root), adrPromotions: previewDecisionPromotions(state.root) }),
+        previewAdrPromotions: () => ({ root: state.root, ...previewDecisionPromotions(state.root) }),
         dedicatedWorkChanged,
+        reconcileDelivery,
+        recoverDelivery,
         claimDedicatedWork: requestId => {
             if (!dedicatedWork) throw new Error('Dedicated work is unavailable in this session.');
             return dedicatedWork.claim(requestId);
@@ -1853,6 +1978,8 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             clearTimeout(state.phaseRun?.timer);
             clearTimeout(state.reportTimer);
             clearTimeout(state.settingsTimer);
+            clearTimeout(state.deliveryTimer);
+            clearTimeout(state.decisionsTimer);
             for (const timer of state.retries) clearTimeout(timer);
             for (const watcher of state.watchers) watcher.close();
             for (const client of state.clients) client.end();

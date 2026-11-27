@@ -6,6 +6,7 @@ import { createSpecServer } from './server.mjs';
 import { CANVAS_DESCRIPTION, SPEC_COMMANDS, SYSTEM_RULE, dedicatedWorkPrompt, openStatus } from './prompts.mjs';
 import { linkedDraftStorage, rootSelection, validateRepositoryRoot, validateRoot } from './workspace.mjs';
 import { createDedicatedWork } from './work-handoff.mjs';
+import { readDeliveryRecord, reconcileDeliveryRecord } from './delivery-ledger.mjs';
 
 const CANVAS_ID = 'speckit-spec-board';
 const servers = new Map();
@@ -244,6 +245,17 @@ const session = await joinSession({
                     },
                 },
                 {
+                    name: 'get_autonomy_policy',
+                    description: 'Read-only: inspect the repository autonomy policy parsed strictly from cached origin/HEAD (.specify/autonomy.json), or its safe default / fail-closed fallback.',
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).getAutonomyPolicy();
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
                     name: 'prepare_dedicated_work',
                     description: 'Read-only handoff for an explicit request to start isolated work on one spec, bug, or Ready idea. Returns the repository, exact base branch and commit, and one committed work record. Before creating a cloud worktree session, the coordinating agent must recheck the branch tip on GitHub and reuse any session already assigned to that item. Verify the new checkout starts at the reported commit before work. Never substitute the parent chat or another item. This action does not start work or grant approval.',
                     inputSchema: {
@@ -252,12 +264,13 @@ const session = await joinSession({
                         properties: {
                             kind: { type: 'string', enum: ['spec', 'bug', 'idea'] },
                             id: { type: 'string', minLength: 1, maxLength: 320, description: 'Exact spec folder path or Companion triage record ID.' },
+                            autonomyMode: { type: 'string', enum: ['gated', 'unattended'], description: 'Optional requested autonomy mode, validated against origin/HEAD .specify/autonomy.json.' },
                         },
                         required: ['kind', 'id'],
                     },
                     handler: (ctx) => {
                         try {
-                            return serverFor(ctx).prepareDedicatedWork(ctx.input.kind, ctx.input.id);
+                            return serverFor(ctx).prepareDedicatedWork(ctx.input.kind, ctx.input.id, { autonomyMode: ctx.input.autonomyMode });
                         } catch (error) {
                             throw specError(error);
                         }
@@ -277,15 +290,165 @@ const session = await joinSession({
                 },
                 {
                     name: 'finish_dedicated_work',
-                    description: 'Owning coordinator only: confirm the claimed request after verifying your exact child, assigned work item, isolated branch and starting revision. Updates the picker in place. Report blocked instead if verification failed and no unresolved allocation exists. Omit cwd for open-only children; the canonical app URL is required.',
+                    description: 'Owning coordinator only: confirm the claimed request after verifying your exact child, assigned work item, isolated branch and starting revision. Updates the durable delivery ledger and picker in place. Report blocked instead if verification failed and no unresolved allocation exists. Omit cwd for open-only children; the canonical app URL is required.',
                     inputSchema: {
                         type: 'object', additionalProperties: false,
-                        properties: { requestId: requestIdSchema, session: coordinatedSessionSchema, baseRevision: { type: 'string' }, blocked: { type: 'string', minLength: 1, maxLength: 300 } },
+                        properties: {
+                            requestId: requestIdSchema,
+                            session: coordinatedSessionSchema,
+                            baseRevision: { type: 'string' },
+                            blocked: { type: 'string', minLength: 1, maxLength: 300 },
+                            branch: { type: 'string', minLength: 1, maxLength: 200 },
+                            issue: {
+                                type: 'object', additionalProperties: false,
+                                properties: {
+                                    number: { type: 'integer', minimum: 1 },
+                                    url: { type: 'string', minLength: 1 },
+                                    state: { type: 'string', enum: ['open', 'closed'] },
+                                },
+                                required: ['number'],
+                            },
+                            pr: {
+                                type: 'object', additionalProperties: false,
+                                properties: {
+                                    number: { type: 'integer', minimum: 1 },
+                                    url: { type: 'string', minLength: 1 },
+                                    state: { type: 'string', enum: ['open', 'closed', 'merged'] },
+                                    draft: { type: 'boolean' },
+                                    checks: { type: 'string', enum: ['pending', 'passing', 'failing', 'unknown'] },
+                                },
+                                required: ['number'],
+                            },
+                        },
                         required: ['requestId'],
                     },
                     handler: (ctx) => {
                         try {
                             return serverFor(ctx).finishDedicatedWork(ctx.input);
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
+                    name: 'reconcile_delivery',
+                    description: 'Coordinator only: upsert a durable delivery ledger record in .speckit-companion/delivery/ mapping a spec, bug, or idea to its GitHub issue, branch, PR, app session, and gate state. Never stores machine-local cwd paths or cross-repo URLs.',
+                    inputSchema: {
+                        type: 'object', additionalProperties: false,
+                        properties: {
+                            kind: { type: 'string', enum: ['spec', 'bug', 'idea'] },
+                            id: { type: 'string', minLength: 1, maxLength: 320 },
+                            path: { type: 'string', minLength: 1, maxLength: 512 },
+                            repository: { type: 'string', minLength: 1, maxLength: 140 },
+                            baseBranch: { type: ['string', 'null'] },
+                            baseRevision: { type: ['string', 'null'] },
+                            autonomyMode: { type: 'string', enum: ['gated', 'unattended'] },
+                            branch: { type: ['string', 'null'] },
+                            issue: {
+                                type: ['object', 'null'], additionalProperties: false,
+                                properties: {
+                                    number: { type: 'integer', minimum: 1 },
+                                    url: { type: 'string' },
+                                    state: { type: 'string', enum: ['open', 'closed'] },
+                                },
+                                required: ['number'],
+                            },
+                            pr: {
+                                type: ['object', 'null'], additionalProperties: false,
+                                properties: {
+                                    number: { type: 'integer', minimum: 1 },
+                                    url: { type: 'string' },
+                                    state: { type: 'string', enum: ['open', 'closed', 'merged'] },
+                                    draft: { type: 'boolean' },
+                                    checks: { type: 'string', enum: ['pending', 'passing', 'failing', 'unknown'] },
+                                },
+                                required: ['number'],
+                            },
+                            session: {
+                                type: ['object', 'null'], additionalProperties: false,
+                                properties: {
+                                    sessionId: { type: 'string', minLength: 1 },
+                                    name: { type: 'string', minLength: 1 },
+                                    url: { type: 'string' },
+                                    status: { type: 'string', enum: ['active', 'idle', 'expired', 'archived'] },
+                                    assignedRevision: { type: 'string' },
+                                },
+                                required: ['sessionId'],
+                            },
+                            gate: {
+                                type: ['object', 'null'], additionalProperties: false,
+                                properties: {
+                                    id: { type: 'string', minLength: 8, maxLength: 8 },
+                                    status: { type: 'string', enum: ['awaiting-decision', 'approved', 'changes-requested', 'blocked', 'stale', 'resolved'] },
+                                    prNumber: { type: 'integer', minimum: 1 },
+                                    issueNumber: { type: 'integer', minimum: 1 },
+                                },
+                                required: ['id', 'status'],
+                            },
+                            state: { type: 'string', enum: ['queued', 'assigned', 'in-progress', 'awaiting-gate', 'pr-open', 'merged', 'blocked', 'expired'] },
+                            detail: { type: ['string', 'null'], maxLength: 300 },
+                            expectedRevision: { type: ['string', 'null'] },
+                        },
+                        required: ['kind', 'id'],
+                    },
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).reconcileDelivery(ctx.input);
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
+                    name: 'recover_delivery_session',
+                    description: 'Coordinator only: mark an expired or missing child session on a delivery ledger entry as expired and record it in supersededSessions while preserving its existing branch, PR, issue, and gate so a replacement session can continue the same work.',
+                    inputSchema: {
+                        type: 'object', additionalProperties: false,
+                        properties: {
+                            kind: { type: 'string', enum: ['spec', 'bug', 'idea'] },
+                            id: { type: 'string', minLength: 1, maxLength: 320 },
+                            expiredSessionId: { type: 'string', minLength: 1 },
+                            reason: { type: 'string', minLength: 1, maxLength: 300 },
+                            expectedRevision: { type: ['string', 'null'] },
+                        },
+                        required: ['kind', 'id'],
+                    },
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).recoverDelivery(ctx.input);
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
+                    name: 'list_automation_blueprints',
+                    description: 'List the loop-safe, least-privilege Cloud Autonomy Automation blueprints for the current repository along with autonomy policy compliance and GitHub Actions fallback templates.',
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).listAutomationBlueprints();
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
+                    name: 'get_multichannel_decisions',
+                    description: 'Inspect current-branch cloud gates, offline cross-branch gates across local Git refs, correlated delivery ledger records, and promotable spec ADR candidates without mutating any gate.',
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).getMultichannelDecisions();
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
+                    name: 'preview_adr_promotions',
+                    description: 'Preview schema-v1 ADR entries harvested from specs/*/.spec-context.json that are not yet present in .specify/decisions.json on origin/HEAD.',
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).previewAdrPromotions();
                         } catch (error) {
                             throw specError(error);
                         }
@@ -316,13 +479,41 @@ const session = await joinSession({
                     entry = await createSpecServer({
                         root: resolvedRoot,
                         workingDirectory: current,
+                        instanceId: ctx.instanceId,
                         manual: Boolean(savedRoot || ctx.input?.root),
                         bound: savedRoot ? selection.source() : null,
                         coordinatedSessions: selection.sessions(),
                         saveCoordinatedSessions: (sessions, root, source) => selection.writeSessions(sessions, root, source),
                         dedicatedWork: session.workspacePath && typeof session.send === 'function' ? createDedicatedWork({
                             storage: selection,
-                            send: requestId => session.send({ prompt: dedicatedWorkPrompt(requestId, ctx.instanceId) }),
+                            send: (requestId, row) => session.send({ prompt: dedicatedWorkPrompt(requestId, ctx.instanceId, { autonomyMode: row?.autonomyMode, autonomyPolicy: row?.autonomyPolicy }) }),
+                            readLedger: (repoRoot, handoff) => {
+                                try {
+                                    return readDeliveryRecord(repoRoot, handoff.item.kind, handoff.item.id);
+                                } catch {
+                                    return null;
+                                }
+                            },
+                            onConfirm: ({ root: repoRoot, handoff, autonomyMode, session: confirmed, baseRevision, branch, pr, issue, allowSessionReplace }) => {
+                                reconcileDeliveryRecord(repoRoot, {
+                                    repository: handoff.repository,
+                                    item: handoff.item,
+                                    baseBranch: handoff.baseBranch,
+                                    baseRevision,
+                                    autonomyMode,
+                                    ...(branch !== undefined ? { branch } : {}),
+                                    ...(pr !== undefined ? { pr } : {}),
+                                    ...(issue !== undefined ? { issue } : {}),
+                                    session: {
+                                        sessionId: confirmed.sessionId,
+                                        name: confirmed.name,
+                                        ...(confirmed.url ? { url: confirmed.url } : {}),
+                                        status: confirmed.activity === 'busy' ? 'active' : 'idle',
+                                        assignedRevision: baseRevision,
+                                    },
+                                    allowSessionReplace,
+                                });
+                            },
                             changed: () => {
                                 const sessions = selection.sessions();
                                 for (const board of servers.values()) board.dedicatedWorkChanged(sessions);

@@ -89,9 +89,13 @@ export function rootSelection(workspacePath) {
     function save(data) {
         if (!file) throw new Error('Session storage is unavailable; the repository selection cannot be saved.');
         mkdirSync(dirname(file), { recursive: true });
-        const temporary = `${file}.tmp`;
-        writeFileSync(temporary, `${JSON.stringify(data)}\n`, { mode: 0o600 });
-        renameSync(temporary, file);
+        const temporary = `${file}.${randomUUID()}.tmp`;
+        try {
+            writeFileSync(temporary, `${JSON.stringify(data)}\n`, { mode: 0o600, flag: 'wx' });
+            renameSync(temporary, file);
+        } finally {
+            rmSync(temporary, { force: true });
+        }
     }
     return {
         read() {

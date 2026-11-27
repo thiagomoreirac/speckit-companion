@@ -99,9 +99,10 @@ function verifyLocalCheckout(checkout, row) {
     }
 }
 
-export function createDedicatedWork({ storage, send, changed }) {
+export function createDedicatedWork({ storage, send, changed, readLedger, onConfirm }) {
     const view = row => ({
         kind: row.handoff.item.kind, id: row.handoff.item.id, status: row.status,
+        ...(row.autonomyMode && row.autonomyMode !== 'gated' ? { autonomyMode: row.autonomyMode } : {}),
         ...(row.detail ? { detail: row.detail } : {}),
         ...(row.status === 'confirmed' ? { session: row.assignment } : {}),
     });
@@ -122,17 +123,57 @@ export function createDedicatedWork({ storage, send, changed }) {
         forRoot: root => storage.dedicatedWork().filter(row => row.root === root).map(view),
         canAutoFollow: (root, sessionId) => !storage.dedicatedWork().some(row =>
             row.assignment?.sessionId === sessionId || (row.root === root && pending(row))),
-        async request(root, handoff) {
+        clearAssignment(repository, kind, id) {
+            const key = JSON.stringify([String(repository).toLowerCase(), kind, id]);
+            const entries = storage.dedicatedWork();
+            const index = entries.findIndex(row => row.key === key);
+            if (index < 0) return false;
+            const current = entries[index];
+            const next = entries.slice();
+            next[index] = { ...current, assignment: undefined, assignedRevision: undefined, status: current.status === 'confirmed' ? 'expired' : current.status };
+            storage.writeDedicatedWork(next);
+            changed();
+            return true;
+        },
+        async request(root, handoff, options = {}) {
             const entries = storage.dedicatedWork();
             const key = itemKey(handoff);
             const index = entries.findIndex(row => row.key === key);
             const prior = entries[index];
             if (pending(prior)) return view(prior);
+            const autonomyMode = options.autonomyMode === 'unattended' ? 'unattended' : 'gated';
+            const autonomyPolicy = options.autonomyPolicy ?? null;
+            const ledger = readLedger?.(root, handoff) ?? null;
+            const ledgerExpired = Boolean(ledger?.session && ['expired', 'archived'].includes(ledger.session.status));
+            const ledgerActive = ledger?.session && ['active', 'idle'].includes(ledger.session.status)
+                ? {
+                    sessionId: ledger.session.sessionId,
+                    name: ledger.session.name,
+                    activity: ledger.session.status === 'active' ? 'busy' : 'idle',
+                    ...(ledger.session.url ? { url: ledger.session.url } : {}),
+                }
+                : null;
+            const assignment = ledgerExpired ? undefined : (prior?.assignment ?? ledgerActive ?? undefined);
+            const assignedRevision = ledgerExpired ? undefined : (prior?.assignedRevision ?? ledger?.session?.assignedRevision ?? (ledgerActive ? ledger?.baseRevision : undefined));
             const requestId = randomUUID();
-            const row = { key, root, handoff, requestId, status: 'requested', assignment: prior?.assignment, assignedRevision: prior?.assignedRevision };
+            const row = {
+                key,
+                root,
+                handoff,
+                requestId,
+                autonomyMode,
+                ...(autonomyPolicy ? { autonomyPolicy } : {}),
+                status: 'requested',
+                assignment,
+                assignedRevision,
+                ...(ledgerExpired ? { recoveredFrom: ledger.session } : {}),
+                ...(ledger?.branch ? { existingBranch: ledger.branch } : {}),
+                ...(ledger?.pr ? { existingPr: ledger.pr } : {}),
+                ...(ledger?.issue ? { existingIssue: ledger.issue } : {}),
+            };
             save(entries, index < 0 ? entries.length : index, row);
             try {
-                await send(requestId);
+                await send(requestId, row);
             } catch {
                 const latest = storage.dedicatedWork().find(entry => entry.key === key);
                 if (latest.requestId === requestId && latest.status === 'requested') {
@@ -148,9 +189,19 @@ export function createDedicatedWork({ storage, send, changed }) {
             const { row, entries, index } = find(requestId);
             if (!['requested', 'delivering-unknown'].includes(row.status)) throw new Error('This request has already been claimed or settled. Do not create another session.');
             save(entries, index, { ...row, status: 'verifying' });
-            return { ...row.handoff, assignedSession: row.assignment ?? null, assignedRevision: row.assignedRevision ?? null };
+            return {
+                ...row.handoff,
+                assignedSession: row.assignment ?? null,
+                assignedRevision: row.assignedRevision ?? null,
+                ...(row.autonomyMode && row.autonomyMode !== 'gated' ? { autonomyMode: row.autonomyMode } : {}),
+                ...(row.autonomyPolicy ? { autonomyPolicy: row.autonomyPolicy } : {}),
+                ...(row.recoveredFrom ? { recoveredFrom: row.recoveredFrom } : {}),
+                ...(row.existingBranch ? { existingBranch: row.existingBranch } : {}),
+                ...(row.existingPr ? { existingPr: row.existingPr } : {}),
+                ...(row.existingIssue ? { existingIssue: row.existingIssue } : {}),
+            };
         },
-        finish({ requestId, session, baseRevision, blocked }) {
+        finish({ requestId, session, baseRevision, blocked, branch, pr, issue }) {
             const { row, entries, index } = find(requestId);
             if (row.status !== 'verifying') throw new Error('Claim the exact outstanding request before reporting a result.');
             if (blocked !== undefined) {
@@ -168,6 +219,17 @@ export function createDedicatedWork({ storage, send, changed }) {
                 throw new Error('This session is already assigned to a different work item.');
             }
             if (confirmed.cwd) verifyLocalCheckout(validateRepositoryRoot(confirmed.cwd), row);
+            onConfirm?.({
+                root: row.root,
+                handoff: row.handoff,
+                autonomyMode: row.autonomyMode ?? 'gated',
+                session: confirmed,
+                baseRevision,
+                branch,
+                pr,
+                issue,
+                allowSessionReplace: Boolean(row.recoveredFrom),
+            });
             return save(entries, index, { ...row, status: 'confirmed', assignment: confirmed, assignedRevision: baseRevision }, confirmed);
         },
     };
