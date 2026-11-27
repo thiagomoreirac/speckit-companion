@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "defaultMode": "unattended",
+  "allowUnattended": true,
+  "allowAutoPr": true,
+  "allowAutoMerge": false,
+  "requiredGates": ["spec", "plan"],
+  "allowedWriteScopes": ["trigger", "repository"],
+  "maxConcurrentSessions": 3,
+  "protectedPaths": [
+    ".github/workflows/**",
+    ".specify/autonomy.json",
+    ".specify/decisions.json"
+  ]
+}
