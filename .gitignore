@@ -67,19 +67,9 @@ apps/website/dist/
 apps/website/.astro/
 apps/website/.vercel/
 
-# Local-only demo spec dirs (underscore-prefixed under specs/)
-specs/_*/
-
-# Canonical demo testing specs are committed at a fixed baseline (specified /
-# planned / tasked-out states). They are tracked, but local edits must NOT be
-# committed — see CLAUDE.md "Demo testing specs". Revert with `git restore`.
-!specs/_demo-specified/
-!specs/_demo-planned/
-!specs/_demo-tasked/
-!specs/_00_demo-specified/
-!specs/_01_demo-planned/
-!specs/_02_demo-tasked/
-!specs/_03_demo-living/
+# Local Spec Kit working state for this repository; test fixtures live elsewhere.
+/specs/
+/.specify/feature.json
 
 # The seeded design-canvas payload (~2MB of editor). The .dc.html artboards it
 # is built from are the sources and stay tracked.

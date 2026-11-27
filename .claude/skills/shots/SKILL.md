@@ -93,7 +93,7 @@ It is also the scripted half of release QA: `.claude/skills/release-qa/surface-m
 
 | Flag | Values |
 | --- | --- |
-| `--mode` | `replay` (default): no model run; checks the mod against copies of `specs/_02_demo-tasked` and `specs/_03_demo-living`. `run`: types the four Spec Kit commands into a fresh project and waits for each turn. **Run mode spends real usage, so never start it unless asked.** |
+| `--mode` | `replay` (default): no model run; checks the mod against the tasked and living demos from `tooling/fixtures/demo-project`. `run`: types the four Spec Kit commands into a fresh project and waits for each turn. **Run mode spends real usage, so never start it unless asked.** |
 | `--recipe` | `claude-mod-stock` (default): stock Spec Kit, no run record, so replay strips each fixture's `.spec-context.json`. `claude-mod`: adds the Companion extension, keeps the record, and run mode types the `/speckit-companion-*` commands. |
 | `--look` | `plain` (default). `site`: the site's colours, a rounded window and a soft shadow on a transparent margin, for the website and the docs. `claude`: a warm near-black terminal with a terracotta edge, for videos and pictures of Claude Code. |
 | `--only`, `--out`, `--keep`, `--record` | A subset of steps, another output folder, keep the throwaway project, record |

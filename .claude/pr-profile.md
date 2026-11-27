@@ -53,7 +53,7 @@ A change under `apps/speckit-extension/**` updates **its** README/CHANGELOG/vers
 
 - **No version bump** in a feature PR (version bumps ride `/publish` or `/publish-speckit-ext`, run by `/release-loop`) → ⚠️ if `package.json` or `extension.yml` version changed.
 - **Extension isolation**: no new runtime dependence on `.claude/**` or `.specify/**` from `apps/vscode/src/` (those aren't shipped in the `.vsix`). Committed `.specify/`/`.cursor/`/`.windsurf/`/`.agents/`/`.gemini/`/`.qwen/`/`.github/{agents,prompts}/speckit.*` are IDE-chat test fixtures, not runtime deps.
-- **Demo fixtures restored**: `specs/_00_demo-specified` / `_01_demo-planned` / `_02_demo-tasked` must be at their committed baseline (`git restore` test-time mutations) → ⚠️ if their `.spec-context.json` is dirtied.
+- **Demo fixtures unchanged**: copy the pinned demos into a disposable project before testing; see `CLAUDE.md`.
 - **Spec files included**: the PR's `specs/<NNN>-*/` artifacts and any modified `.spec-context.json` are committed; the spec's status is `completed` before merge (only `_NN_demo-*` fixtures stay active).
 - **Screenshots** overwritten in place — never renamed/deleted (Marketplace serves absolute `raw.githubusercontent` URLs pinned to `main`).
 - **No diagnostic logs** left in code (`console.log('[handleApprove] …')`); structural `logError`/catch-block logging stays.

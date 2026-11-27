@@ -41,11 +41,18 @@ By default the board follows its own session. It starts in the session's working
 
 A Project chat usually sits in a conversation directory with no specs. The app gives a canvas no coordination context, so the board asks the runtime's session management for the sessions whose parent is this chat (`management.list`, filtered to `parentSessionId` equal to this session) and never scans other sessions. When this chat's own directory has no specs and exactly one such session exists, the board shows that session's worktree and follows it as it changes, appears or is archived. With several, the board lists them and waits: pick one in the list (or ask the agent for `select_child`), and the choice is saved like a manual one. Session management is the user's opt-in setting, which the board never turns on, and even when it is on the runtime may not report the app's Project sessions as children of the chat. The reliable route is a coordinator binding: the coordinating agent reads the child with its own `get_session` tool and calls the board's `bind_coordinated_session` action with the session id, the worktree path and a name. The board cannot verify that binding, and it does not follow later changes by itself, so the agent calls it again when the child is created, resumed, switched or moves to a new worktree. The binding is saved and outranks following. Refresh, opening a spec, running a step, **Use repository** on the directory already shown and reopening the panel all keep it. Only choosing a different directory or session replaces it, and **Disconnect from** followed by the session name (shown instead of **Follow session** while bound) clears it and returns to the chat's own directory. A bound session receives board commands through the runtime's session-management message API; if that API is unavailable or the session does not accept the message, the board reports an error and does not send it to the parent chat. The board does not observe the selected session's turn or report its progress.
 
-For a Project, ask the coordinator to populate **Coordinated session**. It calls `update_coordinated_sessions` with a complete snapshot of its own nonarchived sessions, including idle sessions, using scoped `get_sessions_status` and `get_session` for their actual worktrees. Choose one from the dropdown; no session is picked automatically. The list and selection survive reopening. The coordinator must refresh the snapshot after sessions are created, resumed, switched or archived, or their worktrees change; the board cannot verify ownership or detect these app changes itself. An updated path for the selected session rebinds the board, unless a step is in flight, in which case the update is rejected for retry. If the selected session disappears, the board marks it unavailable and retains its last repository until you choose another or disconnect. Commands are sent to the selected session through session management; the canvas does not receive that session's progress or completion events.
+**Coordinated session** refreshes when the coordinator confirms work started from the board. For sessions managed outside that flow, ask the coordinator to refresh the list with `update_coordinated_sessions`. It supplies a complete snapshot of its own nonarchived sessions, including idle sessions, using scoped app session tools. Only worktrees this board can read are selectable. For a session on another host, use **Open session** to open it in Copilot. The list and selection survive reopening, and no new session is picked automatically. An updated path for the selected session in a full snapshot rebinds the board, unless a step is in flight. If the selected session disappears or becomes inaccessible, the board marks it unavailable and retains its last repository until you choose another or disconnect.
 
 The move waits until no step sent from the board is running or being recorded, so a run is never read from another repository. A reopened panel catches up with the current directory.
 
 An explicit choice overrides all of that. Press **Browse…** beside **Repository directory** to choose a folder, or enter an absolute checkout path and press **Use repository**. The native picker starts at the main worktree when the current directory belongs to a Git repository, otherwise at the current board directory. It runs on the extension host: it needs a local graphical desktop (and `zenity` on Linux), so on a remote or headless host enter the path manually. The board saves the choice in the session's artifact storage, restores it after reloads and in new panels, and stops following. Press **Follow session** (or ask the agent for `use_session_directory`) to drop the saved choice. A saved directory that no longer exists is ignored and the board follows the session instead. A chosen directory must be a repository root, with a `.git` or `.specify` folder in it; anything else is refused with a message. A missing spec directory shows a warning with the scanned path.
+
+### Start work in a dedicated session
+
+For a change you expect to review on its own, open a spec, bug, or Ready idea and choose **Start dedicated work**. Commit and publish the spec or Companion triage record first. Check the repository, branch, revision, and record shown in the confirmation. Uncommitted edits are not part of the request. **Plan**, **Tasks**, and **Implement** keep using their usual session.
+
+The board sends the confirmed request to its owning Copilot chat. That coordinator checks the live GitHub branch tip and verifies an isolated app worktree before starting work. It reuses a verified session for the same item rather than launching duplicate work. While this happens the request is pending, not confirmed. Once verified, the coordinator's completion action updates **Coordinated session** without switching your checkout or waiting for a pull request. The board does not auto-follow a dedicated session, even if it is the only child. The board itself does not create sessions or verify remote checkouts, so a host without app coordination cannot complete the handoff. If creation is uncertain, check the coordinator chat before attempting another start. Starting work does not authorize pushing, opening a pull request, or merging.
+
 Ask the agent to select a repository to use the board's `select_root` action. For an initial selection, the agent can open the canvas with `{ "root": "/absolute/path/to/repository" }`; a saved selection takes precedence so an older open input cannot undo a later choice after a reload.
 
 Changing repositories clears the selected spec and is blocked while a step sent from the board is running. An ordinary repository selection keeps commands in the chat that owns the board and names the selected repository so relative paths resolve there. Selecting or binding a session routes commands to that exact session through the runtime's peer-message API.
@@ -73,6 +80,30 @@ The board spells each command the way your project registers it: `/speckit-plan`
 
 For a spec with a run record, use a document's **Add comment** button to save a review note on a line. Edit or remove notes in place, then use **Refine notes** to send the pending notes to the chat as targeted edits; the board marks them applied after the send succeeds. If there is no chat, copy the prompt instead and the notes stay pending. Notes that cannot be reattached to a changed document remain at the bottom of its tab.
 
+### Carry accepted decisions into a step
+
+When you run **Plan**, **Tasks**, or **Implement** for a selected spec, Companion can quote matching architecture decision records (ADRs) in that session's command. Each quote names the ADR and links to the exact Git revision it came from. These are references, not instructions: they cannot change the run's scope, permissions, gates, or workflow.
+
+Keep the decisions you want Companion to cite in `.specify/decisions.json` and review them on the repository's default branch. For example:
+
+```json
+{
+  "schema": 1,
+  "decisions": [
+    {
+      "id": "ADR-001",
+      "status": "accepted",
+      "specs": ["specs/101-roster"],
+      "summary": "Use the existing roster store rather than introducing a second store."
+    }
+  ]
+}
+```
+
+Give each decision a unique, stable `ADR-` ID followed by up to 40 uppercase letters, digits or hyphens, starting with a letter or digit. List up to 12 exact repository-relative spec folder paths with `/` separators, using ASCII letters, digits, underscores, hyphens or dots (no globs). Use a single-line summary of at most 400 characters. Only `accepted` records are sent. Keep `proposed` or `rejected` records out of the handoff by setting that status; when replacing an older decision, set its status to `superseded` and set `supersededBy` to the new ADR ID. Duplicate IDs and malformed records are ignored. The file is limited to 32 KiB and 64 records, and each command quotes only the first four exact matches in file order.
+
+Companion reads from the selected checkout's cached `origin/HEAD` target, not its checked-out branch or uncommitted files. It requires a direct `github.com` origin and a remote-tracking ref mapped from the default branch. The cache may lag behind GitHub; Companion does not fetch, check for freshness, or update Git references. With no catalog or no matching decisions, the command is unchanged. If Companion cannot verify the baseline or read the catalog, it logs why it skipped decision context and still sends the ordinary command.
+
 ## Workflow Builder
 
 Open **More tools (…) → Workflow Builder** to see the same pipeline graph used in VS Code. In a project with Companion installed, edit nodes, rearrange phases, attach hooks, choose a workflow, and preview or build the resulting commands. The builder runs the installed extension's scripts and needs Python on the extension host. Saving a node creates a project copy; returning to the shipped node keeps that copy under `.speckit-companion/workflow-backups` and offers Undo. File edits are refused if the file changed since it was opened.
@@ -82,6 +113,34 @@ Without Companion, the builder shows the installed Spec Kit workflow, presets, t
 Open **Integrations** in Workflow Builder to inspect registered extensions, presets, workflows, bundles and persisted Spec Kit engine runs. **Inspect resolved artifacts** asks the repository-local Spec Kit CLI which command and template layers apply and which hook bindings are enabled. This is separate from what candidates declare and from the Companion graph in **Pipeline**. Registration is not proof that the active chat discovered commands or that a workflow ran successfully. Reviewed third-party packages show an install button on their candidate row in an eligible checkout. Roadmap 0.1.0 fails Spec Kit 1.4.3's script-name validation, and Intake 0.1.3 ships a separate Figma command, so neither is offered. For supported automated setup, see [Install](/docs/install#copilot-app).
 
 **Inspect catalog sources** shows the effective search order for extension, preset, workflow and bundle catalogs, and which sources Spec Kit marks as discovery-only. The inspection does not download catalog entries or change what Companion can install. For a web catalog, the board shows only its host, not credentials or private URL details.
+
+### Configure an installed extension
+
+In **Integrations → Installed packages**, choose **Configure** for an extension that ships a supported field schema. Fill in the project values you want to change, select **Review changes**, then **Save settings**. The preview lists the destination and the values you entered; existing values are not shown. The owning session saves to the extension's native project file under `.specify/extensions/<id>/` and refuses to save if the file or setup metadata changed after the review. Saving does not enable the extension, run a hook, or connect to a service.
+
+**View setup** shows declared files and available template names when the extension has no supported editor or the checkout is read-only. **Manual setup** points to extension documentation when the manifest declares a supported repository link. Companion doesn't infer values from templates or create files from them. **Enabled in Spec Kit** describes registration, and **Hooks** shows the configured project bindings it can read. Neither verifies what will run on the execution host. Local overrides, environment variables, credentials, and service authorization stay outside the editor.
+
+### Add configuration support to an extension
+
+Declare each native project file in `extension.yml` under Spec Kit's [`provides.config`](https://github.github.com/spec-kit/extensions/developing.html#configuration-files). For example, declare `report-config.yml` using `name` and optionally `template`, `description`, and `required`. To generate a form, ship `report-config.yml.companion-schema.json` next to the installed manifest:
+
+```json
+{
+  "x-companion-version": 1,
+  "type": "object",
+  "required": ["format"],
+  "properties": {
+    "format": { "type": "string", "title": "Report format", "enum": ["brief", "detailed"] },
+    "includeSummary": { "type": "boolean", "title": "Include summary" },
+    "limit": { "type": "integer", "title": "Item limit", "minimum": 1, "maximum": 100 },
+    "apiToken": { "type": "string", "title": "Service credential", "writeOnly": true }
+  }
+}
+```
+
+This sidecar is a Companion convention, not a Spec Kit validation feature. Version 1 supports a top-level object with up to 40 fields in a `.json`, `.yml`, or `.yaml` file in the extension directory. Editable properties support nonempty strings (`enum`, `minLength`, `maxLength`), booleans, numbers, and integers (`minimum`, `maximum`), with optional `title` and `description`. Only list project fields that are safe to put in shared configuration. Mark credentials or host-only inputs with `writeOnly: true` or `x-companion-host-only: true`; Companion neither reads nor accepts a value for those fields in the form. Unsupported schema rules, nested form fields, links, and local or secret filenames aren't editable. To remove a field, apply defaults, or use unsupported file syntax such as YAML aliases, edit the native configuration outside Companion.
+
+### Reviewed extensions
 
 **OKR Bets** registers optional hooks for framing before Specify, alignment after Specify, and measurement after Plan. Once the reviewed extension is enabled, its candidate row offers a separate **Install OKR Bet preset** action. That preset appends an overlay to the stock Specify command and the spec template; it does not replace Companion's Specify command. Use **Inspect resolved artifacts** to see the actual layers when presets are combined. Setup does not run hooks, create bets, or connect to an OKR service. Spec-local measurement plans and reviews appear under **Evidence** when the extension writes them.
 
@@ -110,6 +169,14 @@ Use **More tools (…) → Product work** to capture a business plan or epic wit
 **Approve artifact** and **Request changes** record a local decision on the exact bytes you reviewed. The **Review** tab shows recorded steps for runs that explicitly declare this spec as their target and highlights the paused step. The engine’s choices are displayed as labels, not buttons. **Explain this pause in chat** asks about the blocker without selecting an artifact or advancing the run. **Review gate evidence** opens the evidence alongside the pause and ties a local decision to both the file and gate revisions. The tab flags evidence that changed and gates that moved. A local decision does not approve or resume an engine gate. **Open terminal to review run** gives you an interactive terminal in the owning session without sending a command. Runs without a per-run spec path appear in **Integrations** only.
 
 Select **Keep a copy for comparison** before recording a decision to retain the reviewed bytes under `.speckit-companion/artifact-reviews/` in this checkout. When the file changes, **Compare with current** shows both revisions. Images render side by side when space permits; text and prototypes remain source only. Leave the option off for files you do not want to retain after editing or removing them.
+
+### Needs your decision
+
+Open **Decisions** on the board to see cloud gate records under `.speckit-companion/cloud-gates/` for the selected checkout and branch. Paused gates appear first. Each row links to the GitHub issue and the evidence at its recorded commit, plus the receipt comment when one was recorded. **Refresh decisions** rereads this checkout only; an empty inbox does not mean there are no gates elsewhere.
+
+Make the decision on GitHub using the instructions for that gate. Companion never submits a decision or advances a gate. The trusted run owner can consume a verified comment manually or, in the Trailhead pilot, opt in to watching one enrolled run from the persistent Linux checkout that holds its Spec Kit checkpoint. Posting a comment does not wake a Copilot session. Without the watcher running, posting alone does not resume a run.
+
+For an **Uncertain** record, reconcile with the trusted run owner and do not retry. Companion marks evidence stale when it can read the local file and its bytes differ, and says when it could not check. Matching bytes are not confirmation that the gate is still paused or that GitHub has accepted a decision.
 
 On Tasks, **Create issues** previews the GitHub repository, tasks file and delivery command. Generic delivery requires one `origin` URL that points directly to `github.com`. Spec Kit 1.4.3 uses the bundled GitHub extension for this action; install it in **Workflow Builder → Integrations** if the command is missing. The board also offers reviewed setup for GitHub Project Lifecycle Sync and GHP, but won't install another delivery owner while one is enabled. Installing either blocks generic **Create issues**; configure its GitHub target separately and use that extension's lifecycle. The board rechecks the destination, file and command before sending the request to Copilot; the preview itself does not write to GitHub.
 

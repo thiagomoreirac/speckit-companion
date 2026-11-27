@@ -3,6 +3,8 @@ import { join } from 'path';
 import { preprocessCallouts, preprocessHtmlComments, preprocessUserStories, preprocessTaskPhases, preprocessRequirements, preprocessEntities, preprocessChecklist, preprocessTechnicalContext, preprocessConstitution, preprocessDecisions } from '../preprocessors';
 import { renderMarkdown, setTaskSummaries } from '../renderer';
 
+const fixtures = join(__dirname, '../../../../../../apps/vscode/webview/src/spec-viewer/__fixtures__/specs');
+
 describe('preprocessTaskPhases', () => {
     it('wraps a "## Phase N:" heading in a phase-header block with the phase number', () => {
         const out = preprocessTaskPhases('## Phase 2: Foundational (Blocking Prerequisites)\n');
@@ -94,9 +96,8 @@ describe('preprocessRequirements', () => {
     });
 
     it('fires on the real reference specs (327 + 349)', () => {
-        const root = join(__dirname, '../../../../../..');
-        const spec327 = readFileSync(join(root, 'specs/327-install-banner-responsive/spec.md'), 'utf8');
-        const spec349 = readFileSync(join(root, 'specs/349-cleanup-followups/spec.md'), 'utf8');
+        const spec327 = readFileSync(join(fixtures, '327-install-banner-responsive/spec.md'), 'utf8');
+        const spec349 = readFileSync(join(fixtures, '349-cleanup-followups/spec.md'), 'utf8');
 
         const html327 = renderMarkdown(spec327);
         const html349 = renderMarkdown(spec349);
@@ -282,8 +283,7 @@ describe('preprocessConstitution', () => {
     });
 
     it('renders the real 060 plan.md grid + verdict rows through the pipeline', () => {
-        const root = join(__dirname, '../../../../../..');
-        const plan = readFileSync(join(root, 'specs/060-spec-context-tracking/plan.md'), 'utf8');
+        const plan = readFileSync(join(fixtures, '060-spec-context-tracking/plan.md'), 'utf8');
         const html = renderMarkdown(plan);
 
         expect(html).toContain('class="tech-grid"');

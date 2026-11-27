@@ -7,20 +7,20 @@ Changes to the **Copilot app canvas** are listed here. It is versioned on its ow
 ### Added
 
 - **Converge from the board.** Check an implemented or completed spec against its code. <!-- area: copilot-app -->
-- **Work from document tabs.** Clarify a spec, check a plan, or analyze tasks. <!-- area: copilot-app -->
+- **Run commands with the right context.** Clarify a spec, check a plan, or analyze tasks, and give **Plan**, **Tasks**, and **Implement** scoped, accepted decisions.
 - **See and review evidence in tabs.** Preview artifacts, see review status, generate missing evidence, and compare the exact revisions you choose to keep.
-- **Build and set up workflows.** Edit nodes and hooks, inspect catalogs, and review hook effects before installing extensions, presets, workflows, or bundles.
+- **Build workflows and configure extensions.** Edit nodes and hooks, inspect package catalogs, review installs, and configure compatible extensions from **Integrations**.
 - **Preview delivery before creating issues.** Check the destination repository, tasks and delivery owner before sending a GitHub issue request.
 - **Carry product ideas into delivery.** Triage bugs and ideas in Companion, derive epics from plans, and review updates before applying them to existing work.
 - **Prepare recurring routines.** Draft schedules for commands, agents, GitHub Actions, and Copilot Automations, then review setup with the scheduler that owns them.
+- **Start work in a dedicated session.** Start from a published spec, bug, or Ready idea and see the verified session without switching your board.
+- **See what needs your decision.** Open **Decisions** to see this checkout's cloud gate records and follow their GitHub evidence and receipt links.
 
 ### Fixed
 
 - **Keep commands in the selected session.** Child dispatch uses session management and never falls back to the parent chat. <!-- area: copilot-app -->
 - **Stop on invalid settings or unavailable workflows.** The board shows the problem instead of dispatching with stock defaults. <!-- area: copilot-app -->
-- **Choose an owned session or checkout.** Pick the worktree to watch, or let a Project chat follow its only session. <!-- area: copilot-app -->
-- **The board follows each session's worktree.** Without a saved choice, each session's board moves to its own working directory when the runtime reports a change. <!-- area: copilot-app -->
-- **A coordinator can bind a child session's worktree.** The agent passes the child's id and path from its session details, and the board keeps it through ordinary buttons. <!-- area: copilot-app -->
+- **Follow or pin a worktree.** Follow the session's working directory, choose a checkout, or keep a coordinated child's worktree selected. <!-- area: copilot-app -->
 
 ## [0.2.2] - 2026-11-12
 

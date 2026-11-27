@@ -19,6 +19,7 @@ import { recordDir, startRecording } from './lib/recording.mjs';
 const run = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..', '..');
+const DEMO_SPECS = join(REPO, 'tooling', 'fixtures', 'demo-project', 'specs');
 const arg = (name, fallback) => {
     const at = process.argv.indexOf(`--${name}`);
     return at > -1 ? process.argv[at + 1] : fallback;
@@ -102,7 +103,7 @@ async function buildProject() {
     const project = realpathSync(join(root, 'project'));
     if (MODE === 'replay') {
         for (const demo of DEMOS) {
-            cpSync(join(REPO, 'specs', demo), join(project, 'specs', demo), { recursive: true });
+            cpSync(join(DEMO_SPECS, demo), join(project, 'specs', demo), { recursive: true });
             if (!RECIPES[RECIPE].companion) rmSync(join(project, 'specs', demo, '.spec-context.json'), { force: true });
         }
     }

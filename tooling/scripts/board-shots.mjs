@@ -11,6 +11,7 @@ import { RUN_FOLDER, RUN_STATES, tickTask, writeTeamboardRecord, writeTeamboardR
 import { FPS, HOLD_SECONDS, READ_SECONDS, SCROLL_PX_PER_FRAME, recordDir, startRecording } from './lib/recording.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const DEMO_SPECS = join(REPO, 'tooling', 'fixtures', 'demo-project', 'specs');
 const at = process.argv.indexOf('--out');
 const OUT = resolve(REPO, at > -1 ? process.argv[at + 1] : '.shots');
 mkdirSync(OUT, { recursive: true });
@@ -19,7 +20,7 @@ if (RECORD) mkdirSync(RECORD, { recursive: true });
 const TEAMBOARD = join(REPO, 'apps/vscode/webview/src/spec-viewer/__fixtures__/teamboard/041-profile-photo-upload');
 const root = join(mkdtempSync(join(tmpdir(), 'canvas-page-')), 'teamboard'); mkdirSync(root);
 mkdirSync(join(root, 'specs'));
-for (const demo of ['_00_demo-specified', '_01_demo-planned', '_02_demo-tasked', '_03_demo-living']) cpSync(join(REPO, 'specs', demo), join(root, 'specs', demo), { recursive: true });
+for (const demo of ['_00_demo-specified', '_01_demo-planned', '_02_demo-tasked', '_03_demo-living']) cpSync(join(DEMO_SPECS, demo), join(root, 'specs', demo), { recursive: true });
 const rich = join(root, 'specs', '041-profile-photo-upload');
 mkdirSync(join(rich, 'checklists'), { recursive: true });
 for (const name of ['spec.md', 'plan.md', 'tasks.md', 'research.md', 'data-model.md']) cpSync(join(TEAMBOARD, name), join(rich, name));
@@ -74,7 +75,7 @@ await shot(page, 'board-new-spec');
 // One spec walked through a run, a step at a time: each state is the picture for that step in the docs.
 const walkRoot = join(mkdtempSync(join(tmpdir(), 'canvas-page-walk-')), 'teamboard');
 mkdirSync(join(walkRoot, '.specify/extensions/companion'), { recursive: true });
-for (const demo of ['_02_demo-tasked', '_03_demo-living']) cpSync(join(REPO, 'specs', demo), join(walkRoot, 'specs', demo), { recursive: true });
+for (const demo of ['_02_demo-tasked', '_03_demo-living']) cpSync(join(DEMO_SPECS, demo), join(walkRoot, 'specs', demo), { recursive: true });
 writeTeamboardRun(REPO, join(walkRoot, 'specs', RUN_FOLDER), RUN_STATES[0]);
 const walk = await createSpecServer({ root: walkRoot, send: async () => true });
 const wp = await browser.newPage(opts);
@@ -95,7 +96,7 @@ await walk.close();
 
 const stockRoot = join(mkdtempSync(join(tmpdir(), 'canvas-page-stock-')), 'todo-app');
 mkdirSync(join(stockRoot, 'specs'), { recursive: true });
-cpSync(join(REPO, 'specs', '_01_demo-planned'), join(stockRoot, 'specs', '_01_demo-planned'), { recursive: true });
+cpSync(join(DEMO_SPECS, '_01_demo-planned'), join(stockRoot, 'specs', '_01_demo-planned'), { recursive: true });
 const stock = await createSpecServer({ root: stockRoot, send: async () => true });
 const sp = await browser.newPage(opts);
 await sp.goto(stock.url);
@@ -141,7 +142,7 @@ if (RECORD) {
     // A run advancing a step at a time: the step is sent from the board's own button, and the rest is the fixture's files changing under the server.
     const liveRoot = join(mkdtempSync(join(tmpdir(), 'canvas-page-run-')), 'teamboard');
     mkdirSync(join(liveRoot, '.specify/extensions/companion'), { recursive: true });
-    cpSync(join(REPO, 'specs', '_03_demo-living'), join(liveRoot, 'specs', '_03_demo-living'), { recursive: true });
+    cpSync(join(DEMO_SPECS, '_03_demo-living'), join(liveRoot, 'specs', '_03_demo-living'), { recursive: true });
     const liveFolder = join(liveRoot, 'specs', RUN_FOLDER);
     writeTeamboardRun(REPO, liveFolder, 'tasked');
     const live = await createSpecServer({ root: liveRoot, send: async () => true });
@@ -184,7 +185,7 @@ if (RECORD) {
     // One spec's whole journey: the list, one spec opened at Specify, then Plan, Tasks and Implement each sent from the board and finishing under it.
     const journeyRoot = join(mkdtempSync(join(tmpdir(), 'canvas-page-journey-')), 'teamboard');
     mkdirSync(join(journeyRoot, '.specify/extensions/companion'), { recursive: true });
-    for (const demo of ['_01_demo-planned', '_02_demo-tasked', '_03_demo-living']) cpSync(join(REPO, 'specs', demo), join(journeyRoot, 'specs', demo), { recursive: true });
+    for (const demo of ['_01_demo-planned', '_02_demo-tasked', '_03_demo-living']) cpSync(join(DEMO_SPECS, demo), join(journeyRoot, 'specs', demo), { recursive: true });
     const journeyFolder = join(journeyRoot, 'specs', RUN_FOLDER);
     const journeySource = join(REPO, 'apps/vscode/webview/src/spec-viewer/__fixtures__/teamboard', RUN_FOLDER);
     writeTeamboardRun(REPO, journeyFolder, 'specified');

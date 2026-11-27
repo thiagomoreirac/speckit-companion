@@ -27,10 +27,9 @@ function githubRepoName(url) {
     return repo && repo.length <= 100 && repo !== '.' && repo !== '..' ? `${match[1]}/${repo}`.toLowerCase() : null;
 }
 
-export function githubDeliveryTarget(root) {
-    const git = (...args) => execFileSync('git', ['--no-pager', ...args], {
+export function githubDeliveryTarget(root, git = (...args) => execFileSync('git', ['--no-pager', ...args], {
         cwd: root, encoding: 'utf8', timeout: 2000, maxBuffer: 8192, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
-    });
+})) {
     let configured;
     let effective;
     try {
@@ -130,6 +129,21 @@ export function rootSelection(workspacePath) {
             delete data.root;
             delete data.source;
             save({ ...data, ...(root ? { root } : {}), ...(source ? { source } : {}), coordinatedSessions });
+        },
+        dedicatedWork() {
+            const { dedicatedWork } = load();
+            return Array.isArray(dedicatedWork) ? dedicatedWork : [];
+        },
+        writeDedicatedWork(dedicatedWork, confirmed) {
+            const data = load();
+            if (confirmed) {
+                const sessions = Array.isArray(data.coordinatedSessions) ? data.coordinatedSessions : [];
+                const previous = sessions.findIndex(row => row.sessionId === confirmed.sessionId);
+                if (previous < 0) sessions.push(confirmed);
+                else sessions[previous] = confirmed;
+                data.coordinatedSessions = sessions;
+            }
+            save({ ...data, dedicatedWork });
         },
         sortMode(root) {
             return load().sortModes?.[root] ?? 'recent';

@@ -35,6 +35,7 @@ checks:
   mod-terminal: { kind: desktop, recipe: "Claude Code mod pass", what: "start `claude --plugin-dir ./apps/claude-mod` in a project with specs in a terminal at least 144 columns wide: the band names the latest spec, the pane opens beside the transcript, `/spec` lists specs and switching one updates both, and checking a task in its tasks.md ticks the band within a few seconds" }
   canvas-new-spec: { kind: desktop, recipe: "Copilot canvas pass › Full run", what: "New spec once per workflow (stock Spec Kit and Companion); the chat receives the matching command each time, in the spelling the project registers, plus one sentence naming the run-instructions file" }
   canvas-workspaces: { kind: desktop, recipe: "Copilot canvas pass › Evidence, product work and routines", what: "open a preview and a missing artifact, review a native idea update and its product lineage, and save a routine draft without scheduling it" }
+  canvas-cloud-decisions: { kind: desktop, recipe: "Copilot canvas pass › Cloud decisions", what: "open the checkout-scoped decision inbox; verify pinned evidence, stale records, and dedicated work handoffs without dispatching or resuming" }
   site-pages: { kind: desktop, recipe: "Website pages", what: "serve with `npm run preview` in apps/website and look at each changed page in a browser" }
 
 # Runs on every release whatever the diff says.
@@ -60,6 +61,10 @@ surfaces:
   - name: Copilot canvas
     paths: ["apps/copilot-canvas/**", ".github/extensions/**"]
     checks: [canvas-tests, canvas-open, canvas-new-spec, canvas-workspaces]
+
+  - name: Copilot canvas cloud decisions
+    paths: ["apps/copilot-canvas/**/cloud-gates.mjs", "apps/copilot-canvas/**/decisions.js", "apps/copilot-canvas/**/work-handoff.mjs"]
+    checks: [canvas-cloud-decisions]
 
   - name: Claude Code mod
     paths: ["apps/claude-mod/**", ".claude-plugin/**", "apps/copilot-canvas/com.github.copilot/extensions/speckit-companion/spec-rules.mjs"]
@@ -99,8 +104,12 @@ surfaces:
     checks: [clips-check, docs-build]
 
   - name: QA harness
-    paths: ["tooling/scripts/desktop-check.mjs", "tooling/scripts/lib/**"]
+    paths: ["tooling/scripts/desktop-check.mjs", "tooling/scripts/lib/**", "tooling/fixtures/desktop-specs/**"]
     checks: [nav-matrix, themes, narrow-panel, popups, provider-dispatch, builder, process-panes]
+
+  - name: Shared demo fixtures
+    paths: ["tooling/fixtures/demo-project/**"]
+    checks: [canvas-tests, mod-tests, clips-check, nav-matrix]
 
 # Changed paths that need no QA (not shipped, or covered by the baseline).
 ignore: [".claude/**", ".serena/**", "specs/**", "package-lock.json"]

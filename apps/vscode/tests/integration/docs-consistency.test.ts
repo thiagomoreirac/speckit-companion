@@ -237,38 +237,10 @@ describe('docs consistency', () => {
     });
   });
 
-  describe('pinned fixtures stay pinned', () => {
-    // These are baselines, each frozen at one viewer state. The extension writes
-    // a per-machine id into any run record it watches, which is right for a
-    // user's project and wrong for a file this repo ships: it reached main three
-    // times in one cleanup, through a blanket `git add`. CLAUDE.md says to
-    // restore these rather than commit them; this is that rule, enforced.
-    const PINNED = [
-      'specs/_00_demo-specified',
-      'specs/_01_demo-planned',
-      'specs/_02_demo-tasked',
-      'specs/_03_demo-living',
-      'apps/vscode/webview/src/spec-viewer/__fixtures__/specs/393-implement-button-lost',
-      'apps/vscode/webview/src/spec-viewer/__fixtures__/specs/394-adopt-codex-design',
-    ];
-
-    it('no pinned fixture carries a per-machine telemetry id', () => {
-      const carrying = PINNED.filter(dir => {
-        const file = path.join(REPO_ROOT, dir, '.spec-context.json');
-        return fs.existsSync(file) && 'telemetryInstanceId' in JSON.parse(fs.readFileSync(file, 'utf8'));
-      });
-      expect(carrying).toEqual([]);
-    });
-
+  describe('portable run records', () => {
     it('no committed run record carries a per-machine telemetry id', () => {
-      let tracked: string[];
-      try {
-        tracked = execFileSync('git', ['ls-files', '-z', 'specs'], { cwd: REPO_ROOT, encoding: 'utf8' })
-          .split('\0')
-          .filter(f => /(^|\/)\.spec-context\.json$/.test(f));
-      } catch {
-        return;
-      }
+      const tracked = execFileSync('git', ['ls-files', '-z', ':(glob)**/.spec-context.json'], { cwd: REPO_ROOT, encoding: 'utf8' })
+        .split('\0').filter(Boolean);
       const carrying = tracked.filter(f => {
         const file = path.join(REPO_ROOT, f);
         return fs.existsSync(file) && 'telemetryInstanceId' in JSON.parse(fs.readFileSync(file, 'utf8'));

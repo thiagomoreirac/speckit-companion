@@ -1307,8 +1307,10 @@ describe('spec board server', () => {
     before(async () => {
         root = mkdtempSync(join(tmpdir(), 'canvas-server-'));
         mkdirSync(join(root, 'specs'));
-        cpSync(join(REPO, 'specs/_01_demo-planned'), join(root, 'specs/_01_demo-planned'), { recursive: true });
-        cpSync(join(REPO, 'specs/_02_demo-tasked'), join(root, 'specs/_02_demo-tasked'), { recursive: true });
+        const demos = join(REPO, 'tooling', 'fixtures', 'demo-project', 'specs');
+        for (const demo of ['_01_demo-planned', '_02_demo-tasked']) {
+            cpSync(join(demos, demo), join(root, 'specs', demo), { recursive: true });
+        }
         const tasked = join(root, 'specs/_02_demo-tasked/.spec-context.json');
         writeFileSync(tasked, readFileSync(tasked, 'utf8').replace('"workflow": "speckit"', '"workflow": "companion"'));
         mkdirSync(join(root, '.specify/extensions/companion'), { recursive: true });

@@ -10,6 +10,7 @@ import { buildSpecRow, isWritten, parseSpecContext, parseWorkspaceSettings, phas
 import { INSTALL_COMMAND, OPEN_NOTE, PROMPTS_DIR, availableCommands, buildAskPrompt, buildInstallPrompt, buildPrompt, buildSpecifyPrompt, buildStepPreamble, commandInstructions, commandPattern, commandSetFor, detectCommandSet, instructionsSentence, nextSpecNumber, openStatus, resolveCommand, resolveSpecify, runInstructionsDoc, specifyChoices, specifyInstructionsName, stepInstructionsName, writeRunInstructions, writerPath } from '../com.github.copilot/extensions/speckit-companion/prompts.mjs';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
+const DEMO_PROJECT = join(REPO, 'tooling', 'fixtures', 'demo-project');
 const GRAMMAR = join(REPO, 'apps/vscode/tests/fixtures/task-grammar');
 const TEAMBOARD = join(REPO, 'apps/vscode/webview/src/spec-viewer/__fixtures__/teamboard/041-profile-photo-upload');
 
@@ -52,13 +53,13 @@ describe('task parsing', () => {
     });
 
     it('counts the tasked demo fixture', () => {
-        assert.deepEqual(countTaskCheckboxes(readFileSync(join(REPO, 'specs/_02_demo-tasked/tasks.md'), 'utf8')), { checked: 0, total: 4 });
+        assert.deepEqual(countTaskCheckboxes(readFileSync(join(DEMO_PROJECT, 'specs/_02_demo-tasked/tasks.md'), 'utf8')), { checked: 0, total: 4 });
     });
 });
 
 describe('step badges', () => {
     it('reads each demo fixture at its pinned position', () => {
-        const badges = id => scanSpec(REPO, id).steps;
+        const badges = id => scanSpec(DEMO_PROJECT, id).steps;
         assert.deepEqual(badges('specs/_00_demo-specified'), { specify: 'completed', plan: 'not-started', tasks: 'not-started', implement: 'not-started' });
         assert.deepEqual(badges('specs/_01_demo-planned'), { specify: 'completed', plan: 'completed', tasks: 'not-started', implement: 'not-started' });
         assert.deepEqual(badges('specs/_02_demo-tasked'), { specify: 'completed', plan: 'completed', tasks: 'completed', implement: 'not-started' });
@@ -77,19 +78,19 @@ describe('step badges', () => {
 
 describe('scanning spec folders', () => {
     it('finds the demo fixtures and marks them local', () => {
-        const ids = listSpecFolders(REPO, ['specs']);
+        const ids = listSpecFolders(DEMO_PROJECT, ['specs']);
         for (const id of ['specs/_00_demo-specified', 'specs/_01_demo-planned', 'specs/_02_demo-tasked', 'specs/_03_demo-living']) {
             assert.ok(ids.includes(id), `${id} missing`);
         }
-        assert.equal(scanSpec(REPO, 'specs/_01_demo-planned').local, true);
+        assert.equal(scanSpec(DEMO_PROJECT, 'specs/_01_demo-planned').local, true);
     });
 
     it('reads status, title and completion from the record', () => {
-        const living = scanSpec(REPO, 'specs/_03_demo-living');
+        const living = scanSpec(DEMO_PROJECT, 'specs/_03_demo-living');
         assert.equal(living.statusLabel, 'Completed');
         assert.equal(living.title, 'Demo — Living Specs');
         assert.equal(living.done, true);
-        assert.equal(scanSpec(REPO, 'specs/_02_demo-tasked').done, false);
+        assert.equal(scanSpec(DEMO_PROJECT, 'specs/_02_demo-tasked').done, false);
     });
 
     it('falls back to the files when there is no run record', () => {
@@ -122,7 +123,7 @@ describe('scanning spec folders', () => {
     });
 
     it('lists specs most recently touched first and finds them by name or number', () => {
-        const { specs } = buildSnapshot(REPO, ['specs']);
+        const { specs } = buildSnapshot(DEMO_PROJECT, ['specs']);
         assert.ok(specs.length >= 4);
         assert.equal(findSpec(specs, '_02_demo-tasked').id, 'specs/_02_demo-tasked');
         assert.equal(findSpec(specs, 'specs/_01_demo-planned/').id, 'specs/_01_demo-planned');
@@ -803,8 +804,8 @@ describe('shared rules the Claude Code mod bundles', () => {
 
     it('builds the row the mod gets from $.fs texts the same as scanSpec reads it from disk', () => {
         const id = 'specs/_02_demo-tasked';
-        const dir = join(REPO, id);
-        const fromDisk = scanSpec(REPO, id);
+        const dir = join(DEMO_PROJECT, id);
+        const fromDisk = scanSpec(DEMO_PROJECT, id);
         const fromText = buildSpecRow({
             id,
             ctx: parseSpecContext(readFileSync(join(dir, '.spec-context.json'), 'utf8')),

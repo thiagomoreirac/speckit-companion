@@ -15,16 +15,20 @@ import { BUSY, recordStep, updateReviewRecord } from './run-record.mjs';
 import { addComment, buildReviewComment, editComment, markApplied, pendingForDoc, refinementPrompt, removeComment } from './vendor/review-comments.mjs';
 import { stepEvidence, withRunningStep } from './spec-rules.mjs';
 import { githubDeliveryTarget, validateRepositoryRoot, validateRoot } from './workspace.mjs';
+import { decisionContext } from './decision-context.mjs';
 import { pickFolder } from './folder-picker.mjs';
 import { artifactReviews, codeRevision, compareEvidence, entityDiagram, evidenceInventory, impactPrompt, linkedMarker, listWork, projectPath, readEvidence, recordArtifactReview, writeWork, writeWorkLink } from './vendor/work-evidence.mjs';
 import { wireflowPreview } from './vendor/wireflow-preview.mjs';
 import { createEcosystem, deliveryConfiguration, evidenceGenerationRequest, evidenceGenerators, extensionIntake, inspectWorkflowRun, integrationSnapshot, newProductChangePath, workflowRunInventory } from './ecosystem.mjs';
+import { createExtensionConfig, extensionSetupSummary } from './extension-config.mjs';
 import { createWorkflowHost } from './workflow.mjs';
 import { createProjectFiles } from './project-files.mjs';
 import { createReportPrompt, ideasDirectory, listReports, processExtensionPrompt, reportAction, reportAnswerPrompt, reportDetail } from './reports.mjs';
 import { ensureCacheFolder } from './vendor/report-host.mjs';
 import { listTriage, productUpdateDraft, productUpdates, recordProductUpdate, saveTriage } from './product-work.mjs';
 import { archiveRoutine, routineHandoff, routineInventory, routineManagement, saveRoutine } from './routines.mjs';
+import { coordinatedSession, dedicatedWorkHandoff } from './work-handoff.mjs';
+import { cloudGateInbox } from './cloud-gates.mjs';
 import { ALL_SORT_MODES, comparators } from './vendor/specs-sort.mjs';
 import { FORCE_STATUS_CHOICES, forceSpecContextStatus, lifecycleFallback, reactivateSpecContext, setSpecContextStatus, updateSpecContextStrict } from './vendor/spec-lifecycle.mjs';
 
@@ -35,6 +39,7 @@ const ASSETS = {
     '/settings.js': ['settings.js', 'text/javascript; charset=utf-8'],
     '/ecosystem.js': ['ecosystem.js', 'text/javascript; charset=utf-8'],
     '/routines.js': ['routines.js', 'text/javascript; charset=utf-8'],
+    '/decisions.js': ['decisions.js', 'text/javascript; charset=utf-8'],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
     '/viewer.css': ['../vendor/viewer.css', 'text/css; charset=utf-8'],
     '/states-select.mjs': ['../vendor/states-select.mjs', 'text/javascript; charset=utf-8'],
@@ -83,7 +88,7 @@ function tokenMatches(given, expected) {
  * `send(prompt)` puts a prompt into the agent chat; it resolves to false when there is no session (dev mode).
  * `checkoutWriter` (null for none) is the context writer outside the workspace; `quietMs`, `ceilingMs` and the clock `now` bound a sent step with no word from the session.
  */
-export async function createSpecServer({ root, workingDirectory = root, manual = false, bound = null, coordinatedSessions = [], saveCoordinatedSessions, discoverChildren, childPollMs = 0, specDirs, saveRoot, clearRoot, linkedDraft, readSortMode, saveSortMode, browseFolder = pickFolder, openTerminal, send = async () => false, log = () => {}, checkoutWriter, quietMs = QUIET_MS, ceilingMs = CEILING_MS, now = Date.now }) {
+export async function createSpecServer({ root, workingDirectory = root, manual = false, bound = null, coordinatedSessions = [], saveCoordinatedSessions, dedicatedWork, discoverChildren, childPollMs = 0, specDirs, saveRoot, clearRoot, linkedDraft, readSortMode, saveSortMode, browseFolder = pickFolder, openTerminal, send = async () => false, log = () => {}, checkoutWriter, quietMs = QUIET_MS, ceilingMs = CEILING_MS, now = Date.now }) {
     const canonical = directory => {
         try {
             return realpathSync(directory);
@@ -137,6 +142,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     const specFiles = createProjectFiles();
     const ideaSpecFiles = createProjectFiles();
     const ecosystem = createEcosystem({ send: prompt => deliver(null, 'set up Spec Kit', prompt) });
+    const extensionConfig = createExtensionConfig();
     const workflowHost = createWorkflowHost({
         send: async () => {
             const spelling = resolveCommand(state.root, 'constitution', 'speckit', settingsFor().commandFormat);
@@ -202,7 +208,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             const byId = new Map(specs.map(spec => [spec.id, spec]));
             specs.splice(0, specs.length, ...order.map(row => byId.get(row.id)));
         }
-        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, children: state.children, childNote: state.childNote, specs, sortMode, selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root, settings, projectWorkflows(settings).filter(w => customSteps(w).specify)), installPrompt: settings['companion.installPrompt'] !== false, settingsErrors: errors, lifecycleStatuses: FORCE_STATUS_CHOICES };
+        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [], children: state.children, childNote: state.childNote, specs, sortMode, selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root, settings, projectWorkflows(settings).filter(w => customSteps(w).specify)), installPrompt: settings['companion.installPrompt'] !== false, settingsErrors: errors, lifecycleStatuses: FORCE_STATUS_CHOICES };
     }
 
     /** The step's document as it is on disk right now, so a later look can tell whether the run touched it. */
@@ -341,6 +347,9 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
      */
     function bindSession({ sessionId, cwd, name }) {
         if (typeof sessionId !== 'string' || !sessionId.trim()) throw new Error('A source session id is required.');
+        if (state.coordinatedSessions.some(row => row.sessionId === sessionId.trim() && !row.cwd)) {
+            throw new Error('Open this session in Copilot. Its checkout is not available to this board.');
+        }
         const nextRoot = validateRepositoryRoot(cwd);
         if (!idle()) throw new Error('Wait for the current spec step to finish before changing repositories.');
         if (!saveRoot) throw new Error('Repository selection is unavailable without session storage.');
@@ -357,20 +366,12 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
     function updateCoordinatedSessions(sessions) {
         if (!Array.isArray(sessions)) throw new Error('A complete sessions array is required.');
         const ids = new Set();
-        const next = sessions.map(session => {
-            if (!session || typeof session !== 'object' || Array.isArray(session) ||
-                Object.keys(session).some(key => !['sessionId', 'cwd', 'name', 'activity'].includes(key)) ||
-                typeof session.sessionId !== 'string' || !session.sessionId.trim() ||
-                typeof session.name !== 'string' || !session.name.trim() ||
-                (session.activity !== undefined && !['busy', 'idle', 'unknown'].includes(session.activity))) {
-                throw new Error('Each session requires an id, name and absolute directory, with optional busy, idle or unknown activity.');
-            }
-            const sessionId = session.sessionId.trim();
+        const next = sessions.map(coordinatedSession);
+        for (const { sessionId } of next) {
             if (ids.has(sessionId)) throw new Error(`Duplicate coordinated session id: ${sessionId}`);
             ids.add(sessionId);
-            return { sessionId, cwd: validateRoot(session.cwd), name: session.name.trim(), ...(session.activity ? { activity: session.activity } : {}) };
-        });
-        const selected = state.bound && next.find(session => session.sessionId === state.bound.sessionId);
+        }
+        const selected = state.bound && next.find(session => session.cwd && session.sessionId === state.bound.sessionId);
         const moved = selected && selected.cwd !== state.root;
         if (moved && selected.activity === 'busy') {
             throw Object.assign(new Error('The selected session is busy. Wait until it is idle before changing repositories.'), { status: 409 });
@@ -392,6 +393,11 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         const selected = state.coordinatedSessions.find(session => session.sessionId === sessionId);
         if (!selected) throw Object.assign(new Error('The coordinated session is unavailable. Ask the coordinator to refresh the list.'), { status: 404, sessionMissing: true });
         return bindSession(selected);
+    }
+
+    function dedicatedWorkChanged(sessions) {
+        state.coordinatedSessions = sessions;
+        emit('dedicated-work', { root: state.root, coordinatedSessions: sessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [] });
     }
 
     /** Go back to following the session; the saved choice is removed first so a reload agrees. */
@@ -422,7 +428,8 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
      */
     function desiredRoot() {
         const own = state.workingDirectory;
-        if (state.children.length === 1 && (!own || lacksSpecs(own))) return state.children[0].cwd;
+        const child = state.children.length === 1 ? state.children[0] : null;
+        if (child && (!own || lacksSpecs(own)) && dedicatedWork?.canAutoFollow(own, child.sessionId) !== false) return child.cwd;
         return own;
     }
 
@@ -482,6 +489,7 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
 
     function applyRoot(nextRoot, nextDirs = resolveSpecDirs(nextRoot), nextSnapshot = buildSnapshot(nextRoot, nextDirs)) {
         state.rootRevision++;
+        extensionConfig.forget();
         clearTimeout(state.timer);
         clearTimeout(state.runTimer);
         clearTimeout(state.reportTimer);
@@ -815,6 +823,9 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
             if (instructionsFile) instructionsFile = resolve(state.root, instructionsFile);
         }
         const targetSessionId = state.bound?.sessionId ?? null;
+        if (targetSessionId && state.coordinatedSessions.some(row => row.sessionId === targetSessionId && row.cwd !== state.root)) {
+            throw new Error('The selected session no longer matches this checkout. Select it again, open it in Copilot, or disconnect.');
+        }
         const sent = await send(prompt, targetSessionId);
         emit('run', { spec, command, prompt, instructionsFile, targetSessionId, sent, at: new Date().toISOString() });
         return { prompt, instructionsFile, targetSessionId, sent };
@@ -876,8 +887,11 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         const startedAt = new Date(now());
         const preamble = customStep || settings.aiContextInstructions === false ? null : buildStepPreamble(command, spec.id, state.root, set, startedAt, writer());
         const file = preamble ? writeRunInstructions(state.root, stepInstructionsName(command, spec.id), runInstructionsDoc(line.split('\n')[0], preamble, spelling?.instructions)) : null;
-        const prompt = customStep ? `${customStep} ${spec.id}` : buildPrompt(command, spec.id, set, spelling, file);
+        let prompt = customStep ? `${customStep} ${spec.id}` : buildPrompt(command, spec.id, set, spelling, file);
         if (!STEP_COMMANDS.includes(command)) return deliver(spec.id, command, prompt, file);
+        const { context, note } = decisionContext(state.root, spec.id);
+        if (note) log(`[speckit-canvas] ${note}`);
+        if (context) prompt += `\n\n${context}`;
         // The run is known before the send, so a turn that starts while the send is still in flight finds it.
         const trackTurn = !state.bound?.sessionId;
         const earlier = state.runs.get(spec.id);
@@ -1140,6 +1154,34 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         return record;
     }
 
+    function prepareDedicatedWork(kind, id) {
+        if (typeof id !== 'string' || !id || id.length > 320) throw new Error('Choose one existing work item.');
+        if (kind === 'spec') {
+            const spec = state.snapshot.specs.find(item => item.id === id);
+            if (!spec?.files.spec) throw new Error('Choose the exact spec folder from this board.');
+            return dedicatedWorkHandoff(state.root, kind, id, `${id.split(sep).join('/')}/${spec.files.spec}`);
+        }
+        if (kind !== 'bug' && kind !== 'idea') throw new Error('Choose a spec, bug, or ready idea.');
+        sourceRecord({ kind, id });
+        const area = `${kind}-triage`;
+        const path = `.speckit-companion/${area}/${id}.json`;
+        const saved = listTriage(state.root, `${kind}s`).find(row => row.id === id);
+        if (!saved) throw new Error('Save Companion triage for this report before handing it off.');
+        if (kind === 'idea' && saved.status !== 'ready') throw new Error('Mark the idea Ready in Companion before handing it off.');
+        return dedicatedWorkHandoff(state.root, kind, id, path);
+    }
+
+    function dedicatedWorkPreview(kind, id) {
+        if (!dedicatedWork) throw new Error('Starting dedicated work requires a Copilot session with coordinator access and session storage.');
+        const ownedCheckout = state.coordinatedSessions.some(row => row.sessionId === state.bound?.sessionId && row.cwd === state.root);
+        if (state.bound ? !ownedCheckout : state.root !== state.workingDirectory) {
+            throw new Error('Open the repository in its owning session or select one of this coordinator’s worktrees.');
+        }
+        const handoff = prepareDedicatedWork(kind, id);
+        const version = createHash('sha256').update(JSON.stringify([state.token, state.rootRevision, state.root, handoff])).digest('hex');
+        return { root: state.root, version, handoff };
+    }
+
     function reviewedGate(spec, reference) {
         if (reference === undefined) return undefined;
         const run = inspectWorkflowRun(state.root, reference?.run);
@@ -1266,13 +1308,19 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         if (req.method === 'GET' && pathname === '/api/routines') return sendJson(res, 200, {
             root: state.root, canHandoff: state.root === state.workingDirectory || Boolean(state.bound?.sessionId), ...routineInventory(state.root),
         });
+        if (req.method === 'GET' && pathname === '/api/decisions') return sendJson(res, 200, cloudGateInbox(state.root));
+        if (req.method === 'GET' && pathname === '/api/dedicated-work') {
+            return sendJson(res, 200, dedicatedWorkPreview(url.searchParams.get('kind'), url.searchParams.get('id')));
+        }
         if (req.method === 'GET' && (pathname === '/api/discovery' || pathname === '/api/product-change')) {
             const { reason, setup, revision, target } = intakeTarget(pathname === '/api/discovery' ? 'prespec' : 'pdac-product');
             return sendJson(res, 200, { root: state.root, reason, setup, revision, target });
         }
-        if (req.method === 'GET' && pathname === '/api/integrations') return sendJson(res, 200, {
-            ...integrationSnapshot(state.root), localSetup: state.root === state.workingDirectory && !state.bound, root: state.root,
-        });
+        if (req.method === 'GET' && pathname === '/api/integrations') {
+            const info = integrationSnapshot(state.root);
+            for (const item of info.packages[0].installed) item.setup = extensionSetupSummary(state.root, item);
+            return sendJson(res, 200, { ...info, localSetup: state.root === state.workingDirectory && !state.bound, root: state.root });
+        }
         if (req.method === 'GET' && pathname === '/api/workflow-runs') {
             const runs = workflowRunInventory(state.root).map(({ feature, ...run }) => run);
             return sendJson(res, 200, { root: state.root, runs, terminalAvailable: Boolean(openTerminal) && state.root === state.workingDirectory && !state.bound });
@@ -1471,6 +1519,18 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
                     state.workflowActions--;
                 }
             }
+            if (['/api/integrations/config', '/api/integrations/config/preview', '/api/integrations/config/save'].includes(pathname)) {
+                const { root, rootRevision } = state;
+                if (body.expectedRoot !== root) throw new Error('Refresh Integrations for the selected repository.');
+                const owner = root === state.workingDirectory && !state.bound;
+                if (pathname === '/api/integrations/config') return sendJson(res, 200, {
+                    root, ...extensionConfig.open(root, rootRevision, body.id, owner),
+                });
+                if (!owner) throw new Error('Open SpecKit Companion in the session that owns this repository to edit extension settings.');
+                if (pathname.endsWith('/preview')) return sendJson(res, 200, extensionConfig.preview(root, rootRevision, body));
+                if (state.workflowActions) throw new Error('Wait for the current workflow operation before saving extension settings.');
+                return sendJson(res, 200, extensionConfig.save(root, rootRevision, body.token));
+            }
             if (pathname === '/api/integrations/preview' || pathname === '/api/integrations/setup') {
                 if (body.expectedRoot !== state.root || state.root !== state.workingDirectory || state.bound) throw new Error('Open SpecKit Companion in the session that owns this repository.');
                 assertSettingsValid();
@@ -1618,6 +1678,12 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
                 const next = selectCoordinatedSession(body.sessionId);
                 return sendJson(res, 200, { root: next.root, count: next.specs.length });
             }
+            if (pathname === '/api/dedicated-work') {
+                if (body.expectedRoot !== state.root) throw new Error('The repository changed. Review the dedicated work request again.');
+                const { root, handoff, version } = dedicatedWorkPreview(body.kind, body.id);
+                if (body.version !== version) throw new Error('The handoff changed. Review the dedicated work request again.');
+                return sendJson(res, 202, await dedicatedWork.request(root, handoff));
+            }
             if (pathname === '/api/refresh') {
                 await refreshChildren();
                 return sendJson(res, 200, { count: rescan().specs.length });
@@ -1754,6 +1820,16 @@ export async function createSpecServer({ root, workingDirectory = root, manual =
         bindSession,
         updateCoordinatedSessions,
         selectCoordinatedSession,
+        prepareDedicatedWork,
+        dedicatedWorkChanged,
+        claimDedicatedWork: requestId => {
+            if (!dedicatedWork) throw new Error('Dedicated work is unavailable in this session.');
+            return dedicatedWork.claim(requestId);
+        },
+        finishDedicatedWork: result => {
+            if (!dedicatedWork) throw new Error('Dedicated work is unavailable in this session.');
+            return dedicatedWork.finish(result);
+        },
         refreshChildren,
         followSession,
         followWorkingDirectory,
