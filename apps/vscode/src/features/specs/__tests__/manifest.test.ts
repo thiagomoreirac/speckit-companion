@@ -38,10 +38,11 @@ const SPEC_TERMINAL_WHEN = 'viewItem =~ /^spec-(active|tasks-done|implemented|co
 
 describe('sidebar contributions', () => {
     describe('view names', () => {
-        it('titles the five views for what they hold', () => {
+        it('titles the six views for what they hold', () => {
             const byId = Object.fromEntries(views.map(v => [v.id, v.name]));
             expect(byId).toEqual({
                 'speckit.views.explorer': 'Specs',
+                'speckit.views.businessPlans': 'Business Plans',
                 'speckit.views.bugs': 'Bugs',
                 'speckit.views.ideas': 'Ideas',
                 'speckit.views.steering': 'Steering',
@@ -49,9 +50,10 @@ describe('sidebar contributions', () => {
             });
         });
 
-        it('lists Specs, Bugs, Ideas, Steering and Settings in order, with no Living Specs view', () => {
+        it('lists Specs, Business Plans, Bugs, Ideas, Steering and Settings in order, with no Living Specs view', () => {
             expect(views.map(v => v.id)).toEqual([
                 'speckit.views.explorer',
+                'speckit.views.businessPlans',
                 'speckit.views.bugs',
                 'speckit.views.ideas',
                 'speckit.views.steering',

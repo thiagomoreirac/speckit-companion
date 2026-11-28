@@ -36,6 +36,8 @@ Auto-approve adds `--permission-mode bypassPermissions` for the Claude Code CLI,
 | `speckit.defaultWorkflow` | string | `"speckit"` | The workflow Create New Spec pre-selects: `"speckit"` or `"companion"`. While you haven't set it, installing the Companion extension for Spec Kit makes Companion the pre-selection. |
 | `speckit.customWorkflows` | object[] | `[]` | Your own workflow steps, commands and optional commit or PR checkpoints. See [Custom workflows and commands](/docs/customize/your-own-workflow). |
 | `speckit.customCommands` | array | `[]` | Your own slash commands, each a string or an object. Same page. |
+| `speckit.businessPlan.graphPaths` | string[] | `["examples/consuming-project/traceability.json", ".specify/business-plan/**/traceability.json", "business-plans/**/traceability.json", "traceability.json"]` | Workspace-relative paths or glob patterns checked for business-plan traceability graphs. |
+| `speckit.businessPlan.catalogSource` | string | `"thiagomoreirac/speckit-catalog"` | GitHub `owner/repo` hosting the SpecKit catalog and `business-plan` bundle (private repos use `~/.specify/auth.json` via `gh auth`). |
 
 ## Views and notifications
 

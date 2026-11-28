@@ -48,6 +48,11 @@ import { ProcessPaneProvider } from './features/processes/processPaneProvider';
 import { registerProcessCommands } from './features/processes/processCommands';
 import { ProcessCreateProvider } from './features/process-create/processCreateProvider';
 import { registerProcessCreateCommands } from './features/process-create/processCreateCommands';
+import {
+    BusinessPlanPaneProvider,
+    BusinessPlanPanel,
+    registerBusinessPlanCommands,
+} from './features/business-plan';
 import { ReportSet, reportDirectoryOf } from './features/reports/reportSet';
 import { PROCESS_EXTENSION_IDS } from './speckit/processExtensions';
 
@@ -241,9 +246,18 @@ export async function activate(context: vscode.ExtensionContext) {
         }),
     );
 
+    const businessPlanPane = new BusinessPlanPaneProvider(outputChannel);
+    context.subscriptions.push(
+        onDidChangeProjectRoot(() => {
+            businessPlanPane.refresh();
+            BusinessPlanPanel.refreshIfOpen();
+        }),
+    );
+
     context.subscriptions.push(
         vscode.window.registerTreeDataProvider(Views.settings, overviewProvider),
         specsTreeView,
+        vscode.window.registerTreeDataProvider(Views.businessPlans, businessPlanPane),
         vscode.window.registerTreeDataProvider(Views.bugs, bugsPane),
         ideasView,
         vscode.window.registerTreeDataProvider(Views.steering, steeringExplorer)
@@ -264,6 +278,7 @@ export async function activate(context: vscode.ExtensionContext) {
     registerSpecKitExtensionInstallCommands(context);
     registerSteeringCommands(context, steeringManager, steeringExplorer, outputChannel);
     registerSpecKitCommands(context, specExplorer, outputChannel, specsTreeView, filterState, sortState);
+    registerBusinessPlanCommands(context, businessPlanPane, outputChannel);
     registerProcessCommands(context, { bugs: bugsPane, ideas: ideasPane });
     registerProcessCreateCommands(context, new ProcessCreateProvider(context));
     registerUtilityCommands(context, updateChecker, outputChannel);
@@ -312,6 +327,13 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (action === 'Reload Now') {
                     vscode.commands.executeCommand('workbench.action.reloadWindow');
                 }
+            }
+            if (
+                e.affectsConfiguration('speckit.businessPlan.graphPaths') ||
+                e.affectsConfiguration('speckit.businessPlan.catalogSource')
+            ) {
+                businessPlanPane.refresh();
+                BusinessPlanPanel.refreshIfOpen();
             }
             if (
                 e.affectsConfiguration('speckit.permissionMode') ||

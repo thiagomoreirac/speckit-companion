@@ -592,6 +592,70 @@ describe('board page', { concurrency: false }, async () => {
         }
     });
 
+    it('adapts New business plan to the installed business-plan bundle workflow', async (t) => {
+        if (skipWithoutChrome(t)) return;
+        const project = temp('canvas-bp-bundle-intake-');
+        mkdirSync(join(project, '.specify', 'extensions'), { recursive: true });
+        mkdirSync(join(project, '.specify', 'workflows'), { recursive: true });
+        writeFileSync(join(project, '.specify', 'bundle-records.json'), JSON.stringify({
+            bundles: { 'business-plan': { version: '0.1.0' } },
+        }));
+        writeFileSync(join(project, '.specify', 'extensions', '.registry'), JSON.stringify({
+            extensions: { 'business-plan': { version: '0.1.0', enabled: true } },
+        }));
+        writeFileSync(join(project, '.specify', 'workflows', 'business-plan.yml'), 'id: business-plan\nversion: "0.1.0"\n');
+
+        const sent = [];
+        const server = await createSpecServer({
+            root: project,
+            send: async prompt => { sent.push(prompt); return true; },
+        });
+        const view = await browser.newPage({ viewport: { width: 1120, height: 820 } });
+        try {
+            await view.goto(server.url);
+            await view.click('#new-spec-toggle');
+            await view.selectOption('#new-entry-kind', 'business-plan');
+
+            const group = view.getByRole('radiogroup', { name: 'Business plan workflow' });
+            await group.waitFor();
+            assert.equal(await group.getByRole('radio', { name: 'Business Plan' }).getAttribute('aria-checked'), 'true');
+            assert.equal(await view.locator('#new-bp-phases li').count(), 3);
+            assert.equal(await view.locator('#new-entry-text-label').textContent(), 'Sponsor brief & reviewed evidence');
+
+            await view.fill('#new-bp-title', 'Q3 Self-Serve Growth');
+            assert.equal(await view.locator('#new-bp-graph').inputValue(), 'business-plans/q3-self-serve-growth/traceability.json');
+
+            await group.getByRole('radio', { name: 'Discovery' }).click();
+            assert.equal(await view.locator('#new-entry-submit').textContent(), 'Start discovery in chat');
+            assert.equal(await view.locator('#new-bp-draft-row').isHidden(), true);
+
+            await group.getByRole('radio', { name: 'Canvas draft' }).click();
+            assert.equal(await view.locator('#new-entry-text-label').textContent(), 'Description');
+            assert.equal(await view.locator('#new-work-fields').isVisible(), true);
+            assert.equal(await view.locator('#new-work-title').inputValue(), 'Q3 Self-Serve Growth');
+
+            await group.getByRole('radio', { name: 'Business Plan' }).click();
+            assert.equal(await view.locator('#new-bp-draft-row').isVisible(), true);
+            await view.fill('#new-spec-text', 'Improve self-serve onboarding conversion across free teams.');
+            await view.fill('#new-bp-owner', 'VP Product');
+            await view.fill('#new-bp-criteria', 'Lift day-7 activation by 15%.');
+            await view.click('#new-entry-submit');
+
+            await view.locator('#business-plan-panel').waitFor({ state: 'visible' });
+            assert.equal(sent.length, 1);
+            assert.match(sent[0], /specify workflow run business-plan/);
+            assert.match(sent[0], /business-plans\/q3-self-serve-growth\/traceability\.json/);
+            assert.match(sent[0], /--input draft=true/);
+            const saved = JSON.parse(readFileSync(join(project, 'business-plans/q3-self-serve-growth/traceability.json'), 'utf8'));
+            assert.equal(saved.nodes[0].approval.owner, 'VP Product');
+            assert.equal(saved.nodes[0].approval.status, 'pending');
+        } finally {
+            await view.close();
+            await server.close();
+            rmSync(project, { recursive: true, force: true });
+        }
+    });
+
     it('captures and triages an idea and manages a routine draft at narrow width without chat', async (t) => {
         if (skipWithoutChrome(t)) return;
         const project = temp('canvas-native-intake-');

@@ -51,6 +51,13 @@ export const Commands = {
     ideasRefresh: 'speckit.ideas.refresh',
     processesInstallExtension: 'speckit.processes.installExtension',
     processesEnableExtension: 'speckit.processes.enableExtension',
+    businessPlanOpen: 'speckit.businessPlan.open',
+    businessPlanCreate: 'speckit.businessPlan.create',
+    businessPlanRefresh: 'speckit.businessPlan.refresh',
+    businessPlanOpenDemo: 'speckit.businessPlan.openDemo',
+    businessPlanOpenSource: 'speckit.businessPlan.openSource',
+    businessPlanInstallBundle: 'speckit.businessPlan.installBundle',
+    businessPlanRunWorkflow: 'speckit.businessPlan.runWorkflow',
 } as const;
 
 /**
@@ -65,6 +72,8 @@ export const ConfigKeys = {
     specDirectories: 'speckit.specDirectories',
     projectFolder: 'speckit.projectFolder',
     assessmentsDirectory: 'speckit.assessmentsDirectory',
+    businessPlanGraphPaths: 'speckit.businessPlan.graphPaths',
+    businessPlanCatalogSource: 'speckit.businessPlan.catalogSource',
     customWorkflows: 'speckit.customWorkflows',
     defaultWorkflow: 'speckit.defaultWorkflow',
     installPrompt: 'speckit.companion.installPrompt',
@@ -198,6 +207,8 @@ export const TreeItemContext = {
     createGlobal: 'create-global-claude',
     createProject: 'create-project-claude',
     separator: 'separator',
+    businessPlanCatalog: 'business-plan-catalog',
+    businessPlanItem: 'business-plan-item',
 } as const;
 
 /**
@@ -205,6 +216,7 @@ export const TreeItemContext = {
  */
 export const Views = {
     explorer: 'speckit.views.explorer',
+    businessPlans: 'speckit.views.businessPlans',
     steering: 'speckit.views.steering',
     settings: 'speckit.views.settings',
     bugs: 'speckit.views.bugs',

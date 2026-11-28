@@ -57,6 +57,7 @@ const state = {
     tab: null,
     detailRequest: 0,
     workflow: null,
+    bpWorkflow: null,
     install: { dismissed: false, open: false },
     reviewDraft: null,
     project: { root: null, document: null, groups: [], request: 0 },
@@ -99,9 +100,15 @@ const els = {
     newSpecWorkflow: $('new-spec-workflow'),
     newSpecHint: $('new-spec-hint'),
     newSpecInstall: $('new-spec-install'),
+    newBpWorkflow: $('new-bp-workflow'),
+    newBpHint: $('new-bp-hint'),
+    newBpPhases: $('new-bp-phases'),
     workflowToggle: $('workflow-toggle'),
     workflowPanel: $('workflow-panel'),
     workflowFrame: $('workflow-frame'),
+    businessPlanToggle: $('business-plan-toggle'),
+    businessPlanPanel: $('business-plan-panel'),
+    businessPlanFrame: $('business-plan-frame'),
     projectToggle: $('project-toggle'),
     projectPanel: $('project-panel'),
     projectRefresh: $('project-refresh'),
@@ -193,7 +200,7 @@ const routines = createRoutinesPage({ api, el, root: () => state.snapshot?.root,
 const decisions = createDecisionsPage({ api, el, panel: decisionsPanel, root: () => state.snapshot?.root, sendResult: reportSend });
 
 function showBoardPanel(active) {
-    for (const [panel, toggle] of [[els.workflowPanel, els.workflowToggle], [els.projectPanel, els.projectToggle], [settingsPanel, settingsToggle], [linkedWorkPanel, linkedWorkToggle], [routinesPanel, routinesToggle], [decisionsPanel, decisionsToggle]]) {
+    for (const [panel, toggle] of [[els.workflowPanel, els.workflowToggle], [els.businessPlanPanel, els.businessPlanToggle], [els.projectPanel, els.projectToggle], [settingsPanel, settingsToggle], [linkedWorkPanel, linkedWorkToggle], [routinesPanel, routinesToggle], [decisionsPanel, decisionsToggle]]) {
         panel.hidden = panel !== active;
         toggle.setAttribute('aria-expanded', String(panel === active));
     }
@@ -1483,11 +1490,61 @@ function renderSpecifyChoices() {
     els.newSpecInstall.hidden = !hint;
 }
 
+function renderBusinessPlanChoices() {
+    const bp = state.snapshot?.businessPlan;
+    if (!bp?.installed) {
+        els.newBpWorkflow.replaceChildren();
+        els.newBpHint.textContent = '';
+        els.newBpPhases.replaceChildren();
+        return;
+    }
+    const current = bp.choices.find(c => c.id === state.bpWorkflow);
+    if (!current || !current.available) state.bpWorkflow = bp.default;
+    els.newBpWorkflow.replaceChildren(...bp.choices.map(choice => el('button', {
+        type: 'button',
+        role: 'radio',
+        'aria-checked': choice.id === state.bpWorkflow ? 'true' : 'false',
+        disabled: !choice.available,
+        'aria-disabled': choice.available ? null : 'true',
+        title: choice.reason ?? choice.description ?? '',
+        onclick: () => {
+            const wasWork = state.bpWorkflow === 'work';
+            const nextWork = choice.id === 'work';
+            if (!wasWork && nextWork && !workTitle.value.trim() && bpTitle.value.trim()) {
+                workTitle.value = bpTitle.value;
+            } else if (wasWork && !nextWork && !bpTitle.value.trim() && workTitle.value.trim()) {
+                bpTitle.value = workTitle.value;
+                if (!bpGraphTouched) {
+                    const slug = slugifyBp(bpTitle.value);
+                    bpGraph.value = slug ? `business-plans/${slug}/traceability.json` : '';
+                }
+            }
+            state.bpWorkflow = choice.id;
+            renderBusinessPlanChoices();
+            renderNewEntry();
+        },
+    }, choice.label)));
+    const active = bp.choices.find(choice => choice.id === state.bpWorkflow);
+    const versionPrefix = bp.bundleVersion ? `business-plan v${bp.bundleVersion} · ` : '';
+    els.newBpHint.textContent = active?.description
+        ? `${state.bpWorkflow === 'work' ? '' : versionPrefix}${active.description}`
+        : bp.choices.find(c => !c.available)?.reason ?? '';
+    const phases = bp.workflow?.phases ?? [];
+    els.newBpPhases.replaceChildren(...phases.map((phase) => el('li', { class: 'new-bp-phase' },
+        el('span', { class: 'new-bp-phase-step' }, phase.label),
+        phase.gate ? el('span', { class: 'new-bp-phase-gate' }, 'Gate') : null,
+    )));
+}
+
 function applySnapshot(snapshot) {
     const rootChanged = state.snapshot?.root !== snapshot.root;
     if (state.snapshot && rootChanged) {
         state.workflow = null;
+        state.bpWorkflow = null;
+        bpGraphTouched = false;
+        bpDraft.checked = true;
         els.workflowFrame.removeAttribute('src');
+        els.businessPlanFrame.removeAttribute('src');
         if (!els.newSpec.hidden) setNewEntryOpen(false);
         entryDrafts.clear();
         entryFields.forEach(field => { field.value = ''; });
@@ -1522,6 +1579,7 @@ function applySnapshot(snapshot) {
     const previous = state.snapshot;
     state.snapshot = snapshot;
     if (rootChanged && !els.workflowPanel.hidden) showWorkflowView(workflowView);
+    if (rootChanged && !els.businessPlanPanel.hidden) showBusinessPlanView();
     if (rootChanged && !linkedWorkPanel.hidden) linkedWorkPanel.replaceChildren(ecosystem.linkedWork());
     if (rootChanged && !routinesPanel.hidden) routines.open(routinesPanel);
     if (rootChanged && !decisionsPanel.hidden) decisions.open();
@@ -1530,8 +1588,11 @@ function applySnapshot(snapshot) {
     if (!els.newSpec.hidden && (rootChanged || (extensionIntakeRoute(entryKind) && boundSessionChanged))) refreshNewEntryExtension();
     if (rootChanged) settingsPage.rootChanged();
     if (previous?.specify && state.workflow === previous.specify.default && previous.specify.default !== snapshot.specify?.default) state.workflow = null;
+    if (previous?.businessPlan && state.bpWorkflow === previous.businessPlan.default && previous.businessPlan.default !== snapshot.businessPlan?.default) state.bpWorkflow = null;
     if (same) return loadDetail();
     renderSpecifyChoices();
+    renderBusinessPlanChoices();
+    renderNewEntry();
     if (state.selected && !snapshot.specs.some(s => s.id === state.selected)) state.selected = null;
     if (!state.selected && window.matchMedia('(min-width: 761px)').matches) {
         state.selected = snapshot.selected ?? snapshot.specs.find(s => !s.done)?.id ?? snapshot.specs[0]?.id ?? null;
@@ -1690,16 +1751,27 @@ els.coordinatedSession.addEventListener('change', async () => {
 });
 
 const entryType = $('new-entry-kind');
+const entryTextLabel = $('new-entry-text-label');
 const entrySubmit = $('new-entry-submit');
 const entryExtension = $('new-report-extension');
 const workTitle = $('new-work-title');
 const workOutcome = $('new-work-outcome');
+const bpHeader = $('new-bp-header');
+const bpTitleRow = $('new-bp-title-row');
+const bpTitle = $('new-bp-title');
+const bpDetails = $('new-bp-details');
+const bpGraph = $('new-bp-graph');
+const bpOwner = $('new-bp-owner');
+const bpCriteria = $('new-bp-criteria');
+const bpDraftRow = $('new-bp-draft-row');
+const bpDraft = $('new-bp-draft');
+const bpGraphOnly = $('new-bp-graph-only');
 const epicParent = $('new-epic-parent');
 const epicDependencies = $('new-epic-dependencies');
 const productChangeName = $('new-product-change-name');
 const reportTitle = $('report-title');
 const reportCapture = $('new-report-capture');
-const entryFields = [els.newSpecText, els.reportExtra, els.reportSlug, workTitle, workOutcome, productChangeName, reportTitle];
+const entryFields = [els.newSpecText, els.reportExtra, els.reportSlug, workTitle, workOutcome, productChangeName, reportTitle, bpTitle, bpGraph, bpOwner, bpCriteria];
 const entryDrafts = new Map();
 const entryCopy = {
     spec: ['Create spec', 'Starts the selected workflow and drafts spec.md.', 'Let people export their board as CSV'],
@@ -1710,6 +1782,30 @@ const entryCopy = {
     epic: ['Save epic', 'Group related work without starting a workflow.', 'What scope or customer outcome does this epic cover?'],
     'product-change': ['Draft Product Change in chat', 'Propose a change to the accepted product model. This sends a draft request; it does not approve or apply the change.', 'What product behavior should change, and why?'],
 };
+const BP_WORKFLOW_COPY = {
+    workflow: [
+        'Start business plan workflow',
+        'Creates the starter traceability graph and starts the 4-phase Business Plan workflow with 3 human approval gates.',
+        'Summarize the sponsor brief, business problem, and any reviewed evidence or constraints.',
+    ],
+    discovery: [
+        'Start discovery in chat',
+        'Creates the starter traceability graph and sends /speckit.business-plan.discovery with your sponsor brief.',
+        'Summarize the sponsor brief, discovery questions, and reviewed evidence.',
+    ],
+    plan: [
+        'Draft business plan in chat',
+        'Creates the starter traceability graph and sends /speckit.business-plan.plan to draft Phase 1.',
+        'Summarize the business problem, target audience, value proposition, and constraints.',
+    ],
+};
+const slugifyBp = value => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64);
+const defaultBpGraphPath = title => {
+    const slug = slugifyBp(title);
+    return slug ? `business-plans/${slug}/traceability.json` : '';
+};
+const bpBundleInstalled = () => Boolean(state.snapshot?.businessPlan?.installed);
+const isBpBundleMode = () => entryKind === 'business-plan' && bpBundleInstalled() && state.bpWorkflow !== 'work';
 const isReportKind = kind => kind === 'bugs' || kind === 'ideas';
 const isWorkKind = kind => kind === 'business-plan' || kind === 'epic';
 const extensionIntakeRoute = kind => kind === 'prespec' ? '/api/discovery' : kind === 'product-change' ? '/api/product-change' : null;
@@ -1720,32 +1816,53 @@ let epicRelations = { parent: '', dependencies: [] };
 let entryStatus = { ready: false, text: '' };
 let entryRequest = 0;
 let entrySending = false;
+let bpGraphTouched = false;
 
 function renderNewEntry() {
     const spec = entryKind === 'spec';
-    const work = isWorkKind(entryKind);
+    const bpInstalled = entryKind === 'business-plan' && bpBundleInstalled();
+    const bpBundle = bpInstalled && state.bpWorkflow !== 'work';
+    const work = isWorkKind(entryKind) && !bpBundle;
     const productChange = entryKind === 'product-change';
-    const [action, help, placeholder] = entryCopy[entryKind];
+    const [action, help, placeholder] = bpBundle
+        ? (BP_WORKFLOW_COPY[state.bpWorkflow] ?? BP_WORKFLOW_COPY.workflow)
+        : entryCopy[entryKind];
     $('new-spec-fields').hidden = !spec;
     $('new-report-fields').hidden = !isReportKind(entryKind);
     $('new-work-fields').hidden = !work;
     $('new-epic-fields').hidden = entryKind !== 'epic';
     $('new-product-change-fields').hidden = !productChange;
+    bpHeader.hidden = !bpInstalled;
+    bpTitleRow.hidden = !bpBundle;
+    bpDetails.hidden = !bpBundle;
+    els.newBpPhases.hidden = !bpBundle || !state.snapshot?.businessPlan?.workflow?.phases?.length;
+    bpDraftRow.hidden = !bpBundle || state.bpWorkflow !== 'workflow';
+    bpTitle.disabled = !bpBundle;
+    bpTitle.required = bpBundle;
+    bpGraph.disabled = !bpBundle;
+    bpGraph.required = bpBundle;
+    bpOwner.disabled = !bpBundle;
+    bpCriteria.disabled = !bpBundle;
     productChangeName.disabled = !productChange;
     productChangeName.required = productChange;
+    workTitle.disabled = !work;
     workTitle.required = work;
+    workOutcome.disabled = !work;
+    entryTextLabel.textContent = bpBundle ? 'Sponsor brief & reviewed evidence' : 'Description';
     $('new-work-source').hidden = !spec || !entrySource;
     $('new-source-label').textContent = entrySource ? `Source: ${entrySource.title}` : '';
     $('new-entry-help').textContent = help;
     els.newSpecText.placeholder = placeholder;
     if (spec) els.newSpecText.removeAttribute('maxlength');
-    else els.newSpecText.maxLength = extensionIntakeRoute(entryKind) ? 3000 : work ? 12000 : 20000;
+    else els.newSpecText.maxLength = extensionIntakeRoute(entryKind) ? 3000 : (work || bpBundle) ? 12000 : 20000;
     $('new-intake-status').hidden = !needsIntakeCheck(entryKind) || !entryStatus.text;
     $('new-report-status').textContent = entryStatus.text;
     entryExtension.hidden = !entryStatus.action;
     entryExtension.textContent = entryStatus.action ?? '';
     entrySubmit.textContent = action;
     entrySubmit.disabled = entrySending || (needsIntakeCheck(entryKind) && !entryStatus.ready);
+    bpGraphOnly.hidden = !bpBundle;
+    bpGraphOnly.disabled = entrySending;
     reportCapture.hidden = !isReportKind(entryKind);
     reportCapture.disabled = entrySending;
 }
@@ -1808,6 +1925,9 @@ function selectEntryKind(kind) {
     const draft = entryDrafts.get(kind);
     entryFields.forEach((field, index) => { field.value = draft?.[index] ?? ''; });
     entryKind = entryType.value = kind;
+    if (kind === 'business-plan') {
+        bpGraphTouched = Boolean(bpGraph.value.trim() && bpGraph.value !== defaultBpGraphPath(bpTitle.value));
+    }
 }
 
 function draftLinkedSpec(source, description) {
@@ -1825,11 +1945,75 @@ function setNewEntryOpen(open) {
     els.newSpecToggle.setAttribute('aria-expanded', String(open));
     if (open) {
         refreshNewEntryExtension();
-        (isWorkKind(entryKind) ? workTitle : els.newSpecText).focus();
+        (isBpBundleMode() ? bpTitle : isWorkKind(entryKind) ? workTitle : els.newSpecText).focus();
     } else {
         els.newSpecToggle.focus();
     }
 }
+
+bpTitle.addEventListener('input', () => {
+    if (bpGraphTouched) return;
+    bpGraph.value = defaultBpGraphPath(bpTitle.value);
+});
+bpGraph.addEventListener('input', () => {
+    bpGraphTouched = Boolean(bpGraph.value.trim());
+});
+
+async function submitBusinessPlanIntake(workflowOverride = null) {
+    if (!isBpBundleMode() || entrySending || !els.newSpec.reportValidity()) return;
+    const root = state.snapshot?.root;
+    const workflow = workflowOverride ?? state.bpWorkflow;
+    const values = entryFields.map(field => field.value);
+    const title = bpTitle.value.trim();
+    const brief = els.newSpecText.value.trim();
+    const graphPath = bpGraph.value.trim() || defaultBpGraphPath(title);
+    const owner = bpOwner.value.trim();
+    const criteria = bpCriteria.value.trim();
+    const draft = bpDraft.checked;
+    if (!title || !brief) return;
+    entrySending = true;
+    renderNewEntry();
+    try {
+        const result = await api('/api/business-plan/create', {
+            expectedRoot: root,
+            title,
+            brief,
+            graphPath,
+            owner,
+            criteria,
+            workflow,
+            draft,
+        });
+        if (root !== state.snapshot?.root) return;
+        const active = entryKind === 'business-plan';
+        const currentDraft = active ? entryFields.map(field => field.value) : entryDrafts.get('business-plan');
+        if (values.every((value, i) => currentDraft?.[i] === value)) {
+            entryDrafts.delete('business-plan');
+            bpGraphTouched = false;
+            bpDraft.checked = true;
+            if (active) {
+                entryFields.forEach(field => { field.value = ''; });
+                if (!els.newSpec.hidden) setNewEntryOpen(false);
+            }
+        }
+        showBoardPanel(els.businessPlanPanel);
+        showBusinessPlanView(true);
+        if (result.workflow === 'graph-only') {
+            toast(`Created ${result.graphPath}.`);
+        } else {
+            await reportSend(result, 'the business plan workflow');
+        }
+    } catch (error) {
+        toast(`Could not create business plan: ${error.message}`);
+    } finally {
+        entrySending = false;
+        renderNewEntry();
+    }
+}
+
+bpGraphOnly.addEventListener('click', () => {
+    void submitBusinessPlanIntake('graph-only');
+});
 
 entryType.addEventListener('change', () => {
     selectEntryKind(entryType.value);
@@ -1892,6 +2076,10 @@ reportCapture.addEventListener('click', async () => {
 els.newSpec.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (entrySubmit.disabled) return;
+    if (isBpBundleMode()) {
+        await submitBusinessPlanIntake();
+        return;
+    }
     const kind = entryKind;
     const root = state.snapshot?.root;
     const source = kind === 'spec' ? entrySource : null;
@@ -1964,6 +2152,37 @@ function showWorkflowView(view) {
 workflowGraphView.addEventListener('click', () => showWorkflowView('pipeline'));
 workflowIntegrationsView.addEventListener('click', () => showWorkflowView('integrations'));
 bindBoardTool(els.workflowToggle, els.workflowPanel, () => showWorkflowView(workflowView));
+
+function businessPlanUrl() {
+    const query = new URLSearchParams({ token });
+    if (state.snapshot?.root) query.set('root', state.snapshot.root);
+    if (forcedTheme) query.set('theme', forcedTheme);
+    return `/business-plan?${query}`;
+}
+function showBusinessPlanView(forceRefresh = false) {
+    if (!els.businessPlanFrame.getAttribute('src')) {
+        els.businessPlanFrame.src = businessPlanUrl();
+        return;
+    }
+    if (forceRefresh) {
+        els.businessPlanFrame.contentWindow?.postMessage(
+            { type: 'speckit-canvas:refresh-business-plan' },
+            location.origin,
+        );
+    }
+}
+bindBoardTool(els.businessPlanToggle, els.businessPlanPanel, () => showBusinessPlanView());
+window.addEventListener('message', (event) => {
+    if (event.origin !== location.origin) return;
+    if (event.data?.type === 'speckit-canvas:open-settings') {
+        showBoardPanel(settingsPanel);
+        settingsPage.open();
+    }
+});
+if (params.get('view') === 'business-plan') {
+    showBoardPanel(els.businessPlanPanel);
+    showBusinessPlanView();
+}
 
 function projectDirty() {
     return state.project.document && els.projectContent.value !== state.project.document.content;
