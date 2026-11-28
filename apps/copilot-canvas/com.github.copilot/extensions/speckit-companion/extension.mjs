@@ -88,6 +88,7 @@ const session = await joinSession({
                 properties: {
                     root: { type: 'string', minLength: 1, description: 'Initial absolute repository directory when the chat has no saved selection. Use select_root to change a saved selection.' },
                     spec: { type: 'string', description: 'Optional spec to open focused (path, folder name, or number).' },
+                    view: { type: 'string', enum: ['specs', 'business-plan'], description: 'Optional initial canvas view; pass "business-plan" to open directly onto the Business Plans interface.' },
                 },
             },
             actions: [
@@ -455,6 +456,17 @@ const session = await joinSession({
                     },
                 },
                 {
+                    name: 'list_business_plans',
+                    description: 'List business plan traceability graphs in the selected repository with stage counts, 8-check validation status, and private speckit-catalog integration health.',
+                    handler: (ctx) => {
+                        try {
+                            return serverFor(ctx).listBusinessPlans();
+                        } catch (error) {
+                            throw specError(error);
+                        }
+                    },
+                },
+                {
                     name: 'refresh',
                     description: 'Re-read every spec folder and update the board.',
                     handler: (ctx) => ({ count: serverFor(ctx).rescan().specs.length }),
@@ -556,7 +568,10 @@ const session = await joinSession({
                 }
                 const { specs } = entry.snapshot;
                 const active = specs.filter(s => !s.done).length;
-                return { title: 'SpecKit Companion', status: openStatus(active, specs.length), url: entry.url };
+                const url = ctx.input?.view === 'business-plan'
+                    ? `${entry.url}&view=business-plan`
+                    : entry.url;
+                return { title: 'SpecKit Companion', status: openStatus(active, specs.length), url };
             },
             onClose: async (ctx) => {
                 const entry = servers.get(ctx.instanceId);

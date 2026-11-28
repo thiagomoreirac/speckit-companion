@@ -1,0 +1,93 @@
+body.vscode-light {
+    --header-title: #1f2328;
+    --header-section: #1f2328;
+    --text-primary: #1f2328;
+    --text-body: #333b44;
+    --text-secondary: #57606a;
+    --text-muted: #656d76;
+    --accent: #0969da;
+    --accent-strong: #0969da;
+    --accent-hover: #0550ae;
+    --info: #0969da;
+    --success: #1a7f37;
+    --warning: #9a6700;
+    --error: #cf222e;
+    --border: #d0d7de;
+    --border-hover: #afb8c1;
+    --bg-primary: #ffffff;
+    --bg-secondary: #f6f8fa;
+    --bg-elevated: #f6f8fa;
+    --bg-hover: #eaeef2;
+}
+
+html, body, #app-root {
+    min-height: 100%;
+    margin: 0;
+    background: var(--bg-primary);
+    color: var(--text-body);
+}
+
+.bp-canvas-dialog {
+    box-sizing: border-box;
+    width: min(60rem, 94vw);
+    height: min(46rem, 90vh);
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-body);
+}
+.bp-canvas-dialog--compact {
+    width: min(32rem, 94vw);
+    height: auto;
+}
+.bp-canvas-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.bp-canvas-dialog[open] { display: flex; flex-direction: column; gap: .75rem; }
+.bp-canvas-dialog h2, .bp-canvas-dialog p { margin: 0; }
+.bp-canvas-dialog h2 { font-size: var(--text-base); color: var(--text-primary); overflow-wrap: anywhere; }
+.bp-canvas-dialog-note { font-size: var(--text-xs); color: var(--text-secondary); }
+.bp-canvas-dialog-code {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: .75rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text-body);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font: var(--text-sm) var(--font-mono);
+}
+.bp-canvas-form { display: flex; flex-direction: column; gap: .6rem; }
+.bp-canvas-form label { font-size: var(--text-xs); color: var(--text-primary); font-weight: 600; }
+.bp-canvas-form input,
+.bp-canvas-form textarea {
+    box-sizing: border-box;
+    width: 100%;
+    padding: .5rem .65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font: var(--text-sm) var(--font-sans);
+}
+.bp-canvas-dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .25rem; }
+.bp-canvas-dialog-actions button {
+    padding: .4rem .8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    cursor: pointer;
+}
+.bp-canvas-dialog-actions .bp-canvas-btn-primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--text-on-accent, #ffffff);
+}
+.bp-canvas-dialog-actions button:focus-visible,
+.bp-canvas-form input:focus-visible,
+.bp-canvas-form textarea:focus-visible,
+.bp-canvas-dialog-code:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

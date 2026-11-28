@@ -78,6 +78,14 @@ surfaces:
     paths:
       - "apps/vscode/src/features/pipeline-builder/**"
       - "apps/vscode/src/features/specs/pipelineBuildCommands.ts"
+
+  - name: business plan
+    paths:
+      - "apps/vscode/src/protocol/businessPlan.ts"
+      - "apps/vscode/src/features/business-plan/**"
+      - "apps/vscode/webview/src/business-plan/**"
+      - "apps/vscode/webview/styles/business-plan.css"
+    checks: [jest, themes]
       - "apps/vscode/webview/src/pipeline-builder/**"
       - "apps/vscode/webview/styles/pipeline-builder.css"
     checks: [builder]

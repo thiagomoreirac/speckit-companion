@@ -22,6 +22,7 @@ import { wireflowPreview } from './vendor/wireflow-preview.mjs';
 import { createEcosystem, deliveryConfiguration, evidenceGenerationRequest, evidenceGenerators, extensionIntake, inspectWorkflowRun, integrationSnapshot, newProductChangePath, workflowRunInventory } from './ecosystem.mjs';
 import { createExtensionConfig, extensionSetupSummary } from './extension-config.mjs';
 import { createWorkflowHost } from './workflow.mjs';
+import { createBusinessPlanHost } from './business-plan.mjs';
 import { createProjectFiles } from './project-files.mjs';
 import { createReportPrompt, ideasDirectory, listReports, processExtensionPrompt, reportAction, reportAnswerPrompt, reportDetail } from './reports.mjs';
 import { ensureCacheFolder } from './vendor/report-host.mjs';
@@ -53,6 +54,11 @@ const ASSETS = {
     '/workflow.css': ['workflow.css', 'text/css; charset=utf-8'],
     '/pipeline-builder.js': ['../vendor/pipeline-builder.js', 'text/javascript; charset=utf-8'],
     '/pipeline-builder.css': ['../vendor/pipeline-builder.css', 'text/css; charset=utf-8'],
+    '/business-plan': ['business-plan.html', 'text/html; charset=utf-8'],
+    '/business-plan-bridge.js': ['business-plan-bridge.js', 'text/javascript; charset=utf-8'],
+    '/business-plan-canvas.css': ['business-plan-canvas.css', 'text/css; charset=utf-8'],
+    '/business-plan.js': ['../vendor/business-plan.js', 'text/javascript; charset=utf-8'],
+    '/business-plan.css': ['../vendor/business-plan.css', 'text/css; charset=utf-8'],
 };
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'";
 const BODY_LIMIT = 16 * 1024;
@@ -158,6 +164,10 @@ export async function createSpecServer({ root, workingDirectory = root, instance
             return (await deliver(null, 'constitution', `/${spelling.name}${instruction}`)).sent;
         },
     });
+    const businessPlanHost = createBusinessPlanHost({
+        settingsFor: () => settingValues(inspectSettings(state.root)),
+        send: async (label, prompt) => deliver(null, label, prompt),
+    });
 
     function emit(event, data) {
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -214,7 +224,7 @@ export async function createSpecServer({ root, workingDirectory = root, instance
             const byId = new Map(specs.map(spec => [spec.id, spec]));
             specs.splice(0, specs.length, ...order.map(row => byId.get(row.id)));
         }
-        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [], deliveryLedger: deliveryLedgerForSnapshot(state.root), autonomyPolicy: readAutonomyPolicy(state.root), children: state.children, childNote: state.childNote, specs, sortMode, selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root, settings, projectWorkflows(settings).filter(w => customSteps(w).specify)), installPrompt: settings['companion.installPrompt'] !== false, settingsErrors: errors, lifecycleStatuses: FORCE_STATUS_CHOICES };
+        return { ...state.snapshot, rootSource: state.bound ? 'bound' : state.manual ? 'selected' : state.root === state.workingDirectory ? 'session' : 'child', boundSession: state.bound, coordinatedSessions: state.coordinatedSessions, dedicatedWork: dedicatedWork?.forRoot(state.root) ?? [], deliveryLedger: deliveryLedgerForSnapshot(state.root), autonomyPolicy: readAutonomyPolicy(state.root), children: state.children, childNote: state.childNote, specs, sortMode, selected: state.selected, commandSet: commandSet(), commands: availableCommands(commandSet()), specify: specifyChoices(state.root, settings, projectWorkflows(settings).filter(w => customSteps(w).specify)), businessPlan: businessPlanHost.intakeChoices(state.root), installPrompt: settings['companion.installPrompt'] !== false, settingsErrors: errors, lifecycleStatuses: FORCE_STATUS_CHOICES };
     }
 
     /** The step's document as it is on disk right now, so a later look can tell whether the run touched it. */
@@ -683,6 +693,10 @@ export async function createSpecServer({ root, workingDirectory = root, instance
             state.reportTimer = setTimeout(() => emit('reports-changed', {}), DEBOUNCE_MS);
         };
         watchSpecDir('.specify/bugs', reportsChanged);
+        watchSpecDir('.specify/extensions', scheduleRescan);
+        watchSpecDir('.specify/workflows', scheduleRescan);
+        watchSpecDir('.specify/bundles', scheduleRescan);
+        watchSpecDir('.specify/presets', scheduleRescan);
         try {
             watchSpecDir(ideasDirectory(state.root), reportsChanged);
         } catch (error) {
@@ -1341,6 +1355,7 @@ export async function createSpecServer({ root, workingDirectory = root, instance
         const { pathname } = url;
 
         if (req.method === 'GET' && pathname === '/api/snapshot') return sendJson(res, 200, snapshot());
+        if (req.method === 'GET' && pathname === '/api/business-plans') return sendJson(res, 200, businessPlanHost.summary(state.root));
         if (req.method === 'GET' && pathname === '/api/settings') return sendJson(res, 200, { ...inspectSettings(state.root), terminalAvailable: Boolean(openTerminal) && state.root === state.workingDirectory && !state.bound });
         if (req.method === 'GET' && pathname === '/api/project-files') return sendJson(res, 200, { root: state.root, groups: projectFiles.list(state.root, settingsFor()) });
         if (req.method === 'GET' && pathname === '/api/reports') {
@@ -1494,7 +1509,7 @@ export async function createSpecServer({ root, workingDirectory = root, instance
         }
 
         if (req.method === 'POST') {
-            const body = await readJson(req, ['/api/workflow', '/api/project-files/save', '/api/spec-file/save', '/api/settings'].includes(pathname) ? 1024 * 1024 : ['/api/report/create', '/api/project-files/create', '/api/reports/triage', '/api/work/apply-idea'].includes(pathname) ? 256 * 1024 : BODY_LIMIT);
+            const body = await readJson(req, ['/api/workflow', '/api/business-plan', '/api/project-files/save', '/api/spec-file/save', '/api/settings'].includes(pathname) ? 1024 * 1024 : ['/api/report/create', '/api/project-files/create', '/api/reports/triage', '/api/work/apply-idea'].includes(pathname) ? 256 * 1024 : BODY_LIMIT);
             if (body.expectedRoot !== undefined && body.expectedRoot !== state.root) throw new Error('The repository changed. Refresh the board and try again.');
             if (['/api/routines/save', '/api/routines/save-blueprint', '/api/routines/review', '/api/routines/blueprint-review', '/api/routines/archive', '/api/routines/manage'].includes(pathname)) {
                 if (body.expectedRoot !== state.root) throw new Error('Reopen Routines for the selected repository.');
@@ -1877,6 +1892,27 @@ export async function createSpecServer({ root, workingDirectory = root, instance
                     state.workflowActions--;
                 }
             }
+            if (pathname === '/api/business-plan') {
+                state.workflowActions++;
+                try {
+                    return sendJson(res, 200, { messages: await businessPlanHost.run(state.root, body) });
+                } finally {
+                    state.workflowActions--;
+                }
+            }
+            if (pathname === '/api/business-plan/create') {
+                if (body.expectedRoot && body.expectedRoot !== state.root) {
+                    throw new Error('Refresh the form for the selected repository before creating a business plan.');
+                }
+                state.workflowActions++;
+                try {
+                    const result = await businessPlanHost.createFromIntake(state.root, body);
+                    rescan();
+                    return sendJson(res, 200, result);
+                } finally {
+                    state.workflowActions--;
+                }
+            }
             if (pathname === '/api/specify') {
                 if (body.source && body.expectedRoot !== state.root) throw new Error('Reopen the source in this repository before drafting a linked spec.');
                 return sendJson(res, 200, await specify(body.description, body.workflow, body.source));
@@ -1944,6 +1980,7 @@ export async function createSpecServer({ root, workingDirectory = root, instance
         listAutomationBlueprints: () => ({ root: state.root, ...listAutomationBlueprints(state.root) }),
         getMultichannelDecisions: () => ({ ...cloudGateInbox(state.root), adrPromotions: previewDecisionPromotions(state.root) }),
         previewAdrPromotions: () => ({ root: state.root, ...previewDecisionPromotions(state.root) }),
+        listBusinessPlans: () => businessPlanHost.summary(state.root),
         dedicatedWorkChanged,
         reconcileDelivery,
         recoverDelivery,

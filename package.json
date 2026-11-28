@@ -68,6 +68,11 @@
           "name": "Specs"
         },
         {
+          "id": "speckit.views.businessPlans",
+          "name": "Business Plans",
+          "when": "!(workbenchState == empty || workspaceFolderCount == 0)"
+        },
+        {
           "id": "speckit.views.bugs",
           "name": "Bugs",
           "when": "!(workbenchState == empty || workspaceFolderCount == 0) && speckit.detected"
@@ -548,6 +553,48 @@
         "title": "Open Workflow Builder",
         "category": "SpecKit Companion",
         "icon": "$(circuit-board)"
+      },
+      {
+        "command": "speckit.businessPlan.open",
+        "title": "Open Business Plan",
+        "category": "SpecKit",
+        "icon": "$(briefcase)"
+      },
+      {
+        "command": "speckit.businessPlan.create",
+        "title": "New Business Plan",
+        "category": "SpecKit",
+        "icon": "$(plus)"
+      },
+      {
+        "command": "speckit.businessPlan.refresh",
+        "title": "Refresh Business Plans",
+        "category": "SpecKit",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "speckit.businessPlan.openDemo",
+        "title": "Open Consuming-Project Demo",
+        "category": "SpecKit",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "speckit.businessPlan.openSource",
+        "title": "Open Traceability JSON",
+        "category": "SpecKit",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "speckit.businessPlan.installBundle",
+        "title": "Install Business Plan Bundle",
+        "category": "SpecKit",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "speckit.businessPlan.runWorkflow",
+        "title": "Run Business Plan Workflow",
+        "category": "SpecKit",
+        "icon": "$(play)"
       }
     ],
     "submenus": [
@@ -623,6 +670,21 @@
           "command": "speckit.ideas.refresh",
           "when": "view == speckit.views.ideas",
           "group": "navigation@1"
+        },
+        {
+          "command": "speckit.businessPlan.refresh",
+          "when": "view == speckit.views.businessPlans",
+          "group": "navigation@1"
+        },
+        {
+          "command": "speckit.businessPlan.openDemo",
+          "when": "view == speckit.views.businessPlans",
+          "group": "navigation@2"
+        },
+        {
+          "command": "speckit.businessPlan.create",
+          "when": "view == speckit.views.businessPlans",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -740,6 +802,26 @@
           "command": "speckit.revealItemInOS",
           "when": "view == speckit.views.steering && (viewItem == steering-document || viewItem == steering-file || viewItem == provider-settings || viewItem == agent || viewItem == skill || viewItem == skill-warning || viewItem == speckit-constitution || viewItem == speckit-script || viewItem == speckit-template || viewItem == companion-config-item || viewItem == companion-command)",
           "group": "4_reveal@2"
+        },
+        {
+          "command": "speckit.businessPlan.open",
+          "when": "view == speckit.views.businessPlans && viewItem == business-plan-item",
+          "group": "inline@1"
+        },
+        {
+          "command": "speckit.businessPlan.openSource",
+          "when": "view == speckit.views.businessPlans && viewItem == business-plan-item",
+          "group": "inline@2"
+        },
+        {
+          "command": "speckit.businessPlan.runWorkflow",
+          "when": "view == speckit.views.businessPlans && viewItem == business-plan-item",
+          "group": "1_run@1"
+        },
+        {
+          "command": "speckit.businessPlan.installBundle",
+          "when": "view == speckit.views.businessPlans && viewItem == business-plan-catalog",
+          "group": "inline@1"
         }
       ],
       "speckit.specs.rowMenu": [
@@ -1037,6 +1119,28 @@
             "scope": "window",
             "order": 6,
             "description": "In a multi-root workspace, the folder SpecKit Companion treats as the Spec Kit project: a workspace folder name or its path. Leave empty to let Companion pick the first folder that holds Spec Kit files."
+          },
+          "speckit.businessPlan.graphPaths": {
+            "type": "array",
+            "default": [
+              "examples/consuming-project/traceability.json",
+              ".specify/business-plan/**/traceability.json",
+              "business-plans/**/traceability.json",
+              "traceability.json"
+            ],
+            "scope": "window",
+            "order": 7,
+            "description": "Workspace-relative paths or glob patterns checked for business-plan traceability.json graphs.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "speckit.businessPlan.catalogSource": {
+            "type": "string",
+            "default": "thiagomoreirac/speckit-catalog",
+            "scope": "window",
+            "order": 8,
+            "description": "GitHub owner/repo hosting the SpecKit catalog and business-plan bundle (private repos use ~/.specify/auth.json via gh auth)."
           },
           "speckit.customCommands": {
             "type": "array",

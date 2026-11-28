@@ -215,4 +215,57 @@ const pipelineBuilderConfig = {
   ]
 };
 
-module.exports = [extensionConfig, specEditorConfig, processCreateConfig, specViewerConfig, pipelineBuilderConfig];
+/**@type {import('webpack').Configuration}*/
+const businessPlanConfig = {
+  target: 'web',
+  mode: 'none',
+
+  entry: './apps/vscode/webview/src/business-plan/index.tsx',
+  output: {
+    path: path.resolve(__dirname, 'dist', 'webview'),
+    filename: 'business-plan.js',
+    libraryTarget: 'window'
+  },
+  resolve: {
+    extensions: ['.tsx', '.ts', '.js'],
+    conditionNames: sourceFirst
+  },
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        exclude: /node_modules/,
+        use: [
+          {
+            loader: 'ts-loader',
+            options: {
+              configFile: 'tsconfig.webview.json',
+              transpileOnly: true
+            }
+          }
+        ]
+      }
+    ]
+  },
+  devtool: 'nosources-source-map',
+  plugins: [
+    viewerSignals,
+    new CopyPlugin({
+      patterns: [
+        { from: 'apps/vscode/webview/styles/business-plan.css', to: 'business-plan.css' }
+      ]
+    })
+  ]
+};
+
+const configs = [
+  extensionConfig,
+  specEditorConfig,
+  processCreateConfig,
+  specViewerConfig,
+  pipelineBuilderConfig,
+  businessPlanConfig
+];
+configs.parallelism = 2;
+
+module.exports = configs;
